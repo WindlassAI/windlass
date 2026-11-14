@@ -204,6 +204,9 @@ describe("each way a handed-in token cannot be used", () => {
       const error = stepError(events)
       expect(error).toMatchObject({ kind: "auth", retryable: false, status: null, code })
       expect(error?.message).toStartWith("no usable access token: ")
+      // A message to a person names the file, as `login status` does: its path is how the file is found, and no
+      // secret. Tool output is where the path is redacted, so that the model and its commands are not told it.
+      expect(error?.message).toContain(`(${at.file})`)
       expect(await at.harness.signIn()).toMatchObject({ signedIn: false, code })
       const listing = await at.harness.listModels().then(
         () => null,
