@@ -6,9 +6,10 @@
  * against a local server with a fake token.
  *
  * Failure mapping when the stream does not complete:
- * - before a response: token getter failure -> `auth`; `fetch` rejects ->
- *   `transport` (`connection`); no response headers within `idleTimeoutMs` ->
- *   `transport` (`stalled`).
+ * - before a response: token getter failure -> `auth`, or `transport`
+ *   (`connection`) when the sign-in service could not be reached for a
+ *   refresh (`tokenFailure`); `fetch` rejects -> `transport` (`connection`);
+ *   no response headers within `idleTimeoutMs` -> `transport` (`stalled`).
  * - a non-2xx response -> classified from its status and body
  *   (openai-responses-error.ts), with `retry-after` honoured when present.
  * - after the stream opened: a read error (connection reset) -> `transport`
@@ -20,6 +21,7 @@
  *   as `requestId`; the message never contains it.
  * - abort: the HTTP request is cancelled and the stream ends with no terminal event.
  */
+import { AUTH_UNREACHABLE, AuthError } from "../auth/chatgpt.ts"
 import { type BlobRef } from "../content.ts"
 import type { ModelRequest } from "../request/request.ts"
 import { makeProviderError, type ProviderError } from "./error.ts"
@@ -162,7 +164,7 @@ export class OpenAIResponsesProvider implements Provider {
     try {
       return { ...encoded, token: await this.options.accessToken() }
     } catch (cause) {
-      return { error: makeProviderError("auth", `no usable access token: ${describe(cause)}`) }
+      return { error: tokenFailure(cause) }
     }
   }
 
@@ -230,6 +232,17 @@ function httpError(response: Response, text: string | Timeout | Failure, request
   })
 }
 
+/**
+ * The token getter failed, so nothing was sent. It is the sign-in's failure (`auth`) unless the sign-in service
+ * could not be reached to refresh the token (`AUTH_UNREACHABLE`): that says nothing about the sign-in, and is the
+ * connection problem it would be had the request itself not got through, tried again like one.
+ */
+function tokenFailure(cause: unknown): ProviderError {
+  const message = `no usable access token: ${describe(cause)}`
+  if (cause instanceof AuthError && cause.code === AUTH_UNREACHABLE) return makeProviderError("transport", message, { code: cause.code })
+  return makeProviderError("auth", message)
+}
+
 function describe(cause: unknown): string {
   if (cause instanceof Error) return cause.message || cause.name
   return String(cause)
@@ -275,7 +288,7 @@ export async function listModels(options: {
   try {
     token = await options.accessToken()
   } catch (cause) {
-    throw new ModelListError(makeProviderError("auth", `no usable access token: ${describe(cause)}`))
+    throw new ModelListError(tokenFailure(cause))
   }
   let response: Response
   let text: string

@@ -282,6 +282,45 @@ describe("handing a token on", () => {
   })
 })
 
+describe("a sign-in service that cannot be reached", () => {
+  // Nothing listens on this machine's port 1: a connection there is refused at once, and nothing leaves the machine.
+  const nowhere = (path: string) => `http://127.0.0.1:1/${path}`
+  const unreachable = new RegExp(`^${brand.binary}: sign-in failed: Could not reach the sign-in service at 127\\.0\\.0\\.1:1: [^\\n]+ \\(network_error\\)\\n$`)
+
+  test("login token with a refresh due: one line with the reason and its code, exit code 1, no token, and the saved sign-in as it was", async () => {
+    auth = await startFakeAuth()
+    await signIn(auth)
+    makeDue(auth)
+    const before = readFileSync(credentialsPath(auth.config), "utf8")
+    const config = { ...auth.config, tokenUrl: nowhere("token") }
+    for (const argv of [["token"], ["token", "--json"], ["token", "--json", "--valid-for", "30m"]]) {
+      const result = await login(argv, { config })
+      expect([result.code, result.out]).toEqual([1, ""])
+      // The line every sign-in failure has, and nothing else: no source excerpt, no stack trace.
+      expect(result.err).toMatch(unreachable)
+      expect(result.err.split("\n")).toHaveLength(2)
+    }
+    expect(readFileSync(credentialsPath(auth.config), "utf8")).toBe(before)
+    // Reachable again, the same sign-in refreshes: the failures spent nothing.
+    const again = await login(["token", "--json"], { config: auth.config })
+    expect([again.code, again.err]).toEqual([0, ""])
+    expect(auth.requests().refreshes).toBe(1)
+  })
+
+  test("login finish: the same line when the code cannot be exchanged or the keys cannot be fetched, and the sign-in stays pending", async () => {
+    auth = await startFakeAuth()
+    const started = await login(["start"], { config: auth.config })
+    const callback = await auth.authorize(addressIn(started.out))
+    for (const config of [{ ...auth.config, tokenUrl: nowhere("token") }, { ...auth.config, jwksUrl: nowhere("jwks") }]) {
+      const result = await login(["finish"], { config }, { stdin: callback })
+      expect([result.code, result.out]).toEqual([1, ""])
+      expect(result.err).toMatch(unreachable)
+      expect(await loadCredentials(auth.config)).toBeUndefined()
+      expect(await loadPending(auth.config)).toBeDefined()
+    }
+  })
+})
+
 describe("handing on a token that is good for long enough", () => {
   const usageError = (message: string) => ({
     code: 2,

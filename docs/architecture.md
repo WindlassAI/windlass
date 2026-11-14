@@ -349,7 +349,9 @@ is a new version with a decoder for the old one.
 - An error carries the provider's request ID as `requestId` when a response supplied one; the message never contains
   it. A `finish` carries the same ID and the model that answered (`response`), when the provider gave them: facts
   for the ledger and a trace, never part of history. A `transport` error has a `reason`: `connection` (could not send, or the connection broke) or `stalled`
-  (nothing arrived within the idle timeout).
+  (nothing arrived within the idle timeout). A token that could not be had fails the call before anything is sent:
+  as `auth`, or as `transport` (`connection`, `code: "network_error"`) when the sign-in service could not be
+  reached for a refresh, which says nothing about the sign-in and is tried again like any connection problem.
 - Provider-owned payloads (encrypted reasoning, item phase) travel as opaque `providerData` and are replayed verbatim.
 - `Usage` keeps what the provider says it wrote to its prompt cache (`cacheWriteTokens`, and the part with the
   12-hour lifetime) exactly when the provider reported the figure, zero included; a missing figure is not zero.
