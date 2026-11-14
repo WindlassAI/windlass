@@ -67,7 +67,10 @@ bun scripts/export-trace.ts <session-id> -o <file>  # then: bunx prefixlens chec
 ```
 
 Live model requests spend a ChatGPT plan allowance: keep prompts small, use `gpt-6-luna` at low effort, and count
-the requests. Never print, log or commit tokens.
+the requests. Never print, log or commit tokens. `login token` prints an access token on purpose, for another
+process to run on: never run it so that its output reaches a terminal, a transcript, a log or a commit. When a test
+or a script needs the token, send the output straight into a private file outside the repository, or into a variable
+that is never echoed, and delete the file afterwards.
 
 ## Testing like a user
 

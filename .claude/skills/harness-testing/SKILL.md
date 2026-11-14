@@ -16,6 +16,13 @@ user would. For the full-screen interface use the `tui-tmux-testing` skill.
   how many requests you spent (step 7).
 - **Never print, log or commit tokens, and never copy `auth.json`.** To test "not signed in", use a throwaway
   `XDG_DATA_HOME`.
+- **`login token` prints an access token on purpose: never run it so that its output reaches your terminal, a
+  transcript, a log or a commit.** Whatever a tool call prints is kept in the transcript. When a test or a script
+  needs the token, redirect the output straight into a private file outside the repository (`umask 077` first), or
+  into a variable that is never echoed; give the file to the other process by name (`WINDLASS_ACCESS_TOKEN_FILE`),
+  never the token on a command line; and delete the file afterwards. The command's messages, exit codes and
+  `--valid-for` errors need no sign-in: check them with a throwaway `XDG_DATA_HOME`, where there is no token to
+  print, and the refresh itself against the tests' fake authorization server (`test/release/login.test.ts`).
 - **Set environment variables inline on each command.** An `export` in one tool call does not reach the next, and a
   "signed out" check then quietly uses the real sign-in.
 - **Keep workspaces, results and traces outside the repository** and delete them when done. Never commit session
