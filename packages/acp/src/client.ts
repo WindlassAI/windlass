@@ -191,6 +191,8 @@ export class ClientError extends Error {
     /** `auth_required`, `session_in_use`, `session_not_found`, ... (`ErrorData.reason`); `closed` when the server is gone or never started; `null` otherwise. */
     readonly reason: string | null = null,
     readonly holderPid: number | null = null,
+    /** The code of what failed, when the server gave one (`ErrorData.code`): a sign-in's (`handed_in_expired`, `signed_out`, ...) or a provider error's. */
+    readonly code: string | null = null,
   ) {
     super(message)
     this.name = "ClientError"
@@ -503,8 +505,9 @@ export class HarnessConnection {
     const holder = typeof data?.holderPid === "number" ? data.holderPid : null
     // ACP's own "resource not found" carries no reason of the harness's.
     const reason = typeof data?.reason === "string" ? data.reason : (error as { code?: unknown } | null)?.code === -32002 ? "session_not_found" : null
-    if (typeof data?.message === "string") return new ClientError(data.message, reason, holder)
-    return new ClientError(describe(error), reason, holder)
+    const code = typeof data?.code === "string" ? data.code : null
+    if (typeof data?.message === "string") return new ClientError(data.message, reason, holder, code)
+    return new ClientError(describe(error), reason, holder, code)
   }
 
   forget(sessionId: string): void {
@@ -1230,7 +1233,7 @@ function labelOf(value: unknown): string | null {
 }
 
 /** `data[<ns>]` of a protocol error, or `null`. */
-function errorData(error: unknown): { reason?: unknown; message?: unknown; holderPid?: unknown } | null {
+function errorData(error: unknown): { reason?: unknown; message?: unknown; holderPid?: unknown; code?: unknown } | null {
   if (typeof error !== "object" || error === null || !("data" in error)) return null
   const data = (error as { data?: unknown }).data
   if (typeof data !== "object" || data === null) return null

@@ -315,7 +315,25 @@ describe("OpenAIResponsesProvider over HTTP", () => {
         throw new Error("Not signed in. Run the sign-in first.")
       },
     })
-    expect(error).toMatchObject({ kind: "auth", retryable: false, message: "no usable access token: Not signed in. Run the sign-in first." })
+    expect(error).toMatchObject({ kind: "auth", retryable: false, code: null, message: "no usable access token: Not signed in. Run the sign-in first." })
+    expect(seen.length).toBe(before)
+  })
+
+  test("a sign-in failure's own code is the error's code, for the call and for the model list", async () => {
+    const before = seen.length
+    const expired = async () => {
+      throw new AuthError("handed_in_expired", "The access token handed in expired at 2026-11-12T09:00:00.000Z (/run/handed-in/token).")
+    }
+    expect(await errorOf("text", { accessToken: expired })).toMatchObject({ kind: "auth", retryable: false, status: null, code: "handed_in_expired" })
+    const signedOut = async () => {
+      throw new AuthError("signed_out", "Not signed in. Run the sign-in first.")
+    }
+    expect(await errorOf("text", { accessToken: signedOut })).toMatchObject({ kind: "auth", code: "signed_out" })
+    const listing = await listModels({ accessToken: expired, baseUrl: base }).then(
+      () => null,
+      (caught: unknown) => caught,
+    )
+    expect((listing as ModelListError).error).toMatchObject({ kind: "auth", code: "handed_in_expired" })
     expect(seen.length).toBe(before)
   })
 

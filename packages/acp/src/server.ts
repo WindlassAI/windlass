@@ -718,7 +718,7 @@ class ConnectionState {
     const models = await this.harness.listModels().catch((error: unknown) => {
       if (!(error instanceof ModelListError)) throw error
       const auth = error.error.kind === "auth"
-      throw new RequestError(auth ? -32000 : -32603, `could not list the models: ${error.message}`, errorData({ reason: auth ? "auth_required" : "model_list_failed", message: error.message }))
+      throw new RequestError(auth ? -32000 : -32603, `could not list the models: ${error.message}`, errorData({ reason: auth ? "auth_required" : "model_list_failed", message: error.message, ...coded(error.error.code) }))
     })
     return {
       defaultModel: this.harness.defaults.model,
@@ -1266,7 +1266,7 @@ class ConnectionState {
   private async requireSignIn(): Promise<void> {
     const state = await this.harness.signIn()
     if (!state.signedIn)
-      throw RequestError.authRequired({ methodId: AUTH_METHOD_ID, ...errorData({ reason: "auth_required", message: state.message }) }, withSignInHint(state.message))
+      throw RequestError.authRequired({ methodId: AUTH_METHOD_ID, ...errorData({ reason: "auth_required", message: state.message, ...coded(state.code) }) }, withSignInHint(state.message))
   }
 
   /**
@@ -1684,12 +1684,15 @@ class SessionView {
 /** A failed turn, as the error `session/prompt` answers with. Signed out is the protocol's auth-required error. */
 function failure(end: Extract<TurnEnd, { kind: "failed" }>): RequestError {
   if (end.providerError?.kind === "auth")
-    return RequestError.authRequired({ methodId: AUTH_METHOD_ID, ...errorData({ reason: "auth_required", message: end.message }) }, withSignInHint(end.message))
+    return RequestError.authRequired({ methodId: AUTH_METHOD_ID, ...errorData({ reason: "auth_required", message: end.message, ...coded(end.providerError.code) }) }, withSignInHint(end.message))
   if (end.approvalRequired === true) return new RequestError(-32603, end.message, errorData({ reason: "approval_required", message: end.message }))
   const data: Record<string, unknown> = { [META.capabilities]: { reason: "execution_failed" } }
-  if (end.providerError !== null) data[META.capabilities] = { reason: "execution_failed", providerError: end.providerError.kind }
+  if (end.providerError !== null) data[META.capabilities] = { reason: "execution_failed", providerError: end.providerError.kind, ...coded(end.providerError.code) }
   return new RequestError(-32603, end.message, data)
 }
+
+/** `ErrorData.code`: the code of what failed (a sign-in's, a provider error's), when it has one. */
+const coded = (code: string | null | undefined): { readonly code?: string } => (code == null ? {} : { code })
 
 /** The turn as the prompt response's `_meta[<ns>]` carries it: everything `<prefix>/turn` says but the session. */
 function turnMeta(turn: NonNullable<TurnEnd["turn"]>): Record<string, unknown> {

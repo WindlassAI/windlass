@@ -35,7 +35,9 @@ naming a file that holds an access token handed in by the `windlass` that holds 
 reads the file at every model call and never refreshes anything: whoever started it replaces the file before the
 token expires. When the file gives no usable token, or the provider rejects the token and still rejects it after
 the file was read once more, the same auth-required error names the variable and says to hand in a new token,
-instead of how to sign in on that machine; `authenticate` reads the file again.
+instead of how to sign in on that machine; `authenticate` reads the file again. Which of these it was is the error's
+`data["windlass"].code` ("Errors" below): `handed_in_expired` and `handed_in_rejected` mean the token is no longer
+good, and the other `handed_in_*` codes that the file was not delivered as it should be.
 
 Sessions are stored one file each, and a process holds only the sessions it is working in. While `windlass acp` runs, an
 `windlass` in another terminal works in its own sessions, and so does a second editor. A session is open in one place at a
@@ -72,7 +74,8 @@ Stop reasons: `end_turn`; `max_turn_requests` when the turn reached its step lim
 response hit the output limit; `refusal` when the provider refused; `cancelled`. A turn that fails answers the prompt
 with an error instead (v1 has no error stop reason): `-32000` when the sign-in was rejected, otherwise `-32603` with
 the harness's sentence, such as "The model call failed 4 times: ...", and `data["windlass"] = { reason:
-"execution_failed", providerError? }` naming the provider's error class when there was one.
+"execution_failed", providerError?, code? }` naming the provider's error class when there was one, and the
+error's code when it had one ("Errors" below).
 
 Updates during a turn: `agent_thought_chunk` (reasoning summaries) and `agent_message_chunk` as they stream; one
 `tool_call` per call as soon as the model starts writing it, then `tool_call_update`s: the title and arguments
@@ -304,7 +307,8 @@ other half: it depends on the SDK and on `extensions.ts`, never on a client, so 
   `handEdits(ask, signal)` the hand-edit question of an undo. `cancel()` answers a pending question `cancelled`
   once the server has withdrawn it (its interrupt is in the log), and aborts `signal` so the client can close it.
 - Errors are `ClientError`s with the server's `reason` (`auth_required`, `session_in_use`, `session_not_found`,
-  ..., `closed` when the server is gone or never started); `lost()` says how a server went away.
+  ..., `closed` when the server is gone or never started) and its `code` when it gave one (`handed_in_expired`,
+  `signed_out`, ...; `null` otherwise); `lost()` says how a server went away.
 - `HarnessClient` wraps a connection that can be made again (`reconnect()`), for the TUI's `/reconnect`.
 
 ## Extensions
@@ -595,6 +599,45 @@ have loosened the user's policy.
 and `invalid_request` (`-32602`), `schema_mismatch` (a session written by another
 version), `model_list_failed`, `execution_failed` (a failed turn, with `providerError`), `approval_required` (a turn ended
 because a call needed approval and nobody was present), `closed`.
+
+`auth_required`, `execution_failed` and `model_list_failed` also carry `code` when what failed has one, so that a
+client can tell the failures apart without matching `message`. For a failed turn it is the `code` of the failed
+step's provider error (`step.failed`, `error.error.code` in [event-log.md](event-log.md)), and the two always agree:
+
+| `code` | Carried by | What happened | What a client tells its user |
+| --- | --- | --- | --- |
+| `signed_out` | `auth_required` | no sign-in is saved on the server's machine | sign in |
+| `invalid_grant`, or another code of the sign-in service | `auth_required` | the service refused to refresh the saved sign-in | sign in again |
+| `refresh_locked`, `bad_token_response` | `auth_required` | the refresh did not complete: another process held the refresh lock too long, or the service's answer had no tokens | try again |
+| `handed_in_missing` | `auth_required` | the file `WINDLASS_ACCESS_TOKEN_FILE` names does not exist | the token was not delivered: try again |
+| `handed_in_unreadable` | `auth_required` | the file cannot be read | the same |
+| `handed_in_empty` | `auth_required` | the file is empty | the same |
+| `handed_in_malformed` | `auth_required` | the file holds neither a token nor what `login token --json` prints | the same |
+| `handed_in_expired` | `auth_required` | the `expiresAt` in the file has passed | the token is no longer good: sign in again where the sign-in is held, or hand in a new token |
+| `handed_in_rejected` | `auth_required` | the provider turned the handed-in token down, also after the file was read once more | the same |
+| `network_error` | `execution_failed` (`providerError: "transport"`), `model_list_failed` | the sign-in service could not be reached to refresh the saved sign-in | a connection problem: try again |
+
+These are stable. Any other value is the provider's own code for its answer (`rate_limit_exceeded`, ...), passed on
+for diagnosis, and a provider's answer without one has no `code`. A sign-in that was rejected without a handed-in
+token (a `401` to a saved sign-in's token) has the provider's code or none. For example, a turn of a server on a
+handed-in token that expired:
+
+```json
+{ "code": -32000,
+  "message": "Authentication required: Signed out: the access token handed in through WINDLASS_ACCESS_TOKEN_FILE was rejected or cannot be used. Hand in a new token to continue.",
+  "data": { "methodId": "chatgpt",
+            "windlass": { "reason": "auth_required", "code": "handed_in_expired",
+                          "message": "Signed out: the access token handed in through WINDLASS_ACCESS_TOKEN_FILE was rejected or cannot be used. Hand in a new token to continue." } } }
+```
+
+and that turn's `step.failed` in the session's log, where the message names the file:
+
+```json
+{ "messageId": "msg_...", "usage": null,
+  "error": { "kind": "provider",
+             "error": { "kind": "auth", "retryable": false, "status": null, "code": "handed_in_expired", "retryAfterMs": null, "requestId": null,
+                        "message": "no usable access token: The access token handed in through WINDLASS_ACCESS_TOKEN_FILE expired at 2026-11-12T09:00:00.000Z (/run/handed-in/token). Hand in a new token: write the output of `windlass login token`, run where the sign-in is saved, to that file." } } }
+```
 
 **`session/prompt` `_meta["windlass/delivery"]`**: `"steer"` (the default) or `"queue"`. A queued prompt waits
 until the agent would otherwise stop, then gets its own answer in the same turn.

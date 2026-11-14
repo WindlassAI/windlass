@@ -18,6 +18,16 @@ All notable changes to Windlass are recorded here. The format follows
   refreshing the sign-in first when the saved token has less left: run it on a timer to keep such a file fresh,
   instead of having to ask in the last five minutes of each token.
 
+### Changed
+
+- A sign-in failure says which one it was by a code, where a program reads it: the `code` of the failed step's
+  provider error in the session's log, and `data["windlass"].code` of the error an ACP client is answered with
+  (`auth_required`, `execution_failed`, `model_list_failed`). With a handed-in access token it is one of
+  `handed_in_missing`, `handed_in_unreadable`, `handed_in_empty`, `handed_in_malformed`, `handed_in_expired`, or
+  the new `handed_in_rejected` for a token the provider turned down, whose step error now says so in its message
+  too; with a saved sign-in it is `signed_out`, the sign-in service's own code such as `invalid_grant`, or
+  `network_error`. `docs/acp.md` has the table.
+
 ### Fixed
 
 - A refresh of the sign-in that cannot reach the sign-in service (no network, a failed lookup, a broken connection)

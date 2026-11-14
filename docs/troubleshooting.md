@@ -102,7 +102,15 @@ Signed out: the access token handed in through WINDLASS_ACCESS_TOKEN_FILE was re
 ```
 
 *Reproduced in the test suite, against a provider answered in the test's own process.* The session is kept: hand in
-a new token and send the message again. `windlass login token` itself fails with exit code 1 in two cases:
+a new token and send the message again.
+
+A turn ends with that one sentence whichever of these it was. A program tells them apart by the code, not by the
+words: the codes of the table, and `handed_in_rejected` for a token the provider turned down. It is the `code` of the
+error an ACP client is answered with (`data["windlass"].code`, [acp.md](acp.md), "Errors") and of the failed step's
+provider error in the session's log (`step.failed`). `handed_in_expired` and `handed_in_rejected` mean the token is
+no longer good; the others mean the file was not delivered as it should be.
+
+`windlass login token` itself fails with exit code 1 in two cases:
 
 ```
 windlass: not signed in, so there is no token to hand on; run `windlass login`
