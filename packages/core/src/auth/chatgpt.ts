@@ -185,10 +185,12 @@ export async function finishLogin(callback: string, pending?: PendingLogin, conf
 }
 
 // One refresh at a time, in this process and across processes: refresh tokens rotate, so a second
-// concurrent refresh would present a token that the first one already consumed.
-let refreshing: Promise<Credentials> | undefined
+// concurrent refresh would present a token that the first one already consumed. Callers in this process that
+// ask for the same time left share one refresh; one that asks for more waits at the lock like another process.
+const refreshing = new Map<number, Promise<Credentials>>()
 
-const fresh = (credentials: Credentials) => credentials.expiresAt - Date.now() > REFRESH_MARGIN_MS
+/** Whether the access token is still good for more than `marginMs`. */
+const fresh = (credentials: Credentials, marginMs: number) => credentials.expiresAt - Date.now() > marginMs
 
 /**
  * Returns a usable access token. With `ACCESS_TOKEN_FILE_ENV` set it is the one handed in: its file is read on
@@ -203,15 +205,23 @@ export async function accessToken(config: AuthConfig = CHATGPT_AUTH): Promise<st
   return handed.accessToken
 }
 
-/** A usable access token of the saved sign-in and when it expires, refreshing and saving the rotated tokens when needed. */
-export async function savedAccessToken(config: AuthConfig = CHATGPT_AUTH): Promise<{ readonly accessToken: string; readonly expiresAt: number }> {
+/**
+ * A usable access token of the saved sign-in and when it expires, refreshing and saving the rotated tokens when
+ * needed. `validForMs` asks for one that is good for at least that long: a saved token with less left is refreshed
+ * first, as one inside a model call's margin is (the margin is the least that is ever asked). The refresh happens
+ * once: when the service issues a token that lasts less than was asked, that token is returned as it is.
+ */
+export async function savedAccessToken(config: AuthConfig = CHATGPT_AUTH, validForMs = 0): Promise<{ readonly accessToken: string; readonly expiresAt: number }> {
+  const marginMs = Math.max(REFRESH_MARGIN_MS, validForMs)
   const credentials = await loadCredentials(config)
   if (!credentials) throw new AuthError("signed_out", "Not signed in. Run the sign-in first.")
-  if (fresh(credentials)) return credentials
-  refreshing ??= refreshOnce(config).finally(() => {
-    refreshing = undefined
-  })
-  return refreshing
+  if (fresh(credentials, marginMs)) return credentials
+  let flight = refreshing.get(marginMs)
+  if (flight === undefined) {
+    flight = refreshOnce(config, marginMs).finally(() => refreshing.delete(marginMs))
+    refreshing.set(marginMs, flight)
+  }
+  return flight
 }
 
 const REFRESH_LOCK_WAIT_MS = 30_000
@@ -222,7 +232,7 @@ const REFRESH_LOCK_POLL_MS = 100
  * (the operating system drops it when the holder dies). Whoever waited for the lock reads the file again
  * first: the process that held it has usually just saved the tokens this one needs.
  */
-async function refreshOnce(config: AuthConfig): Promise<Credentials> {
+async function refreshOnce(config: AuthConfig, marginMs: number): Promise<Credentials> {
   await mkdir(config.dataDir(), { recursive: true, mode: 0o700 })
   const lock = new Database(join(config.dataDir(), "auth.lock"), { create: true })
   try {
@@ -242,7 +252,7 @@ async function refreshOnce(config: AuthConfig): Promise<Credentials> {
     try {
       const credentials = await loadCredentials(config)
       if (!credentials) throw new AuthError("signed_out", "Not signed in. Run the sign-in first.")
-      if (fresh(credentials)) return credentials
+      if (fresh(credentials, marginMs)) return credentials
       return await refresh(config, credentials)
     } finally {
       lock.run("ROLLBACK")

@@ -68,7 +68,7 @@ these, and `windlass login status` (exit code 1) shows it with its code:
 | `the access token handed in through WINDLASS_ACCESS_TOKEN_FILE expired at <time> (<file>)` | `handed_in_expired` | nothing replaced the file before the `expiresAt` in it |
 
 In every case hand in a new token: run `windlass login token --json` where the sign-in is saved and put its output
-in the file. Nothing needs a restart; the file is read at every model call, and in the full-screen interface
+in the file (with `--valid-for 30m`, say, when the token there may be about to expire: it is then refreshed first). Nothing needs a restart; the file is read at every model call, and in the full-screen interface
 `/reconnect` reads it again.
 
 When the provider rejects the token (it was revoked, or a bare token expired), the file is read once more, and if
@@ -84,6 +84,22 @@ a new token and send the message again. `windlass login token` itself fails with
 ```
 windlass: not signed in, so there is no token to hand on; run `windlass login`
 windlass: no token to hand on: this process uses the access token handed in through WINDLASS_ACCESS_TOKEN_FILE and holds no sign-in; run `windlass login token` where the sign-in is saved
+```
+
+With `--valid-for`, a token that is good for less than was asked is still printed, with exit code 0 and this line
+on standard error:
+
+```
+windlass: this token is valid for 60 more minutes, not the 2h asked for with --valid-for: a refresh gives none that lasts longer (--json prints its expiresAt)
+```
+
+The sign-in was refreshed to get it, and a token lasts about an hour: ask for less than that, or every call
+refreshes again. Whoever replaces a token file on a timer asks for somewhat more than the timer's period (the user
+guide, "One sign-in for several machines"). A value that is not a duration above zero is a usage error, exit code
+2, and prints no token:
+
+```
+windlass: --valid-for needs a duration above zero, such as 90s, 20m or 1h30m ("soon" is not one)
 ```
 
 ## A session in use by another process

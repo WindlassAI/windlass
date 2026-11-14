@@ -43,7 +43,8 @@ function tokenServer() {
   return { url: `http://127.0.0.1:${server.port}/token`, refreshes: () => refreshes, refused }
 }
 
-function staleSignIn(): string {
+/** A saved sign-in whose access token has `leftMs` before it expires: by default due for its refresh. */
+function staleSignIn(leftMs = 60_000): string {
   const dir = mkdtempSync(join(tmpdir(), "auth-refresh-"))
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
   const credentials: Credentials = {
@@ -54,7 +55,7 @@ function staleSignIn(): string {
     refreshToken: "refresh_0",
     idToken: "id",
     scopes: [],
-    expiresAt: Date.now() + 60_000,
+    expiresAt: Date.now() + leftMs,
   }
   writeFileSync(join(dir, "auth.json"), JSON.stringify(credentials))
   return dir
@@ -65,6 +66,22 @@ test("several processes that find the token stale refresh it once and all use th
   const dir = staleSignIn()
   const child = join(import.meta.dir, "refresh-child.ts")
   const processes = Array.from({ length: 4 }, () => Bun.spawn(["bun", child, server.url, dir], { stdout: "pipe", stderr: "pipe" }))
+  const results = await Promise.all(
+    processes.map(async (process) => ({ code: await process.exited, out: (await new Response(process.stdout).text()).trim(), err: await new Response(process.stderr).text() })),
+  )
+  expect(results.map((result) => result.err).join("")).toBe("")
+  expect(results.map((result) => result.code)).toEqual([0, 0, 0, 0])
+  expect(results.map((result) => result.out)).toEqual(["access_1", "access_1", "access_1", "access_1"])
+  expect(server.refreshes()).toBe(1)
+  expect(server.refused).toEqual([])
+}, 30_000)
+
+test("several processes that ask for a token good for longer than the saved one has left refresh it once and all use the new one", async () => {
+  const server = tokenServer()
+  // Twenty minutes left: not due for a model call, too little for the half hour each process asks for.
+  const dir = staleSignIn(20 * 60_000)
+  const child = join(import.meta.dir, "refresh-child.ts")
+  const processes = Array.from({ length: 4 }, () => Bun.spawn(["bun", child, server.url, dir, String(30 * 60_000)], { stdout: "pipe", stderr: "pipe" }))
   const results = await Promise.all(
     processes.map(async (process) => ({ code: await process.exited, out: (await new Response(process.stdout).text()).trim(), err: await new Response(process.stderr).text() })),
   )

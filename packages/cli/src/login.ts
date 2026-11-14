@@ -21,6 +21,9 @@
  *   (`--json`: with its expiry). The one place a token is printed on
  *   purpose: it is for another process of this program, which cannot share
  *   this data directory, to run on this sign-in (`ACCESS_TOKEN_FILE_ENV`).
+ *   `--valid-for <duration>` asks for one that is good for at least that
+ *   long, so the sign-in is refreshed first when the saved token has less
+ *   left; whoever keeps another process's token file fresh asks with it.
  * - `login logout`: forgets the saved sign-in on this machine.
  *
  * A process whose access token is handed in (`ACCESS_TOKEN_FILE_ENV` is set)
@@ -50,6 +53,7 @@ import {
   readHandedIn,
   savedAccessToken,
 } from "@windlass/core/auth/chatgpt"
+import { durationMs } from "./features.ts"
 
 /** What `runLogin` needs of the process. The CLI's `Io` is one. */
 export interface LoginIo {
@@ -74,7 +78,10 @@ export interface LoginDeps {
   readonly now?: () => number
 }
 
-const USAGE = `usage: ${brand.binary} login [start [--no-browser] | finish | status | logout]\n       ${brand.binary} login token [--json]`
+/** `login token`'s option for a token that is still good for at least a duration, written as a wake-up's is (`durationMs`). */
+const VALID_FOR = "--valid-for"
+
+const USAGE = `usage: ${brand.binary} login [start [--no-browser] | finish | status | logout]\n       ${brand.binary} login token [--json] [${VALID_FOR} <duration>]`
 
 /** `login --help`: each form with what it does. */
 export const LOGIN_HELP = (() => {
@@ -85,6 +92,7 @@ export const LOGIN_HELP = (() => {
     [`${brand.binary} login status`, ["who is signed in and until when (never the", "tokens); exit code 1 when nobody is"]],
     [`${brand.binary} login token`, ["print an access token of the saved sign-in,", "refreshed when it is due, for another", `${brand.name} that cannot share this data`, "directory: it reads the token from the file", `${ACCESS_TOKEN_FILE_ENV} names. The`, "output is a secret; exit code 1 when there", "is no sign-in to hand on"]],
     [`  --json`, ["with its expiry, on one line:", '{"accessToken":"...","expiresAt":<ms>}']],
+    [`  ${VALID_FOR} <duration>`, ["a token good for at least that long, such", "as 20m or 1h30m: the sign-in is refreshed", "first when the saved token has less left.", "Ask with it to keep another process's", "token file fresh, well before the token in", "it expires; a token lasts about an hour"]],
     [`${brand.binary} login logout`, ["forget the saved sign-in on this machine"]],
   ]
   const width = Math.max(...forms.map(([form]) => form.length)) + 3
@@ -98,7 +106,22 @@ export async function runLogin(argv: readonly string[], io: LoginIo, deps: Login
     return 0
   }
   const config = deps.config ?? CHATGPT_AUTH
-  const [command = "start", ...rest] = argv
+  const [command = "start", ...given] = argv
+  // `token`'s option with a value, as two words or as `--valid-for=<duration>`, taken out before the rest is checked.
+  const rest: string[] = []
+  let validFor: { readonly text: string; readonly ms: number } | null = null
+  for (let index = 0; index < given.length; index += 1) {
+    const arg = given[index]!
+    if (command !== "token" || (arg !== VALID_FOR && !arg.startsWith(`${VALID_FOR}=`))) {
+      rest.push(arg)
+      continue
+    }
+    const text = arg === VALID_FOR ? given[++index] : arg.slice(VALID_FOR.length + 1)
+    if (text === undefined || text.startsWith("-")) return usage(io, `${VALID_FOR} needs a duration, such as 90s, 20m or 1h30m`)
+    const ms = durationMs(text)
+    if (ms === null) return usage(io, `${VALID_FOR} needs a duration above zero, such as 90s, 20m or 1h30m ("${text}" is not one)`)
+    validFor = { text, ms }
+  }
   const flags = new Set(rest)
   const known = command === "start" ? ["--no-browser"] : command === "token" ? ["--json"] : []
   const unknown = rest.find((arg) => !known.includes(arg))
@@ -119,7 +142,7 @@ export async function runLogin(argv: readonly string[], io: LoginIo, deps: Login
       case "status":
         return handedIn === null ? await status(io, config, deps.now ?? Date.now) : await handedInStatus(io, handedIn, deps.now ?? Date.now)
       case "token":
-        return await token(io, config, handedIn !== null, flags.has("--json"))
+        return await token(io, config, handedIn !== null, flags.has("--json"), validFor)
       case "logout": {
         savedOnly()
         const had = await forgetCredentials(config)
@@ -223,13 +246,17 @@ async function handedInStatus(io: LoginIo, file: string, now: () => number): Pro
 /**
  * Prints a usable access token of the saved sign-in (refreshed first when it is due, under the refresh lock, as a
  * model call would) and nothing else on standard output. A process that runs on a handed-in token holds no sign-in.
+ * With `validFor` the token is refreshed first when it has less than that left; when the new one is still shorter
+ * (more was asked than a token lasts) it is printed all the same, with one line on standard error that says so.
  */
-async function token(io: LoginIo, config: AuthConfig, handedIn: boolean, json: boolean): Promise<number> {
+async function token(io: LoginIo, config: AuthConfig, handedIn: boolean, json: boolean, validFor: { readonly text: string; readonly ms: number } | null): Promise<number> {
   if (handedIn) {
     io.stderr.write(`${brand.binary}: no token to hand on: this process uses the access token handed in through ${ACCESS_TOKEN_FILE_ENV} and holds no sign-in; run \`${brand.binary} login token\` where the sign-in is saved\n`)
     return 1
   }
-  const saved = await savedAccessToken(config).catch((error: unknown) => {
+  // "Long enough" counts from here, when it was asked: a token refreshed on the way is not short for the moments the refresh took.
+  const asked = Date.now()
+  const saved = await savedAccessToken(config, validFor?.ms).catch((error: unknown) => {
     if (error instanceof AuthError && error.code === "signed_out") return null
     throw error
   })
@@ -238,6 +265,8 @@ async function token(io: LoginIo, config: AuthConfig, handedIn: boolean, json: b
     return 1
   }
   io.stdout.write(`${json ? JSON.stringify({ accessToken: saved.accessToken, expiresAt: saved.expiresAt }) : saved.accessToken}\n`)
+  if (validFor !== null && saved.expiresAt - asked < validFor.ms)
+    io.stderr.write(`${brand.binary}: this token is valid for ${Math.round((saved.expiresAt - Date.now()) / 60000)} more minutes, not the ${validFor.text} asked for with ${VALID_FOR}: a refresh gives none that lasts longer (--json prints its expiresAt)\n`)
   return 0
 }
 

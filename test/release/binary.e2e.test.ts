@@ -130,6 +130,23 @@ describe.skipIf(!built)(`the built executable (${host?.id ?? "none"})`, () => {
     expect((await run(["login", "--help"])).out).toContain(`${brand.binary} login token`)
   })
 
+  test("login token --valid-for: in the help, a usage error for a value that is no duration, and refused like login token where there is nothing to hand on", async () => {
+    const usage = `usage: ${brand.binary} login [start [--no-browser] | finish | status | logout]\n       ${brand.binary} login token [--json] [--valid-for <duration>]\n`
+    const help = await run(["login", "--help"])
+    expect([help.code, help.err]).toEqual([0, ""])
+    expect(help.out).toStartWith(usage)
+    expect(help.out).toContain("  --valid-for <duration>")
+    expect((await run(["--help"])).out).toContain("--valid-for")
+    expect(await run(["login", "token", "--valid-for"])).toEqual({ code: 2, out: "", err: `${brand.binary}: --valid-for needs a duration, such as 90s, 20m or 1h30m\n${usage}` })
+    for (const text of ["soon", "0m"])
+      expect(await run(["login", "token", "--json", "--valid-for", text])).toEqual({ code: 2, out: "", err: `${brand.binary}: --valid-for needs a duration above zero, such as 90s, 20m or 1h30m ("${text}" is not one)\n${usage}` })
+    // A good value: nothing is saved in this data directory, and a process on a handed-in token holds no sign-in.
+    expect(await run(["login", "token", "--json", "--valid-for", "30m"])).toEqual({ code: 1, out: "", err: `${brand.binary}: not signed in, so there is no token to hand on; run \`${brand.binary} login\`\n` })
+    const refused = await run(["login", "token", "--valid-for=30m"], { env: { [`${brand.envPrefix}ACCESS_TOKEN_FILE`]: join(home, "handed-in-token") } })
+    expect([refused.code, refused.out]).toEqual([1, ""])
+    expect(refused.err).toContain(`handed in through ${brand.envPrefix}ACCESS_TOKEN_FILE and holds no sign-in`)
+  })
+
   test("a command runs through the scripted model, in the sandbox when this machine has one", async () => {
     const script = join(home, "shell.json")
     await Bun.write(

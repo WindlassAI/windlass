@@ -54,11 +54,13 @@ const addressIn = (out: string) => /^ {2}(http\S+)$/m.exec(out)?.[1] ?? ""
 
 describe("parsing", () => {
   test("login and its subcommands reach runLogin; the help lists them", () => {
-    for (const argv of [["login"], ["login", "start"], ["login", "finish"], ["login", "status"], ["login", "token"], ["login", "token", "--json"], ["login", "logout"]]) expect(parseArgs(argv)).toEqual({ kind: "login", argv: argv.slice(1) })
+    for (const argv of [["login"], ["login", "start"], ["login", "finish"], ["login", "status"], ["login", "token"], ["login", "token", "--json"], ["login", "token", "--json", "--valid-for", "20m"], ["login", "logout"]])
+      expect(parseArgs(argv)).toEqual({ kind: "login", argv: argv.slice(1) })
     for (const command of ["login [start]", "login finish", "login status", "login token [--json]", "login logout"]) expect(helpText()).toContain(`${brand.binary} ${command}`)
     // The one command that prints a token says what it is for and that its output is a secret.
     const token = helpText().slice(helpText().indexOf(`${brand.binary} login token`), helpText().indexOf(`${brand.binary} login logout`))
     expect(token.replace(/\s+/g, " ")).toContain(`print an access token of the saved sign-in (a secret) for another ${brand.name} that cannot share this data directory: it reads the token from the file ${ACCESS_TOKEN_FILE_ENV} names`)
+    expect(token.replace(/\s+/g, " ")).toContain("--valid-for <duration> asks for one good for at least that long")
   })
 
   test("the address is never taken from the command line", async () => {
@@ -206,11 +208,16 @@ async function signIn(fake: FakeAuth) {
   return (await loadCredentials(fake.config))!
 }
 
-/** Makes the saved access token due for its refresh, as it is a few minutes before it expires. */
-function makeDue(fake: FakeAuth) {
+/** Leaves the saved access token `ms` before it expires. */
+function leave(fake: FakeAuth, ms: number) {
   const path = credentialsPath(fake.config)
-  writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), expiresAt: Date.now() + 60_000 }))
+  writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), expiresAt: Date.now() + ms }))
 }
+
+/** Makes the saved access token due for its refresh, as it is a few minutes before it expires. */
+const makeDue = (fake: FakeAuth) => leave(fake, 60_000)
+
+const MINUTE = 60_000
 
 describe("handing a token on", () => {
   test("login token prints the saved sign-in's access token and nothing else; --json adds its expiry, on one line", async () => {
@@ -272,6 +279,132 @@ describe("handing a token on", () => {
     const result = await login(["token"], { config: auth.config })
     expect([result.code, result.out]).toEqual([1, ""])
     expect(result.err).toBe(`${brand.binary}: sign-in failed: Token request failed (400 invalid_grant): the refresh token was already used or is not known (invalid_grant)\n`)
+  })
+})
+
+describe("handing on a token that is good for long enough", () => {
+  const usageError = (message: string) => ({
+    code: 2,
+    out: "",
+    err: `${brand.binary}: ${message}\nusage: ${brand.binary} login [start [--no-browser] | finish | status | logout]\n       ${brand.binary} login token [--json] [--valid-for <duration>]\n`,
+  })
+
+  test("--valid-for with more than that left on the saved token: it is handed on as it is, and nothing is refreshed", async () => {
+    auth = await startFakeAuth()
+    await signIn(auth)
+    leave(auth, 40 * MINUTE)
+    const saved = (await loadCredentials(auth.config))!
+    const before = readFileSync(credentialsPath(auth.config), "utf8")
+    expect(await login(["token", "--json", "--valid-for", "30m"], { config: auth.config })).toEqual({ code: 0, out: `${JSON.stringify({ accessToken: saved.accessToken, expiresAt: saved.expiresAt })}\n`, err: "" })
+    // The bare token, the value joined with `=`, and a duration of several units.
+    for (const argv of [["token", "--valid-for", "30m"], ["token", "--valid-for=30m"], ["token", "--valid-for", "39m30s"]]) expect(await login(argv, { config: auth.config })).toEqual({ code: 0, out: `${saved.accessToken}\n`, err: "" })
+    expect(auth.requests().refreshes).toBe(0)
+    expect(readFileSync(credentialsPath(auth.config), "utf8")).toBe(before)
+  })
+
+  test("--valid-for with less than that left: the sign-in is refreshed first, the rotated tokens are saved, and the new token is the one printed", async () => {
+    auth = await startFakeAuth()
+    const old = await signIn(auth)
+    leave(auth, 20 * MINUTE)
+    // Without the option it is not due yet: the same token, as before.
+    expect((await login(["token"], { config: auth.config })).out).toBe(`${old.accessToken}\n`)
+    expect(auth.requests().refreshes).toBe(0)
+    const json = await login(["token", "--json", "--valid-for", "30m"], { config: auth.config })
+    expect([json.code, json.err]).toEqual([0, ""])
+    const handed = JSON.parse(json.out) as { accessToken: string; expiresAt: number }
+    expect(Object.keys(handed)).toEqual(["accessToken", "expiresAt"])
+    const saved = (await loadCredentials(auth.config))!
+    expect(handed).toEqual({ accessToken: saved.accessToken, expiresAt: saved.expiresAt })
+    expect(handed.accessToken).not.toBe(old.accessToken)
+    expect(saved.refreshToken).not.toBe(old.refreshToken)
+    expect(handed.expiresAt).toBeGreaterThan(Date.now() + 30 * MINUTE)
+    expect(statSync(credentialsPath(auth.config)).mode & 0o777).toBe(0o600)
+    expect(existsSync(join(auth.dir, "auth.lock"))).toBe(true)
+    // Asked again, with or without the option: the same token, and the one refresh.
+    expect((await login(["token", "--valid-for", "30m"], { config: auth.config })).out).toBe(`${handed.accessToken}\n`)
+    expect((await login(["token"], { config: auth.config })).out).toBe(`${handed.accessToken}\n`)
+    expect(auth.requests().refreshes).toBe(1)
+  })
+
+  test("several asks at once refresh once, and all hand on the same new token", async () => {
+    auth = await startFakeAuth()
+    const fake = auth
+    const old = await signIn(fake)
+    leave(fake, 20 * MINUTE)
+    const results = await Promise.all(Array.from({ length: 4 }, () => login(["token", "--json", "--valid-for", "30m"], { config: fake.config })))
+    const saved = (await loadCredentials(fake.config))!
+    expect(saved.accessToken).not.toBe(old.accessToken)
+    for (const result of results) expect(result).toEqual({ code: 0, out: `${JSON.stringify({ accessToken: saved.accessToken, expiresAt: saved.expiresAt })}\n`, err: "" })
+    // A second refresh would have presented a refresh token that was already used, and been refused.
+    expect(fake.requests()).toEqual({ token: 2, refreshes: 1 })
+  })
+
+  test("more asked than a token lasts: one refresh, the new token is printed all the same, and one line on standard error says it is shorter", async () => {
+    auth = await startFakeAuth()
+    const old = await signIn(auth)
+    leave(auth, 20 * MINUTE)
+    const result = await login(["token", "--json", "--valid-for", "2h"], { config: auth.config })
+    const saved = (await loadCredentials(auth.config))!
+    expect(saved.accessToken).not.toBe(old.accessToken)
+    // The fake server's tokens last an hour, as the real ones do.
+    expect(result).toEqual({
+      code: 0,
+      out: `${JSON.stringify({ accessToken: saved.accessToken, expiresAt: saved.expiresAt })}\n`,
+      err: `${brand.binary}: this token is valid for 60 more minutes, not the 2h asked for with --valid-for: a refresh gives none that lasts longer (--json prints its expiresAt)\n`,
+    })
+    expect(result.err).not.toContain(saved.accessToken)
+    // It does not try again for a longer one.
+    expect(auth.requests().refreshes).toBe(1)
+    // The bare token is as usable, with the same line.
+    const bare = await login(["token", "--valid-for=2h"], { config: auth.config })
+    expect([bare.code, bare.out, bare.err]).toEqual([0, `${(await loadCredentials(auth.config))!.accessToken}\n`, result.err])
+    expect(auth.requests().refreshes).toBe(2)
+    // Exactly what a token lasts is not more than it lasts: a refresh, and nothing to say.
+    leave(auth, 20 * MINUTE)
+    expect((await login(["token", "--valid-for", "1h"], { config: auth.config })).err).toBe("")
+    expect(auth.requests().refreshes).toBe(3)
+  })
+
+  test("a value that is missing, not a duration or not above zero is a usage error, and nothing is asked of the sign-in", async () => {
+    auth = await startFakeAuth()
+    await signIn(auth)
+    leave(auth, 20 * MINUTE)
+    const before = readFileSync(credentialsPath(auth.config), "utf8")
+    const missing = usageError("--valid-for needs a duration, such as 90s, 20m or 1h30m")
+    const notOne = (text: string) => usageError(`--valid-for needs a duration above zero, such as 90s, 20m or 1h30m ("${text}" is not one)`)
+    expect(await login(["token", "--valid-for"], { config: auth.config })).toEqual(missing)
+    expect(await login(["token", "--valid-for", "--json"], { config: auth.config })).toEqual(missing)
+    expect(await login(["token", "--valid-for", "-5m"], { config: auth.config })).toEqual(missing)
+    for (const text of ["soon", "30", "30 m", "1.5h", "0m", "0h0s", ""]) expect(await login(["token", "--json", `--valid-for=${text}`], { config: auth.config })).toEqual(notOne(text))
+    expect(await login(["token", "--valid-for", "half-an-hour", "--json"], { config: auth.config })).toEqual(notOne("half-an-hour"))
+    // A value after a good one is not taken twice, and the option is `token`'s alone.
+    expect(await login(["token", "--valid-for", "30m", "45m"], { config: auth.config })).toEqual(usageError("login token takes no arguments (the address is pasted when asked, never given on the command line)"))
+    for (const command of ["start", "finish", "status", "logout"]) expect(await login([command, "--valid-for", "30m"], { config: auth.config })).toEqual(usageError("unknown option --valid-for"))
+    expect(auth.requests().refreshes).toBe(0)
+    expect(readFileSync(credentialsPath(auth.config), "utf8")).toBe(before)
+  })
+
+  test("a refused refresh, no sign-in and a handed-in token fail as they do without the option", async () => {
+    auth = await startFakeAuth()
+    const signedOut = { code: 1, out: "", err: `${brand.binary}: not signed in, so there is no token to hand on; run \`${brand.binary} login\`\n` }
+    expect(await login(["token", "--json", "--valid-for", "30m"], { config: auth.config })).toEqual(signedOut)
+    const saved = await signIn(auth)
+    // A process on a handed-in token holds nothing to hand on, and touches nothing.
+    leave(auth, 20 * MINUTE)
+    const before = readFileSync(credentialsPath(auth.config), "utf8")
+    const file = join(auth.dir, "handed-in-token")
+    writeFileSync(file, "handed-token-0001\n")
+    expect(await login(["token", "--valid-for", "30m"], { config: auth.config }, { env: { [ACCESS_TOKEN_FILE_ENV]: file } })).toEqual({
+      code: 1,
+      out: "",
+      err: `${brand.binary}: no token to hand on: this process uses the access token handed in through ${ACCESS_TOKEN_FILE_ENV} and holds no sign-in; run \`${brand.binary} login token\` where the sign-in is saved\n`,
+    })
+    expect(auth.requests().refreshes).toBe(0)
+    expect(readFileSync(credentialsPath(auth.config), "utf8")).toBe(before)
+    // The refresh the option asks for is refused: the reason, and no token, not even the saved one that is still good.
+    writeFileSync(credentialsPath(auth.config), JSON.stringify({ ...saved, refreshToken: "refresh-revoked", expiresAt: Date.now() + 20 * MINUTE }))
+    const refused = await login(["token", "--valid-for", "30m"], { config: auth.config })
+    expect(refused).toEqual({ code: 1, out: "", err: `${brand.binary}: sign-in failed: Token request failed (400 invalid_grant): the refresh token was already used or is not known (invalid_grant)\n` })
   })
 })
 
