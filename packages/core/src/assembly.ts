@@ -17,7 +17,7 @@
  */
 import { mkdirSync } from "node:fs"
 import { join } from "node:path"
-import { AUTH_UNREACHABLE, AuthError, HANDED_IN_REJECTED, aboutHandedIn, accessToken as signInToken, dataDir as defaultDataDir, handedInRejected, handedInTokenFile } from "./auth/chatgpt.ts"
+import { AUTH_UNREACHABLE, AuthError, HANDED_IN_REJECTED, aboutHandedIn, accessToken as signInToken, dataDir as defaultDataDir, handedInRejected, handedInTokenFile, handedInTokenNow } from "./auth/chatgpt.ts"
 import { brand } from "./brand.ts"
 import { loadConfig } from "./config/load.ts"
 import { environmentSecrets } from "./engine/approval.ts"
@@ -142,6 +142,29 @@ function onHandedInToken(provider: Provider): Provider {
   }
 }
 
+/**
+ * The values removed from tool output in a process on a handed-in token: `known`, and every token the file `file`
+ * has held when the list was read. The engine is given one list and reads through it each time it redacts (a
+ * result, each piece of a running command's output), so this list looks at the file whenever it is read through:
+ * the token that is in the file at that moment is in it, also one written a moment ago that no model call has read
+ * yet. The look is `handedInTokenNow`, which never throws: a file that cannot be read adds nothing and fails nothing.
+ *
+ * "Read through" is the iteration every redaction starts with (`redact` and `unfinishedSecret` in
+ * `approval/redact.ts`). A reader that only indexes the list sees the tokens found so far.
+ */
+function secretsWithTokenFile(known: readonly string[], file: string): string[] {
+  const secrets = [...known]
+  const values = Array.prototype[Symbol.iterator]
+  Object.defineProperty(secrets, Symbol.iterator, {
+    value: () => {
+      const token = handedInTokenNow(file)
+      if (token !== null && !secrets.includes(token)) secrets.push(token)
+      return values.call(secrets)
+    },
+  })
+  return secrets
+}
+
 /** The command sandbox, made (and the machine probed) the first time something asks about it. */
 function lazySandbox(): CommandSandbox {
   let made: CommandSandbox | null = null
@@ -172,8 +195,9 @@ export function createHarness(options: HarnessOptions = {}): Harness {
   let closing: Promise<void> | null = null
   // A handed-in access token is a secret this process reads from a file, not from its environment, and the file is
   // replaced while it runs: every token read joins the values removed from tool output, a list the engine reads
-  // each time it redacts.
-  const secrets = options.provider === undefined && handedInTokenFile() !== null ? [...(options.engine?.approval?.secrets ?? environmentSecrets(process.env))] : null
+  // each time it redacts, and the list itself looks at the file then (`secretsWithTokenFile`).
+  const tokenFile = options.provider === undefined ? handedInTokenFile() : null
+  const secrets = tokenFile === null ? null : secretsWithTokenFile(options.engine?.approval?.secrets ?? environmentSecrets(process.env), tokenFile)
   const accessToken =
     secrets === null
       ? signInToken

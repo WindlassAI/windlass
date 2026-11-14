@@ -6,6 +6,7 @@
 // This is the reading side: the variable that names the file, and the file's two forms. It is not an API key and
 // not another provider: the token is the access token of a ChatGPT-plan sign-in that another process holds.
 
+import { readFileSync, statSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { resolve } from "node:path"
 import { brand } from "../brand.ts"
@@ -52,6 +53,22 @@ export function aboutHandedIn(message: string): boolean {
 // What can go into an `Authorization` header: no spaces, no control characters.
 const TOKEN = /^[\x21-\x7e]+$/
 
+/** What a token file's text holds: the token and the expiry it states (`null`: none), or why it holds no token. */
+function tokenIn(text: string): { readonly accessToken: string; readonly expiresAt: number | null } | "empty" | "malformed" {
+  if (text === "") return "empty"
+  if (!text.startsWith("{")) return TOKEN.test(text) ? { accessToken: text, expiresAt: null } : "malformed"
+  let value: { accessToken?: unknown; expiresAt?: unknown }
+  try {
+    value = JSON.parse(text)
+  } catch {
+    return "malformed"
+  }
+  const { accessToken, expiresAt } = value
+  // A time a `Date` can hold, so that it can be shown.
+  if (typeof accessToken !== "string" || !TOKEN.test(accessToken) || typeof expiresAt !== "number" || !(Math.abs(expiresAt) <= 8.64e15)) return "malformed"
+  return { accessToken, expiresAt }
+}
+
 /**
  * Reads the file as it is now. It holds the bare token, or the object `login token --json` prints
  * (`{"accessToken": string, "expiresAt": number}`); surrounding whitespace is ignored. Never throws, and no message
@@ -67,18 +84,29 @@ export async function readHandedIn(path: string, now: number = Date.now()): Prom
     const code = (error as NodeJS.ErrnoException).code
     return code === "ENOENT" ? problem("handed_in_missing", `${file} does not exist`) : problem("handed_in_unreadable", `${file} cannot be read${code === undefined ? "" : `: ${code}`}`)
   }
-  if (text === "") return problem("handed_in_empty", `${file} is empty`)
-  const malformed = () => problem("handed_in_malformed", `${file} holds neither an access token nor what \`${brand.binary} login token --json\` prints`)
-  if (!text.startsWith("{")) return TOKEN.test(text) ? { usable: true, accessToken: text, expiresAt: null } : malformed()
-  let value: { accessToken?: unknown; expiresAt?: unknown }
+  const held = tokenIn(text)
+  if (held === "empty") return problem("handed_in_empty", `${file} is empty`)
+  if (held === "malformed") return problem("handed_in_malformed", `${file} holds neither an access token nor what \`${brand.binary} login token --json\` prints`)
+  if (held.expiresAt !== null && held.expiresAt <= now) return problem("handed_in_expired", `The access token handed in through ${ACCESS_TOKEN_FILE_ENV} expired at ${new Date(held.expiresAt).toISOString()}`, held.expiresAt)
+  return { usable: true, ...held }
+}
+
+/** A token file larger than this is not looked into by `handedInTokenNow`: a token is a few thousand bytes. */
+const TOKEN_FILE_MAX_BYTES = 1024 * 1024
+
+/**
+ * The token the file holds at this moment, or `null` when it holds none. For the redaction of tool output, which
+ * must know a token from the moment it is in the file, before any model call has read it: so an expired token
+ * counts (it is no less a secret), the read is synchronous, and nothing is ever thrown. Only a regular file of a
+ * token file's size is read, so that a path that names something else (a pipe, a device) cannot hold a tool call up.
+ */
+export function handedInTokenNow(path: string): string | null {
   try {
-    value = JSON.parse(text)
+    const stat = statSync(path)
+    if (!stat.isFile() || stat.size > TOKEN_FILE_MAX_BYTES) return null
+    const held = tokenIn(readFileSync(path, "utf8").trim())
+    return typeof held === "string" ? null : held.accessToken
   } catch {
-    return malformed()
+    return null
   }
-  const { accessToken, expiresAt } = value
-  // A time a `Date` can hold, so that it can be shown.
-  if (typeof accessToken !== "string" || !TOKEN.test(accessToken) || typeof expiresAt !== "number" || !(Math.abs(expiresAt) <= 8.64e15)) return malformed()
-  if (expiresAt <= now) return problem("handed_in_expired", `The access token handed in through ${ACCESS_TOKEN_FILE_ENV} expired at ${new Date(expiresAt).toISOString()}`, expiresAt)
-  return { usable: true, accessToken, expiresAt }
 }

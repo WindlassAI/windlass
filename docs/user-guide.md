@@ -123,7 +123,7 @@ empty, malformed or expired ([troubleshooting.md](troubleshooting.md) has the me
 handed-in token instead; `login token` refuses, since such a process holds no sign-in to hand on.
 
 The file is treated as the sign-in it stands for: a sandboxed command cannot read it, a tool that reads it asks
-first, and every token read from it is redacted from tool output.
+first, and every token read from it is redacted from tool output, the one in the file at that moment included.
 
 ## Sessions
 
