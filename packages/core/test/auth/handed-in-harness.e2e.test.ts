@@ -9,7 +9,9 @@
  * - Each way the token cannot be used has a code of its own in the failed step's provider error, in the model
  *   list's error and in the sign-in's state, so that a program can tell them apart without reading a message.
  * - The saved sign-in beside it is never read, refreshed or written.
- * - Every token read joins the values removed from tool output, a replaced one included.
+ * - Every token read joins the values removed from tool output, a replaced one included, and so does the token
+ *   in the file at the moment an output is redacted: one written while a tool runs is removed from what that tool
+ *   prints, before any model call has read it.
  * - The file is a credential store to the tools: a read of it asks, and a sandboxed command cannot open it.
  */
 import { afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
@@ -53,6 +55,8 @@ interface Place {
   readonly elsewhere: string[]
   /** What the model answers next, in order. */
   readonly answers: string[]
+  /** Called with the path of each request to the provider, once it has arrived: the token it carries was read before. */
+  onRequest: ((path: string) => void) | null
 }
 
 /**
@@ -84,7 +88,7 @@ function place(token: string, accepts: (token: string) => boolean, answers: read
   const queue = [...answers]
   const sent: Place["sent"] = []
   const elsewhere: string[] = []
-  const at: Place = { harness: createHarness({ log: () => {}, engine: { loadConfig: null, discover: () => [] } }), workspace, file, data, sent, elsewhere, answers: queue }
+  const at: Place = { harness: createHarness({ log: () => {}, engine: { loadConfig: null, discover: () => [] } }), workspace, file, data, sent, elsewhere, answers: queue, onRequest: null }
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input instanceof Request ? input.url : input)
     if (!url.startsWith(`${RESPONSES_BASE_URL}/`)) {
@@ -94,6 +98,7 @@ function place(token: string, accepts: (token: string) => boolean, answers: read
     const path = url.slice(RESPONSES_BASE_URL.length)
     const bearer = new Headers(init?.headers).get("authorization")?.replace(/^Bearer /, "") ?? null
     sent.push({ path, token: bearer })
+    at.onRequest?.(path)
     if (bearer === null || !accepts(bearer)) {
       onRejected(at, path)
       return rejection()
@@ -269,5 +274,56 @@ describe("a handed-in token in tool output", () => {
     const second = await turn(session, "Read it again.")
     expect(outputs(second).join("\n")).toContain("token=[REDACTED:env]")
     expect(JSON.stringify(second)).not.toContain("handed-token-0002")
+  })
+
+  test("a token written to the file after the model call that asked for a tool, which no model call has read, is removed from that tool's output", async () => {
+    const at = place("handed-token-0001", () => true, [reads("copy.txt"), says("Read.")])
+    const outputs = (events: readonly { type: string; data: unknown }[]) => events.filter((item) => item.type === "tool.settled").map((item) => JSON.stringify(item.data))
+    writeFileSync(join(at.workspace, "copy.txt"), "token=handed-token-0001\n")
+    // Whoever handed the token in replaces it while the model is answering: the call that asks for the read was sent
+    // with the old token, and the read runs before any call is made with the new one.
+    at.onRequest = (path) => {
+      if (path !== "/responses" || responses(at).length !== 1) return
+      writeFileSync(at.file, JSON.stringify({ accessToken: "handed-token-0002", expiresAt: Date.now() + 600_000 }))
+      writeFileSync(join(at.workspace, "copy.txt"), "old=handed-token-0001 new=handed-token-0002\n")
+    }
+    const session = start(at)
+    const events = await turn(session, "Read copy.txt.")
+    expect(events.at(-1)?.type).toBe("execution.succeeded")
+    expect(outputs(events).join("\n")).toContain("old=[REDACTED:env] new=[REDACTED:env]")
+    expect(JSON.stringify(session.readEvents())).not.toContain("handed-token-000")
+    // A file that cannot be read when a tool's output is redacted fails nothing: the tokens known so far are removed.
+    rmSync(at.file)
+    writeFileSync(join(at.workspace, "copy.txt"), "old=handed-token-0001 new=handed-token-0002\n")
+    at.answers.push(reads("copy.txt"), says("Read again."))
+    const responsesBefore = responses(at).length
+    const again = await turn(session, "Read it again.")
+    // The file is gone, so the next model call has no token: the turn fails there, and nothing leaked on the way.
+    expect(again.at(-1)?.type).toBe("execution.failed")
+    expect(responses(at).length).toBe(responsesBefore)
+    expect(JSON.stringify(session.readEvents())).not.toContain("handed-token-000")
+  })
+
+  test.skipIf(skipReason !== null)("a token written to the file while a command runs, and printed by that command, is removed from what the command shows and from its result", async () => {
+    // The command waits for a file, then prints a copy of the token: the token file itself it cannot open.
+    const at = place("handed-token-0001", () => true, [runs("until [ -e gate ]; do sleep 0.05; done; cat copy.txt; echo printed"), says("Ran.")])
+    const session = start(at)
+    const shown: string[] = []
+    session.subscribe((item) => void shown.push(JSON.stringify(item)))
+    session.send("Print copy.txt once the gate is there.")
+    await waitFor(() => session.readEvents().some((item) => item.type === "tool.started"), { timeoutMs: 20_000, intervalMs: 5, what: "the command to start" })
+    // The command is running. The token is replaced now, and only then does the command get to print it.
+    writeFileSync(at.file, JSON.stringify({ accessToken: "handed-token-0002", expiresAt: Date.now() + 600_000 }))
+    writeFileSync(join(at.workspace, "copy.txt"), "new=handed-token-0002\n")
+    writeFileSync(join(at.workspace, "gate"), "")
+    await waitFor(() => ["execution.succeeded", "execution.failed"].includes(session.readEvents().at(-1)?.type ?? ""), { timeoutMs: 20_000, intervalMs: 5, what: "the turn to end" })
+    const settled = session.readEvents().filter((item) => item.type === "tool.settled").map((item) => JSON.stringify(item.data))
+    expect(settled).toHaveLength(1)
+    expect(settled[0]).toContain("new=[REDACTED:env]")
+    expect(settled[0]).toContain("printed")
+    // Not in the log, and not in anything a client was shown while the command ran.
+    expect(JSON.stringify(session.readEvents())).not.toContain("handed-token-0002")
+    expect(shown.join("\n")).not.toContain("handed-token-0002")
+    expect(shown.join("\n")).toContain("[REDACTED:env]")
   })
 })

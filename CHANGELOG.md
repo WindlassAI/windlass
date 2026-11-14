@@ -36,6 +36,11 @@ All notable changes to Windlass are recorded here. The format follows
   where it printed a stack trace. A turn that needs a refresh at such a moment is tried again and fails as a
   connection problem, not as "Signed out".
 
+- A handed-in access token is redacted from tool output from the moment it is in the file
+  `WINDLASS_ACCESS_TOKEN_FILE` names: the file is looked at each time an output is redacted. Before, a token
+  written while a command ran was unknown to the redaction until the next model call, and a command that printed it
+  put it in the session.
+
 ## [0.1.1] - 2026-11-13
 
 ### Changed

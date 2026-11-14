@@ -9,7 +9,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, w
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { brand } from "../../src/brand.ts"
-import { ACCESS_TOKEN_FILE_ENV, type AuthConfig, AuthError, type Credentials, HAND_IN_ADVICE, aboutHandedIn, accessToken, handedInTokenFile, readHandedIn, savedAccessToken } from "../../src/auth/chatgpt.ts"
+import { ACCESS_TOKEN_FILE_ENV, type AuthConfig, AuthError, type Credentials, HAND_IN_ADVICE, aboutHandedIn, accessToken, handedInTokenFile, handedInTokenNow, readHandedIn, savedAccessToken } from "../../src/auth/chatgpt.ts"
 import { FAILURE_TEXT, failureText } from "../../src/engine/constants.ts"
 import { makeProviderError } from "../../src/provider/error.ts"
 
@@ -88,6 +88,28 @@ describe("the file", () => {
     // Through `accessToken` the time is the clock's.
     writeFileSync(at.file, `\n {\n  "accessToken": "handed-token-0004",\n  "expiresAt": ${Date.now() + 600_000}\n }\n`)
     expect(await accessToken(at.config())).toBe("handed-token-0004")
+  })
+
+  test("the token in it at this moment, for the redaction of tool output: either form, an expired one too, and nothing where there is none", () => {
+    const at = place()
+    writeFileSync(at.file, "\n handed-token-0001\n")
+    expect(handedInTokenNow(at.file)).toBe("handed-token-0001")
+    writeFileSync(at.file, JSON.stringify({ accessToken: "handed-token-0002", expiresAt: Date.now() + 60_000 }))
+    expect(handedInTokenNow(at.file)).toBe("handed-token-0002")
+    // Expired, it is no less a secret.
+    writeFileSync(at.file, JSON.stringify({ accessToken: "handed-token-0003", expiresAt: Date.now() - 60_000 }))
+    expect(handedInTokenNow(at.file)).toBe("handed-token-0003")
+    // No token, and never an error: empty, malformed, missing, not a file, too large to be a token file.
+    for (const text of ["", " \n", "two words", "{", '{"accessToken": "handed-token-0004"}']) {
+      writeFileSync(at.file, text)
+      expect(handedInTokenNow(at.file)).toBeNull()
+    }
+    writeFileSync(at.file, "x".repeat(1024 * 1024 + 1))
+    expect(handedInTokenNow(at.file)).toBeNull()
+    rmSync(at.file)
+    expect(handedInTokenNow(at.file)).toBeNull()
+    mkdirSync(at.file)
+    expect(handedInTokenNow(at.file)).toBeNull()
   })
 
   test("is read on every call, so whoever handed the token in can replace it while the process runs", async () => {

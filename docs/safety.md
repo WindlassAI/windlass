@@ -110,7 +110,9 @@ token lasts, and it is protected like the saved one, wherever it is, the working
 - to the file tools it is a credential store: reading it asks, once only, and editing it is refused;
 - the sandbox cannot be widened to it;
 - every token this process has read from the file is redacted from tool output (`[REDACTED:env]`), also after the
-  file was replaced, and so is the file's path.
+  file was replaced, and so is the file's path. The file is looked at again each time an output is redacted, so a
+  token written to it while a command runs is redacted from what that command prints, before any model call has
+  used it.
 
 What this does not cover:
 
@@ -121,8 +123,10 @@ What this does not cover:
 - A command that runs outside the sandbox: in `full`, on a machine without a sandbox, or one you allowed to. It
   reads the file with your rights, as it reads any file of yours.
 - A file that does not exist yet when a command starts (Linux): there is nothing to cover.
-- A token written to the file that this process has not read yet (it reads the file at each model call): that one is
-  redacted only if it has a format the redaction knows, such as a JWT.
+- A token that was in the file only between two looks at it (the file is read at each model call and each time an
+  output is redacted), and that something prints later: that one is redacted only if it has a format the redaction
+  knows, such as a JWT. So is a token in a file too large to be a token file (over 1 MiB), or in something that is
+  not a regular file, until a model call has read it.
 
 ## How the agent gets more access
 
@@ -200,7 +204,7 @@ Before a tool's output is stored or shown to the model, known secret formats are
 `[REDACTED:github-token]`: private key blocks, AWS, GitHub, GitLab, Slack, Stripe, Google, npm, Hugging Face,
 Anthropic and OpenAI keys, JWTs, `Bearer` and `Basic` credentials, passwords in URLs, and the values of your
 credential-looking environment variables (`[REDACTED:env]`), with them every access token read from the file
-`WINDLASS_ACCESS_TOKEN_FILE` names. What is stored is the redacted text, so a session that is replayed or resumed
+`WINDLASS_ACCESS_TOKEN_FILE` names, the one in it at the moment of the redaction included. What is stored is the redacted text, so a session that is replayed or resumed
 shows the same.
 
 Editing still works: when the agent read a file with a secret in it and then edits or rewrites that file, a

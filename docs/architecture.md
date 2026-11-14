@@ -433,7 +433,10 @@ is a new version with a decoder for the old one.
   string of the structured `display` data), and to a check report. A check's own output is redacted as it
   arrives, like a command's (`RunCheckOptions.redact`): its progress and the file that keeps it in full hold
   the placeholders, and that file is named by the hash of the redacted output. The values are the engine's `secrets`: by
-  default the values of the process's credential-looking environment variables, read once. The file tools are
+  default the values of the process's credential-looking environment variables, read once. In a process on a
+  handed-in access token the assembly's list also holds every token the token file has held, and looks at the file
+  each time a redaction reads through it (`secretsWithTokenFile` in `assembly.ts`), so a token is known from the
+  moment it is in the file. The file tools are
   handed the same redaction (`ToolContext.redact`), so an `edit` whose `old_string` holds a placeholder is matched
   against the file as it was shown and applied to the real text, and a placeholder in `new_string`, or in the
   content of a `write` of the same file, is written as the secret it stands for (`tools/redacted.ts`).

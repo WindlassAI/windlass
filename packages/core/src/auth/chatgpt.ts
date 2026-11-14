@@ -14,7 +14,7 @@ import { dirname, join } from "node:path"
 import { brand } from "../brand.ts"
 import { handedInTokenFile, readHandedIn } from "./handed-in.ts"
 
-export { ACCESS_TOKEN_FILE_ENV, HANDED_IN_REJECTED, HAND_IN_ADVICE, type HandedIn, type HandedInCode, type HandedInProblem, aboutHandedIn, handedInRejected, handedInTokenFile, readHandedIn } from "./handed-in.ts"
+export { ACCESS_TOKEN_FILE_ENV, HANDED_IN_REJECTED, HAND_IN_ADVICE, type HandedIn, type HandedInCode, type HandedInProblem, aboutHandedIn, handedInRejected, handedInTokenFile, handedInTokenNow, readHandedIn } from "./handed-in.ts"
 
 const ISSUER = "https://auth.openai.com"
 const AUTHORIZE_URL = `${ISSUER}/api/accounts/authorize`
