@@ -27,6 +27,7 @@ import { brand } from "../../packages/core/src/brand.ts"
 import { TEST_CONTEXT_WINDOW_ENV } from "../../packages/core/src/assembly.ts"
 import { parseConfigFile } from "../../packages/core/src/config/schema.ts"
 import { helpText, parseArgs } from "../../packages/cli/src/args.ts"
+import { durationMs } from "../../packages/cli/src/features.ts"
 import { BUILTIN_COMMANDS } from "../../packages/cli/src/slash.ts"
 import { forkUsage, replayUsage } from "../../packages/cli/src/subcommands.ts"
 import { COMMANDS } from "../../packages/tui/src/commands.ts"
@@ -64,7 +65,7 @@ const installFlags = [...readFileSync(join(ROOT, "scripts/install.sh"), "utf8").
 const buildFlags = [...readFileSync(join(ROOT, "scripts/build.ts"), "utf8").matchAll(/arg === "(--[a-z-]+)"/g)].map((match) => match[1]!)
 /** The options of the main command and of the `fork` and `replay` subcommands. */
 const helpFlags = [helpText(), forkUsage(), replayUsage()].flatMap((usage) => [...usage.matchAll(/(?<![\w-])(--[a-z][a-z-]*)/g)].map((match) => match[1]!))
-const loginFlags = ["--no-browser", "--json"]
+const loginFlags = ["--no-browser", "--json", "--valid-for"]
 /** The options of `curl` and `shasum` in the commands that download a release and check it. */
 const downloadFlags = ["--remote-name-all", "--ignore-missing"]
 /** npm's option that leaves out the executable's package, which the pages warn about. */
@@ -88,7 +89,13 @@ describe("commands in the documentation", () => {
         expect(parsed.kind, where).not.toBe("error")
         if (parsed.kind === "login") {
           expect(["start", "finish", "status", "token", "logout"], where).toContain(parsed.argv[0] ?? "start")
-          for (const arg of parsed.argv.slice(1)) expect(loginFlags, where).toContain(arg)
+          // `--valid-for` takes a duration, written as the program reads one; nothing else has a value.
+          const given = parsed.argv.slice(1)
+          for (const [index, arg] of given.entries()) {
+            if (given[index - 1] === "--valid-for") expect(durationMs(arg), where).not.toBeNull()
+            else expect(loginFlags, where).toContain(arg)
+          }
+          if (given.includes("--valid-for")) expect(parsed.argv[0], where).toBe("token")
         }
         continue
       }

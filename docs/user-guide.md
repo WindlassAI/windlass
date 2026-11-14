@@ -73,6 +73,21 @@ sign-in it prints a message on standard error and exits with code 1. **The outpu
 use your plan until it expires. No other command prints a token; keep this one's output out of logs, and never put
 it on a command line.
 
+To be handed a token with more time left than that, say how much:
+
+```sh
+windlass login token --json --valid-for 30m
+```
+
+`--valid-for <duration>` asks for a token that is good for at least that long from now. A duration is a number and
+a unit, `s`, `m`, `h` or `d`, or several of them: `90s`, `20m`, `1h30m`. When the saved token has less than that
+left, the sign-in is refreshed first, under the same lock, and the new token is printed; when it has more, the
+saved token is printed and nothing is refreshed, so asking often costs nothing. A refresh cannot give a token that
+lasts longer than about an hour. When more than that is asked (`--valid-for 2h`), the refreshed token is printed
+all the same, one line on standard error says how long it is good for, and every such call refreshes again: read
+`expiresAt` rather than counting on the time you asked for. A value that is not a duration, or is zero, is a usage
+error (exit code 2).
+
 Where the token is used, name the file it is in:
 
 ```sh
@@ -85,9 +100,15 @@ refreshes or writes `auth.json`. The file holds what `login token --json` printe
 around either is ignored. With the JSON form `windlass` knows when the token expires: `login status` shows the time left, and an
 expired token is refused before anything is sent.
 
-Keeping the token fresh is the job of whoever hands it in: run `login token --json` again where the sign-in is
-saved, some minutes before `expiresAt`, and replace the file. `windlass` uses the new token from its next model
-call, without a restart, and when the provider rejects a token it reads the file once more before the turn fails.
+Keeping the token fresh is the job of whoever hands it in: on a timer, run `login token --json --valid-for
+<duration>` where the sign-in is saved and replace the file with what it prints. Choose the two so that the token
+in the file never runs out between two runs: a duration longer than the timer's period by the time a model call
+may still need, and well under the hour a token lasts. Every ten minutes with `--valid-for 30m`, for example, the
+file always holds a token that is good for twenty minutes or more; most runs print the token the file already has,
+and only a run that finds less than half an hour left refreshes. Without the option a new token is printed only in
+the last five minutes of the old one, so a run would have to fall inside that window every hour. `windlass` uses
+the new token from its next model call, without a restart, and when the provider rejects a token it reads the file
+once more before the turn fails.
 Write the new token to a file beside the old one and rename it into place, so that a half-written file is never
 read, and keep the file where sandboxed commands see nothing at all, such as the data directory in the example
 ([safety.md](safety.md) says why).

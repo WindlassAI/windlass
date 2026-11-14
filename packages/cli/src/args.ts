@@ -176,7 +176,7 @@ function usageRows(b: string): string {
     [`${b} login [start]`, ["sign in with ChatGPT: opens a browser when there is one,", "otherwise prints the address and asks for the page you", "ended on (pasted, not shown)"]],
     [`${b} login finish`, ["finish a sign-in started elsewhere from the pasted address"]],
     [`${b} login status`, ["who is signed in and until when (never the tokens)"]],
-    [`${b} login token [--json]`, ["print an access token of the saved sign-in (a secret) for", `another ${brand.name} that cannot share this data directory:`, `it reads the token from the file ${ACCESS_TOKEN_FILE_ENV}`, "names, and this one does all the refreshing"]],
+    [`${b} login token [--json]`, ["print an access token of the saved sign-in (a secret) for", `another ${brand.name} that cannot share this data directory:`, `it reads the token from the file ${ACCESS_TOKEN_FILE_ENV}`, "names, and this one does all the refreshing; --valid-for", "<duration> asks for one good for at least that long"]],
     [`${b} login logout`, ["forget the saved sign-in on this machine"]],
     [`${b} tui [options]`, [`the full-screen terminal interface (${brand.envPrefix}TUI=1 makes it`, `what \`${b}\` with no prompt starts)`]],
     [`${b} fork [<session>]`, ["a new session with the conversation so far, to try another", "way without changing the original; --turn <n> forks after", `turn n (\`${b} fork --help\`)`]],

@@ -14,6 +14,9 @@ All notable changes to Windlass are recorded here. The format follows
   processes that cannot share a data directory, such as one per sandbox, where a copied `auth.json` would sign the
   other copies out at its first refresh: the one that holds the sign-in does all the refreshing. The file is hidden
   from sandboxed commands like the saved sign-in, and the tokens in it are redacted from tool output.
+  `windlass login token --valid-for <duration>` (`30m`, `1h30m`) prints a token that is good for at least that long,
+  refreshing the sign-in first when the saved token has less left: run it on a timer to keep such a file fresh,
+  instead of having to ask in the last five minutes of each token.
 
 ## [0.1.1] - 2026-11-13
 
