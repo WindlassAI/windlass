@@ -112,7 +112,9 @@ token lasts, and it is protected like the saved one, wherever it is, the working
 - every token this process has read from the file is redacted from tool output (`[REDACTED:env]`), also after the
   file was replaced, and so is the file's path. The file is looked at again each time an output is redacted, so a
   token written to it while a command runs is redacted from what that command prints, before any model call has
-  used it.
+  used it. The path is redacted from tool output only, so that the model and its commands are not told where the
+  file is: it is not a secret, and what you are told about the file names it (`login status`, the message of a
+  sign-in failure, and with it the failed step's error in the session's log).
 
 What this does not cover:
 

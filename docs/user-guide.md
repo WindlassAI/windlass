@@ -566,7 +566,9 @@ work was not merged keeps its `windlass/subagent-<id>` branch.
 
 Variables whose names look like credentials (`*TOKEN*`, `*KEY*`, `AWS_*`, ...) are not passed to sandboxed
 commands, and their values are redacted from tool output. `WINDLASS_ACCESS_TOKEN_FILE` is one of them: commands are
-not told where the file is, and its path is redacted like the tokens in it.
+not told where the file is, and its path is redacted from tool output like the tokens in it. The path is not a
+secret, and what `windlass` tells you about the file names it, so that you can find it: `login status`, the message
+of a sign-in failure, and with it the failed step's error in the session's log.
 
 For tests only, never for real use:
 
