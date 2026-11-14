@@ -19,8 +19,19 @@ export const HAND_IN_ADVICE = `Hand in a new token: write the output of \`${bran
 /** A handed-in token that the provider rejected; `detail` is the provider's answer. */
 export const handedInRejected = (detail: string) => `The access token handed in through ${ACCESS_TOKEN_FILE_ENV} was rejected (${detail}). ${HAND_IN_ADVICE}`
 
-/** Why a handed-in token cannot be used. Stable: a caller may tell them apart. */
+/** Why the file gives no token that can be used. Stable: a caller may tell them apart. */
 export type HandedInProblem = "handed_in_missing" | "handed_in_unreadable" | "handed_in_empty" | "handed_in_malformed" | "handed_in_expired"
+
+/** The file gave a token and the provider turned it down, also after the file was read once more. Stable, like the file's own codes. */
+export const HANDED_IN_REJECTED = "handed_in_rejected"
+
+/**
+ * Every code a failure about a handed-in token carries, where a program can read it: the `code` of a failed step's
+ * provider error, of a model list that could not be had, and of a sign-in that is not usable. `handed_in_expired`
+ * and `HANDED_IN_REJECTED` are about the token (a new sign-in's token is needed); the others are about the file
+ * (it was not delivered as it should be).
+ */
+export type HandedInCode = HandedInProblem | typeof HANDED_IN_REJECTED
 
 /** What the file gives. `expiresAt` (milliseconds since the epoch) is `null` when the file does not state one. */
 export type HandedIn =

@@ -190,6 +190,8 @@ describe("in memory", () => {
     )
     expect(missing).toBeInstanceOf(ClientError)
     expect((missing as ClientError).reason).toBe("session_not_found")
+    // A refusal the server gives no code for has none.
+    expect((missing as ClientError).code).toBeNull()
   })
 
   test("a session opened again replays its history, marked, with each turn's ending", async () => {
@@ -341,6 +343,25 @@ describe("as a child process", () => {
     const reopened = await fresh.openSession(session.id, where.workspace, { replay: true })
     const items = await collect(reopened, turnEnded)
     expect(items.map(kind)).toContain("execution.succeeded")
+  })
+
+  test("a refusal carries the server's code beside its reason: which sign-in failure it was", async () => {
+    const where = place()
+    const unusable = "The access token handed in expired at 2026-11-12T09:00:00.000Z (/run/handed-in/token)."
+    const link = await HarnessConnection.start({
+      transport: {
+        kind: "memory",
+        harness: { dataDir: where.dataDir, provider: new FakeProvider([]), models: async () => MODELS, defaultModel: "test-model", log: () => {}, signIn: async () => ({ signedIn: false, message: unusable, code: "handed_in_expired" }), engine: { discover: () => [], loadConfig: null } },
+      },
+      clientInfo: { name: "client-test", title: "client test", version: "0.0.0" },
+    })
+    links.push(link)
+    const refused = await link.newSession(where.workspace).then(
+      () => null,
+      (error: unknown) => error,
+    )
+    expect(refused).toBeInstanceOf(ClientError)
+    expect(refused).toMatchObject({ reason: "auth_required", code: "handed_in_expired", message: unusable })
   })
 
   test("a command that is not the server: refused with a sentence and reason closed", async () => {

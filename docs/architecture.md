@@ -352,6 +352,9 @@ is a new version with a decoder for the old one.
   (nothing arrived within the idle timeout). A token that could not be had fails the call before anything is sent:
   as `auth`, or as `transport` (`connection`, `code: "network_error"`) when the sign-in service could not be
   reached for a refresh, which says nothing about the sign-in and is tried again like any connection problem.
+  Such an error's `code` is the sign-in's own (`signed_out`, `invalid_grant`, `handed_in_expired`, ...), and a
+  handed-in token the provider turned down has `handed_in_rejected`: stable codes that the ACP server passes on in
+  its error data. Any other `code` is the provider's, for diagnosis.
 - Provider-owned payloads (encrypted reasoning, item phase) travel as opaque `providerData` and are replayed verbatim.
 - `Usage` keeps what the provider says it wrote to its prompt cache (`cacheWriteTokens`, and the part with the
   12-hour lifetime) exactly when the provider reported the figure, zero included; a missing figure is not zero.

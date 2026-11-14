@@ -17,12 +17,13 @@
  */
 import { mkdirSync } from "node:fs"
 import { join } from "node:path"
-import { AUTH_UNREACHABLE, AuthError, aboutHandedIn, accessToken as signInToken, dataDir as defaultDataDir, handedInRejected, handedInTokenFile } from "./auth/chatgpt.ts"
+import { AUTH_UNREACHABLE, AuthError, HANDED_IN_REJECTED, aboutHandedIn, accessToken as signInToken, dataDir as defaultDataDir, handedInRejected, handedInTokenFile } from "./auth/chatgpt.ts"
 import { brand } from "./brand.ts"
 import { loadConfig } from "./config/load.ts"
 import { environmentSecrets } from "./engine/approval.ts"
 import { type Engine, type EngineOptions, createEngine } from "./engine/engine.ts"
 import type { SessionSettings } from "./event/durable.ts"
+import type { ProviderError } from "./provider/error.ts"
 import { ModelListError, OpenAIResponsesProvider, listModels } from "./provider/openai-responses.ts"
 import type { Provider } from "./provider/provider.ts"
 import { type CommandSandbox, createCommandSandbox } from "./sandbox/command.ts"
@@ -66,7 +67,11 @@ export interface ModelEntry {
   readonly contextWindow: number | null
 }
 
-export type SignInState = { readonly signedIn: true } | { readonly signedIn: false; readonly message: string }
+/**
+ * `code`, when the sign-in is not usable: why, as the sign-in itself names it (`AuthError.code`: `signed_out`,
+ * `invalid_grant`, or one of the codes of a handed-in token, `HandedInCode`), for a program to act on.
+ */
+export type SignInState = { readonly signedIn: true } | { readonly signedIn: false; readonly message: string; readonly code?: string }
 
 export interface HarnessOptions {
   /** Defaults to `<data home>/<brand.directory>`, where the sign-in is kept too. */
@@ -115,6 +120,26 @@ export interface Harness {
    */
   readonly close: () => Promise<void>
   readonly closed: boolean
+}
+
+/**
+ * A sign-in failure of a process on a handed-in token, as the provider answered it: the token the file gave was
+ * turned down. It says so itself, in its message and in its code (`HANDED_IN_REJECTED`), with the provider's own
+ * answer inside the message. A failure the file gave (it names the variable, and has its own code) is left as it is.
+ */
+function rejectedHandedIn(error: ProviderError): ProviderError {
+  if (error.kind !== "auth" || aboutHandedIn(error.message)) return error
+  return { ...error, code: HANDED_IN_REJECTED, message: handedInRejected(error.code === null ? error.message : `${error.message}, ${error.code}`) }
+}
+
+/** `provider` for a process on a handed-in token: a rejection of the token is named as one (`rejectedHandedIn`). */
+function onHandedInToken(provider: Provider): Provider {
+  return {
+    id: provider.id,
+    stream: async function* (request, signal) {
+      for await (const event of provider.stream(request, signal)) yield event.type === "error" ? { ...event, error: rejectedHandedIn(event.error) } : event
+    },
+  }
 }
 
 /** The command sandbox, made (and the machine probed) the first time something asks about it. */
@@ -178,8 +203,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
       const real = options.provider === undefined ? await providerWindow(model) : ((await options.engine?.contextWindow?.(model)) ?? null)
       return lowered === null ? real : real === null ? lowered : Math.min(real, lowered)
     }
-    const provider =
-      options.provider ??
+    const signedIn = () =>
       new OpenAIResponsesProvider({
         accessToken,
         readBlob: (ref) => {
@@ -188,6 +212,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
           return blob.bytes
         },
       })
+    const provider = options.provider ?? (secrets === null ? signedIn() : onHandedInToken(signedIn()))
     const engine = createEngine({
       ...(options.provider === undefined
         ? {
@@ -265,7 +290,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
         // The sign-in service could not be reached for a refresh: the sign-in is saved, and nothing says it is gone.
         // A model call then fails as the connection problem it is, and is tried again like one.
         if (error instanceof AuthError && error.code === AUTH_UNREACHABLE) return { signedIn: true }
-        if (error instanceof AuthError) return { signedIn: false, message: error.message }
+        if (error instanceof AuthError) return { signedIn: false, message: error.message, code: error.code }
         throw error
       }
     },
@@ -274,8 +299,8 @@ export function createHarness(options: HarnessOptions = {}): Harness {
       if (options.provider !== undefined) return []
       const models = await listModels({ accessToken, ...(signal === undefined ? {} : { signal }) }).catch((error: unknown) => {
         // A handed-in token the provider rejected: the listing says so, and not to sign in here.
-        if (secrets === null || !(error instanceof ModelListError) || error.error.kind !== "auth" || aboutHandedIn(error.message)) throw error
-        throw new ModelListError({ ...error.error, message: handedInRejected(error.message) })
+        if (secrets === null || !(error instanceof ModelListError)) throw error
+        throw new ModelListError(rejectedHandedIn(error.error))
       })
       return models.map((model) => ({
         id: model.slug,

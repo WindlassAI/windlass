@@ -336,6 +336,15 @@ export interface ErrorData {
   readonly message?: string
   /** `execution_failed`: the provider's error class, when there was one. */
   readonly providerError?: string
+  /**
+   * `auth_required`, `execution_failed`, `model_list_failed`: the code of what failed, when it has one. For a
+   * sign-in that cannot be used it is the sign-in's own, which a client may act on: `signed_out`, `invalid_grant`,
+   * and with a handed-in access token `handed_in_missing`, `handed_in_unreadable`, `handed_in_empty`,
+   * `handed_in_malformed` (the file was not delivered as it should be), `handed_in_expired` and
+   * `handed_in_rejected` (the token is no longer good). `network_error`: the sign-in service could not be reached
+   * for a refresh. Any other value is the provider's own code for its answer, for diagnosis only.
+   */
+  readonly code?: string
 }
 
 /** How a turn ended: `<prefix>/turn`, and the `_meta[<ns>]` of the `session/prompt` response. */

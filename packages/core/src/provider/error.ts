@@ -50,7 +50,11 @@ const detail = {
   message: string,
   /** HTTP status when the failure was an HTTP response. */
   status: nullable(integer(100)),
-  /** The provider's own error code or type, kept for diagnosis only. */
+  /**
+   * The provider's own error code or type, kept for diagnosis only. When no access token could be had, so that
+   * nothing was sent, it is the sign-in's code instead (`AuthError.code`), and for a handed-in token the provider
+   * turned down it is `handed_in_rejected`: those are stable, and a program may act on them.
+   */
   code: nullable(string),
   /** Minimum delay before the next attempt (or until the usage limit resets), when the provider said. */
   retryAfterMs: nullable(integer(0)),

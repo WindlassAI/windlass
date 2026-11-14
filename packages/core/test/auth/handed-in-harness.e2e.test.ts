@@ -6,18 +6,21 @@
  * - A rejected token (401) is looked up once more, which reads the file again: replaced in the meantime, the turn
  *   goes on with the new one. Still rejected, the turn fails saying that the handed-in token was rejected, and
  *   names the variable, instead of telling the user to sign in again on this machine.
+ * - Each way the token cannot be used has a code of its own in the failed step's provider error, in the model
+ *   list's error and in the sign-in's state, so that a program can tell them apart without reading a message.
  * - The saved sign-in beside it is never read, refreshed or written.
  * - Every token read joins the values removed from tool output, a replaced one included.
  * - The file is a credential store to the tools: a read of it asks, and a sandboxed command cannot open it.
  */
 import { afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
-import { mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { type Harness, createHarness } from "../../src/assembly.ts"
-import { ACCESS_TOKEN_FILE_ENV, type Credentials, HAND_IN_ADVICE } from "../../src/auth/chatgpt.ts"
+import { ACCESS_TOKEN_FILE_ENV, type Credentials, HANDED_IN_REJECTED, HAND_IN_ADVICE, type HandedInCode } from "../../src/auth/chatgpt.ts"
 import { brand } from "../../src/brand.ts"
 import { FAILURE_TEXT } from "../../src/engine/constants.ts"
 import type { EngineSession } from "../../src/engine/engine.ts"
+import type { ProviderError } from "../../src/provider/error.ts"
 import { ModelListError, RESPONSES_BASE_URL } from "../../src/provider/openai-responses.ts"
 import { removeTempDirs, skipReason, tempDir } from "../sandbox/helpers.ts"
 import { E2E_TIMEOUT_MS, waitFor } from "../../src/testing/wait.ts"
@@ -56,7 +59,7 @@ interface Place {
  * The real harness with its access token handed in through a file, a saved sign-in in its data directory that is due
  * for a refresh, and the provider answered in-process: 401 unless `accepts` the token, else the next of `answers`.
  */
-function place(token: string, accepts: (token: string) => boolean, answers: readonly string[], onRejected: (at: Place, path: string) => void = () => {}): Place {
+function place(token: string, accepts: (token: string) => boolean, answers: readonly string[], onRejected: (at: Place, path: string) => void = () => {}, rejection: () => Response = () => Response.json({ detail: "Unauthorized" }, { status: 401 })): Place {
   // Not under /tmp where that can be helped: there a session's tools and commands see its own temp directory.
   const root = realpathSync(tempDir("handed-in"))
   const data = join(root, "data", brand.directory)
@@ -93,7 +96,7 @@ function place(token: string, accepts: (token: string) => boolean, answers: read
     sent.push({ path, token: bearer })
     if (bearer === null || !accepts(bearer)) {
       onRejected(at, path)
-      return Response.json({ detail: "Unauthorized" }, { status: 401 })
+      return rejection()
     }
     if (path === "/models") return Response.json({ models: [{ slug: MODEL, display_name: "Test", visibility: "list", context_window: 200_000 }] })
     return new Response(queue.shift() ?? says("(nothing left to say)"), { headers: { "content-type": "text/event-stream" } })
@@ -108,6 +111,12 @@ async function turn(session: EngineSession, text: string) {
   session.send(text)
   await waitFor(() => ["execution.succeeded", "execution.failed"].includes(session.readEvents().at(-1)?.type ?? ""), { timeoutMs: 20_000, intervalMs: 5, what: "the turn to end", describe: () => session.readEvents().map((item) => item.type).join(", ") })
   return session.readEvents().slice(from)
+}
+
+/** The provider error of the turn's failed step. */
+const stepError = (events: readonly { readonly type: string; readonly data: unknown }[]) => {
+  const failed = events.find((item) => item.type === "step.failed")?.data as { error: { kind: string; error?: ProviderError } } | undefined
+  return failed?.error.kind === "provider" ? failed.error.error : undefined
 }
 
 const start = (at: Place) => at.harness.engine.createSession({ cwd: at.workspace, settings: { model: MODEL, reasoningEffort: null } })
@@ -133,6 +142,10 @@ describe("a handed-in token the provider rejects", () => {
     expect(responses(at)).toEqual(["handed-token-old", "handed-token-old"])
     const failed = events.at(-1)
     expect(failed).toMatchObject({ type: "execution.failed", data: { message: FAILURE_TEXT.handedInRejected } })
+    // The failed step says which failure it was, by a code and in words: the provider turned the token down.
+    const rejected = `The access token handed in through ${ACCESS_TOKEN_FILE_ENV} was rejected (HTTP 401: Unauthorized). ${HAND_IN_ADVICE}`
+    expect(stepError(events)).toMatchObject({ kind: "auth", retryable: false, status: 401, code: HANDED_IN_REJECTED, message: rejected })
+    expect(HANDED_IN_REJECTED).toBe("handed_in_rejected")
     expect(FAILURE_TEXT.handedInRejected).toContain(`handed in through ${ACCESS_TOKEN_FILE_ENV} was rejected`)
     expect(FAILURE_TEXT.handedInRejected).not.toContain("sign in again")
     // The models cannot be listed either, and the listing says the same.
@@ -141,13 +154,21 @@ describe("a handed-in token the provider rejects", () => {
       (error: unknown) => error,
     )
     expect(listing).toBeInstanceOf(ModelListError)
-    expect((listing as ModelListError).error).toMatchObject({ kind: "auth", status: 401, message: `The access token handed in through ${ACCESS_TOKEN_FILE_ENV} was rejected (HTTP 401: Unauthorized). ${HAND_IN_ADVICE}` })
+    expect((listing as ModelListError).error).toMatchObject({ kind: "auth", status: 401, code: HANDED_IN_REJECTED, message: rejected })
+    // The check of the sign-in reads the file only, and the file holds a token.
+    expect(await at.harness.signIn()).toEqual({ signedIn: true })
+  })
+
+  test("the provider's own code for the rejection is kept in the message, beside the code that says it was one", async () => {
+    const at = place("handed-token-old", () => false, [], undefined, () => Response.json({ error: { code: "token_expired", message: "The token has expired." } }, { status: 401 }))
+    const events = await turn(start(at), "Hi.")
+    expect(stepError(events)).toMatchObject({ kind: "auth", status: 401, code: HANDED_IN_REJECTED, message: `The access token handed in through ${ACCESS_TOKEN_FILE_ENV} was rejected (HTTP 401: The token has expired., token_expired). ${HAND_IN_ADVICE}` })
   })
 
   test("a file that cannot be used is not signed in, with the file's own message; put right, it is, without a restart", async () => {
     const at = place("", () => true, [says("Hello.")])
     const state = await at.harness.signIn()
-    expect(state).toEqual({ signedIn: false, message: `The file ${ACCESS_TOKEN_FILE_ENV} names is empty (${at.file}). ${HAND_IN_ADVICE}` })
+    expect(state).toEqual({ signedIn: false, message: `The file ${ACCESS_TOKEN_FILE_ENV} names is empty (${at.file}). ${HAND_IN_ADVICE}`, code: "handed_in_empty" })
     // A turn started anyway fails the same way, and sends nothing.
     const session = start(at)
     expect((await turn(session, "Hi.")).at(-1)).toMatchObject({ type: "execution.failed", data: { message: FAILURE_TEXT.handedInRejected } })
@@ -156,6 +177,38 @@ describe("a handed-in token the provider rejects", () => {
     expect(await at.harness.signIn()).toEqual({ signedIn: true })
     expect((await turn(session, "Hi again.")).at(-1)?.type).toBe("execution.succeeded")
     expect(responses(at)).toEqual(["handed-token-new"])
+  })
+})
+
+describe("each way a handed-in token cannot be used", () => {
+  test("has its own code in the failed step's provider error, the model list's error and the sign-in's state, with one sentence for the turn", async () => {
+    const at = place("handed-token-0001", () => true, [])
+    const session = start(at)
+    const cases: readonly { readonly code: HandedInCode; readonly put: () => void }[] = [
+      { code: "handed_in_missing", put: () => rmSync(at.file) },
+      { code: "handed_in_unreadable", put: () => mkdirSync(at.file) },
+      { code: "handed_in_empty", put: () => (rmSync(at.file, { recursive: true }), writeFileSync(at.file, "\n")) },
+      { code: "handed_in_malformed", put: () => writeFileSync(at.file, "two words") },
+      { code: "handed_in_expired", put: () => writeFileSync(at.file, JSON.stringify({ accessToken: "handed-token-0001", expiresAt: Date.now() - 1000 })) },
+    ]
+    for (const { code, put } of cases) {
+      put()
+      const events = await turn(session, "Hi.")
+      // The turn ends with the same sentence whichever it was; the step's error says which.
+      expect(events.at(-1)).toMatchObject({ type: "execution.failed", data: { message: FAILURE_TEXT.handedInRejected } })
+      const error = stepError(events)
+      expect(error).toMatchObject({ kind: "auth", retryable: false, status: null, code })
+      expect(error?.message).toStartWith("no usable access token: ")
+      expect(await at.harness.signIn()).toMatchObject({ signedIn: false, code })
+      const listing = await at.harness.listModels().then(
+        () => null,
+        (caught: unknown) => caught,
+      )
+      expect((listing as ModelListError).error).toMatchObject({ kind: "auth", code })
+    }
+    // Nothing was sent with any of them, and no token is in the log.
+    expect(at.sent).toEqual([])
+    expect(JSON.stringify(session.readEvents())).not.toContain("handed-token-0001")
   })
 })
 

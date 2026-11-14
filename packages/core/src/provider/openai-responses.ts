@@ -235,12 +235,14 @@ function httpError(response: Response, text: string | Timeout | Failure, request
 /**
  * The token getter failed, so nothing was sent. It is the sign-in's failure (`auth`) unless the sign-in service
  * could not be reached to refresh the token (`AUTH_UNREACHABLE`): that says nothing about the sign-in, and is the
- * connection problem it would be had the request itself not got through, tried again like one.
+ * connection problem it would be had the request itself not got through, tried again like one. The error's `code`
+ * is the sign-in's own (`AuthError.code`: `signed_out`, `invalid_grant`, `handed_in_expired`, ...), so that what
+ * reads the error can tell the reasons apart without reading the message.
  */
 function tokenFailure(cause: unknown): ProviderError {
   const message = `no usable access token: ${describe(cause)}`
-  if (cause instanceof AuthError && cause.code === AUTH_UNREACHABLE) return makeProviderError("transport", message, { code: cause.code })
-  return makeProviderError("auth", message)
+  const code = cause instanceof AuthError ? cause.code : undefined
+  return makeProviderError(code === AUTH_UNREACHABLE ? "transport" : "auth", message, { code })
 }
 
 function describe(cause: unknown): string {

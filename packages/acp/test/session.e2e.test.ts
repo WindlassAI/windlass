@@ -2,7 +2,7 @@ import { afterEach, expect, test, setDefaultTimeout } from "bun:test"
 import { join } from "node:path"
 import { methods } from "@agentclientprotocol/sdk"
 import { ACCESS_TOKEN_FILE_ENV, FAILURE_TEXT, brand } from "@windlass/core"
-import { HAND_IN_ADVICE } from "@windlass/core/auth/chatgpt"
+import { HANDED_IN_REJECTED, HAND_IN_ADVICE } from "@windlass/core/auth/chatgpt"
 import { E2E_TIMEOUT_MS, script } from "@windlass/core/testing"
 import { SIGN_IN_HINT } from "../src/server.ts"
 import { EXT, META } from "../src/extensions.ts"
@@ -128,27 +128,51 @@ test("a failed turn answers the prompt with an error that says why; signed out m
   expect(((await signedOut.catch((caught: unknown) => caught)) as { message: string }).message).toContain("Signed out")
 })
 
+test("a failed turn's error data carries the provider error's code when it has one, and no code when it has none", async () => {
+  const harness = await start({
+    responses: [[script.fail("transport", { message: "no usable access token: Could not reach the sign-in service at auth.example.test: the request failed", code: "network_error" })], [script.fail("invalid_request", { message: "The request was malformed." })]],
+    // One attempt: the backoff between attempts is not what is tested.
+    engine: { limits: { attemptBudget: 1 } },
+  })
+  const sessionId = await harness.newSession()
+  const data = async (text: string) => {
+    const failed = harness.connection.agent.request(methods.agent.session.prompt, { sessionId, prompt: [{ type: "text", text }] })
+    return ((await failed.catch((caught: unknown) => caught)) as { code: number; data: Record<string, unknown> }).data
+  }
+  expect(await data("go")).toEqual({ [META.capabilities]: { reason: "execution_failed", providerError: "transport", code: "network_error" } })
+  expect(await data("again")).toEqual({ [META.capabilities]: { reason: "execution_failed", providerError: "invalid_request" } })
+})
+
 test("a sign-in handed in from outside: auth-required says to hand in a new token, and never to sign in on this machine", async () => {
   const saved = process.env[ACCESS_TOKEN_FILE_ENV]
   // Never opened here: the state of the sign-in and the model's answers are given.
   process.env[ACCESS_TOKEN_FILE_ENV] = "/run/handed-in/token"
   try {
     const unusable = `The file ${ACCESS_TOKEN_FILE_ENV} names does not exist (/run/handed-in/token). ${HAND_IN_ADVICE}`
-    const signedOut = await start({ signIn: async () => ({ signedIn: false, message: unusable }) })
+    const signedOut = await start({ signIn: async () => ({ signedIn: false, message: unusable, code: "handed_in_missing" }) })
     const method = (signedOut.wire[0] as { result: { authMethods: { id: string; description: string }[] } }).result.authMethods[0]!
     expect(method.id).toBe("chatgpt")
     expect(method.description).toBe(`Uses the access token of a ChatGPT plan sign-in held elsewhere, handed in through ${ACCESS_TOKEN_FILE_ENV}. ${HAND_IN_ADVICE}`)
-    const refused = { code: -32000, message: `Authentication required: ${unusable}`, data: { methodId: "chatgpt", [META.capabilities]: { reason: "auth_required", message: unusable } } }
+    // Which failure it is travels as a code beside the sentence, so that a client need not read the sentence.
+    const refused = { code: -32000, message: `Authentication required: ${unusable}`, data: { methodId: "chatgpt", [META.capabilities]: { reason: "auth_required", message: unusable, code: "handed_in_missing" } } }
     await expect(signedOut.connection.agent.request(methods.agent.session.new, { cwd: signedOut.workspace, mcpServers: [] })).rejects.toMatchObject(refused)
     await expect(signedOut.connection.agent.request(methods.agent.authenticate, { methodId: "chatgpt" })).rejects.toMatchObject(refused)
     await expect(signedOut.connection.agent.request(methods.agent.session.load, { sessionId: "ses_x", cwd: signedOut.workspace, mcpServers: [] })).rejects.toMatchObject(refused)
 
     // A token the provider turns down in the middle of a session, still turned down when it is read again.
-    const rejected = await start({ responses: [[script.fail("auth", { message: "HTTP 401: Unauthorized", status: 401 })], [script.fail("auth", { message: "HTTP 401: Unauthorized", status: 401 })]], engine: { refreshAuth: async () => true } })
+    const turnedDown = script.fail("auth", { message: "HTTP 401: Unauthorized", status: 401, code: HANDED_IN_REJECTED })
+    const noToken = script.fail("auth", { message: `no usable access token: ${unusable}`, code: "handed_in_expired" })
+    // Each failure twice: a rejected sign-in is looked up once more before the step fails.
+    const rejected = await start({ responses: [[turnedDown], [turnedDown], [noToken], [noToken]], engine: { refreshAuth: async () => true } })
     await expect(rejected.connection.agent.request(methods.agent.authenticate, { methodId: "chatgpt" })).resolves.toEqual({})
     const sessionId = await rejected.newSession()
     const prompt = rejected.connection.agent.request(methods.agent.session.prompt, { sessionId, prompt: [{ type: "text", text: "go" }] })
     await expect(prompt).rejects.toMatchObject({ code: -32000, message: `Authentication required: ${FAILURE_TEXT.handedInRejected}` })
+    // The turn's sentence is the same for a token the provider rejected and for a file that gives none; the code is not.
+    const data = async (request: Promise<unknown>) => ((await request.catch((caught: unknown) => caught)) as { data: Record<string, unknown> }).data
+    expect(await data(prompt)).toEqual({ methodId: "chatgpt", [META.capabilities]: { reason: "auth_required", message: FAILURE_TEXT.handedInRejected, code: "handed_in_rejected" } })
+    const expired = rejected.connection.agent.request(methods.agent.session.prompt, { sessionId, prompt: [{ type: "text", text: "again" }] })
+    expect(await data(expired)).toEqual({ methodId: "chatgpt", [META.capabilities]: { reason: "auth_required", message: FAILURE_TEXT.handedInRejected, code: "handed_in_expired" } })
     for (const message of [unusable, FAILURE_TEXT.handedInRejected, method.description]) {
       expect(message).toContain(ACCESS_TOKEN_FILE_ENV)
       expect(message).not.toContain(SIGN_IN_HINT)
