@@ -18,6 +18,14 @@ All notable changes to Windlass are recorded here. The format follows
   refreshing the sign-in first when the saved token has less left: run it on a timer to keep such a file fresh,
   instead of having to ask in the last five minutes of each token.
 
+### Fixed
+
+- A refresh of the sign-in that cannot reach the sign-in service (no network, a failed lookup, a broken connection)
+  is a sign-in failure like any other, with the code `network_error`: `windlass login token` prints one line,
+  `sign-in failed: Could not reach the sign-in service at <host>: <reason> (network_error)`, and exits with code 1,
+  where it printed a stack trace. A turn that needs a refresh at such a moment is tried again and fails as a
+  connection problem, not as "Signed out".
+
 ## [0.1.1] - 2026-11-13
 
 ### Changed

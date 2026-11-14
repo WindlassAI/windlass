@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { AUTH_UNREACHABLE, AuthError } from "../../src/auth/chatgpt.ts"
 import { ModelListError, OpenAIResponsesProvider, listModels } from "../../src/provider/openai-responses.ts"
 import { encodeRequest } from "../../src/provider/openai-responses-encode.ts"
 import type { StreamEvent } from "../../src/provider/provider.ts"
@@ -315,6 +316,30 @@ describe("OpenAIResponsesProvider over HTTP", () => {
       },
     })
     expect(error).toMatchObject({ kind: "auth", retryable: false, message: "no usable access token: Not signed in. Run the sign-in first." })
+    expect(seen.length).toBe(before)
+  })
+
+  test("a token getter that could not reach the sign-in service is a connection failure, retried like one, and sends nothing", async () => {
+    const before = seen.length
+    const unreachable = async () => {
+      throw new AuthError(AUTH_UNREACHABLE, "Could not reach the sign-in service at auth.example.test: the request failed")
+    }
+    const error = await errorOf("text", { accessToken: unreachable })
+    expect(error).toMatchObject({ kind: "transport", retryable: true, reason: "connection", code: AUTH_UNREACHABLE, status: null, message: "no usable access token: Could not reach the sign-in service at auth.example.test: the request failed" })
+    // Any other failure of the sign-in is still the sign-in's.
+    const refused = await errorOf("text", {
+      accessToken: async () => {
+        throw new AuthError("invalid_grant", "Token request failed (400 invalid_grant): the refresh token was already used")
+      },
+    })
+    expect(refused).toMatchObject({ kind: "auth", retryable: false })
+    // The model list is asked for with the same token, and fails the same way.
+    const listing = await listModels({ accessToken: unreachable, baseUrl: base }).then(
+      () => null,
+      (caught: unknown) => caught,
+    )
+    expect(listing).toBeInstanceOf(ModelListError)
+    expect((listing as ModelListError).error).toMatchObject({ kind: "transport", reason: "connection", code: AUTH_UNREACHABLE })
     expect(seen.length).toBe(before)
   })
 

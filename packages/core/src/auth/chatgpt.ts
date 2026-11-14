@@ -61,6 +61,13 @@ export class AuthError extends Error {
   }
 }
 
+/**
+ * The code of the one sign-in failure that says nothing about the sign-in: the sign-in service could not be
+ * reached (no name lookup, no connection, a connection that broke before the answer was whole). The saved sign-in
+ * is as it was, and the same request can be made again.
+ */
+export const AUTH_UNREACHABLE = "network_error"
+
 export function dataDir() {
   return join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"), brand.directory)
 }
@@ -288,13 +295,40 @@ type TokenResponse = {
   scope?: string
 }
 
+/**
+ * What the sign-in service answers at `url`, read to its end by `read`. A request that gets no answer, or one that
+ * breaks off, fails as `AUTH_UNREACHABLE` with one line that names the host and the runtime's reason, never what
+ * was sent.
+ */
+async function reach<T>(url: string, init: RequestInit | undefined, read: (response: Response) => Promise<T>): Promise<{ readonly response: Response; readonly body: T }> {
+  try {
+    const response = await fetch(url, init)
+    return { response, body: await read(response) }
+  } catch (cause) {
+    // The runtime's first sentence says what happened; what follows it is advice for whoever wrote the request.
+    const reason = (cause instanceof Error ? cause.message || cause.name : String(cause)).split("\n")[0]!.split(/\.\s/)[0]!.trim().replace(/\.$/, "").slice(0, 200)
+    throw new AuthError(AUTH_UNREACHABLE, `Could not reach the sign-in service at ${hostOf(url)}: ${reason === "" ? "the request failed" : reason}`)
+  }
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host
+  } catch {
+    return "its address"
+  }
+}
+
 async function tokenRequest(config: AuthConfig, body: Record<string, string>): Promise<TokenResponse> {
-  const response = await fetch(config.tokenUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": `${AGENT_NAME}/0` },
-    body: new URLSearchParams(body),
-  })
-  const text = await response.text()
+  const { response, body: text } = await reach(
+    config.tokenUrl,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": `${AGENT_NAME}/0` },
+      body: new URLSearchParams(body),
+    },
+    (answer) => answer.text(),
+  )
   const json = parseJson(text)
   if (!response.ok) {
     const code = typeof json?.error === "string" ? json.error : `http_${response.status}`
@@ -341,8 +375,9 @@ async function verifyIdToken(config: AuthConfig, token: string, audience: string
         ? { name: "ECDSA", namedCurve: "P-256", hash: "SHA-256" }
         : undefined
   if (!algorithm) throw new AuthError("bad_id_token", `Unsupported ID token algorithm: ${String(header.alg)}`)
-  const jwks = (await (await fetch(config.jwksUrl)).json()) as { keys?: Array<Record<string, unknown> & { kid?: string }> }
-  const jwk = jwks.keys?.find((key) => key.kid === header.kid)
+  // The keys are published as JSON; an answer that is not is one without a matching key.
+  const jwks = parseJson((await reach(config.jwksUrl, undefined, (answer) => answer.text())).body) as { keys?: Array<Record<string, unknown> & { kid?: string }> } | undefined
+  const jwk = (Array.isArray(jwks?.keys) ? jwks.keys : []).find((key) => key.kid === header.kid)
   if (!jwk) throw new AuthError("bad_id_token", "No published key matches the ID token.")
   const key = await crypto.subtle.importKey("jwk", jwk as webcrypto.JsonWebKey, algorithm, false, ["verify"])
   const valid = await crypto.subtle.verify(

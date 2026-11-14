@@ -69,7 +69,10 @@ This prints `{"accessToken":"...","expiresAt":<milliseconds since the epoch>}` o
 standard output; without `--json` it prints the bare token. The sign-in is refreshed first when it is due (from five
 minutes before the token expires, under the same lock and exactly as a model call there would), so a token it
 prints is good for at least five minutes, and asking again before a refresh is due prints the same token. With no
-sign-in it prints a message on standard error and exits with code 1. **The output is a secret**: whoever has it can
+sign-in it prints a message on standard error and exits with code 1, and so it does when the refresh fails: one
+line, `windlass: sign-in failed: <reason> (<code>)`, and no token. The code is `network_error` when the sign-in
+service could not be reached; the saved sign-in is then as it was, so ask again, and keep using the token you
+have until it expires. Any other code is the service's answer ([troubleshooting.md](troubleshooting.md)). **The output is a secret**: whoever has it can
 use your plan until it expires. No other command prints a token; keep this one's output out of logs, and never put
 it on a command line.
 

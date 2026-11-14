@@ -46,6 +46,29 @@ windlass: sign-in failed: The callback does not belong to the sign-in that is in
 
 That address belongs to an older `windlass login`. Start again and paste the address from the newest one.
 
+## The sign-in service cannot be reached
+
+The access token is refreshed at `auth.openai.com`. When that cannot be reached (no network, no name lookup, a
+connection that breaks), nothing is wrong with the sign-in, and nothing about it changes. `windlass login token`,
+and `windlass login` when it finishes a sign-in, print one line and exit with code 1:
+
+```
+windlass: sign-in failed: Could not reach the sign-in service at auth.openai.com: <the reason, such as a connection that was closed> (network_error)
+```
+
+*Reproduced with the built program, its requests routed to a listener on this machine that closes every
+connection.* A
+program that keeps another process's token file fresh tells this from a refused sign-in by the code in the
+brackets: `network_error` means try again, and the token it handed in last stays good until it expires. A turn that
+needs a refresh at such a moment is tried again like any other connection problem, and if the service stays out of
+reach it ends with
+
+```
+The model call failed 5 times: no usable access token: Could not reach the sign-in service at auth.openai.com: <the reason>
+```
+
+and not with "Signed out". The session is kept: send the message again when the network is back.
+
 ## A handed-in access token cannot be used
 
 A process started with `WINDLASS_ACCESS_TOKEN_FILE` runs on an access token handed in by the `windlass` that holds

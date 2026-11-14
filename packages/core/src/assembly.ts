@@ -17,7 +17,7 @@
  */
 import { mkdirSync } from "node:fs"
 import { join } from "node:path"
-import { AuthError, aboutHandedIn, accessToken as signInToken, dataDir as defaultDataDir, handedInRejected, handedInTokenFile } from "./auth/chatgpt.ts"
+import { AUTH_UNREACHABLE, AuthError, aboutHandedIn, accessToken as signInToken, dataDir as defaultDataDir, handedInRejected, handedInTokenFile } from "./auth/chatgpt.ts"
 import { brand } from "./brand.ts"
 import { loadConfig } from "./config/load.ts"
 import { environmentSecrets } from "./engine/approval.ts"
@@ -262,6 +262,9 @@ export function createHarness(options: HarnessOptions = {}): Harness {
         await accessToken()
         return { signedIn: true }
       } catch (error) {
+        // The sign-in service could not be reached for a refresh: the sign-in is saved, and nothing says it is gone.
+        // A model call then fails as the connection problem it is, and is tried again like one.
+        if (error instanceof AuthError && error.code === AUTH_UNREACHABLE) return { signedIn: true }
         if (error instanceof AuthError) return { signedIn: false, message: error.message }
         throw error
       }
