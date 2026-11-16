@@ -122,7 +122,7 @@ import { type ProviderError, makeProviderError } from "../provider/error.ts"
 import type { FinishReason, Provider, ResponseFacts, StreamEvent } from "../provider/provider.ts"
 import { type Usage, sumUsage } from "../provider/usage.ts"
 import type { CommandSandbox } from "../sandbox/command.ts"
-import { type SandboxHomeChoice, resolveSandboxHome } from "../sandbox/config.ts"
+import { type CommandEnv, type SandboxHomeChoice, resolveCommandEnv, resolveSandboxHome } from "../sandbox/config.ts"
 import { SESSION_HOME_KEY, sessionHomeUpdate } from "../sandbox/home-note.ts"
 import { type PrefixVerdict, checkPrefix } from "../request/build-break.ts"
 import { CHECKPOINT_ORIGIN, type CallOptions, HARNESS_CLOSE, buildCompactionRequest, buildRequest, harnessOpen } from "../request/build.ts"
@@ -1055,6 +1055,17 @@ export interface EngineSession {
    * command. Not stored: a client says it again when it opens the session.
    */
   readonly setSandboxHome: (home: SandboxHomeChoice | null) => void
+  /**
+   * The environment variables the client that opened this session named for
+   * its commands, for the user (`sandbox/config.ts`): `withhold` no command
+   * of the session is given, whatever the name, and `pass` a sandboxed one is
+   * given although the name looks like a credential. They add to the lists of
+   * the user's file; a project's file sets neither. Names only, never a
+   * value. `null`: the client names none, and the user's file decides.
+   * Applies from the next command, to the session's subagents too. Not
+   * stored: a client says it again when it opens the session.
+   */
+  readonly setCommandEnv: (names: CommandEnv | null) => void
   /** How calls are decided right now; `null` when the approval layer is off. */
   readonly approval: () => ApprovalState | null
   /**
@@ -1444,6 +1455,8 @@ export function createEngine(options: EngineOptions): Engine {
           const resolved = effectivePolicy({ file: config?.approval?.user ?? null, process: core.approvals.user, session: null, project: config?.approval?.project ?? null }).policy
           // The check gets the home of the session's own where the files turn it on, as a command of the open session would.
           if (resolveSandboxHome({ user: config?.files?.user?.sandbox, session: null, project: config?.files?.project?.sandbox }).home === "session") core.approvals.sandbox().sessionHome?.use(id, true)
+          // And the environment the user's file gives the session's commands.
+          core.approvals.sandbox().environment?.use(id, resolveCommandEnv({ user: config?.files?.user?.sandbox, session: null, project: config?.files?.project?.sandbox }))
           const agent = summary.session.agent ?? null
           const mode = agent === null || agent.restrictions.approval === null ? resolved.mode : effectiveApprovalMode(resolved.mode, agent).mode
           // Untrusted content the session itself told the user about counts too: where this process cannot read the
@@ -2039,6 +2052,8 @@ class LiveSession implements EngineSession {
   private homeChoice: SandboxHomeChoice | null = null
   /** Whether the sandbox was told to give this session a home of its own, and whether its commands get one (`applyHome`). */
   private home = { on: false, used: false }
+  /** The environment variables a client named for this session's commands; `null`: the user's file decides. */
+  private envChoice: CommandEnv | null = null
   /** The question that waits for an answer. One at a time. */
   private question: PendingQuestion | null = null
   /** The questions asked so far, as a chain: each waits for the one before it. */
@@ -2366,6 +2381,12 @@ class LiveSession implements EngineSession {
     this.homeChoice = home
     for (const child of this.children) child.setSandboxHome(home)
     this.applyHome()
+  }
+
+  setCommandEnv = (names: CommandEnv | null): void => {
+    this.envChoice = names
+    for (const child of this.children) child.setCommandEnv(names)
+    this.applyCommandEnv()
   }
 
   approval = (): ApprovalState | null => {
@@ -2860,6 +2881,8 @@ class LiveSession implements EngineSession {
       // Its servers are let go of: one that no other session uses is stopped.
       this.releaseMcp()
       this.releaseLsp()
+      // What a client named for its commands holds while the session is open: afterwards the sandbox knows none of it.
+      this.core.approvals?.sandbox().environment?.use(this.id, { withhold: [], pass: [] })
       this.channel.end()
       this.listeners.clear()
       this.core.sessions.delete(this.id)
@@ -4526,6 +4549,7 @@ class LiveSession implements EngineSession {
     child.setAttended(this.attended && this.childQuestions, { children: this.childQuestions })
     if (this.override !== null) child.setApproval(this.override)
     if (this.homeChoice !== null) child.setSandboxHome(this.homeChoice)
+    if (this.envChoice !== null) child.setCommandEnv(this.envChoice)
     const fromSeq = child.projection().lastSeq
     const forward = child.subscribe((item) => {
       if ("seq" in item) this.ephemeral({ type: "child.event", sessionId: this.id, child: child.id, spawnId, title: work.title, event: item })
@@ -5155,11 +5179,36 @@ class LiveSession implements EngineSession {
     if (state != null && state.notice !== null) this.notice("session_home", state.notice)
   }
 
+  /** The environment variables named for this session's commands now: the user's file and the client's, which add up. */
+  private commandEnv() {
+    const files = this.files()
+    return resolveCommandEnv({ user: files?.user?.sandbox, session: this.envChoice, project: files?.project?.sandbox })
+  }
+
+  /**
+   * Tells the sandbox which variables this session's commands are not given
+   * and which credential-looking ones they are, as the configuration and the
+   * client say now, and the user, once, that the project's file named some
+   * and was not followed.
+   */
+  private applyCommandEnv(): void {
+    const approvals = this.core.approvals
+    if (approvals === null) return
+    const { withhold, pass, ignored } = this.commandEnv()
+    if (ignored !== null)
+      this.notice(
+        "approval_ignored",
+        `The project's configuration names environment variables for commands and was not followed: ${ignored}. Only your own configuration file, or the program that opens the session for you, says which of your variables commands get.`,
+      )
+    approvals.sandbox().environment?.use(this.id, { withhold, pass })
+  }
+
   /** When an execution starts under the configuration just read: what is missing or was not followed, and taint that is not on record yet. */
   private announcePolicy(): void {
     const approvals = this.core.approvals
     if (approvals === null) return
     this.applyHome()
+    this.applyCommandEnv()
     const { policy, ignored } = this.policy()
     const state = approvals.sandbox().state
     if (!state.available && policy.mode !== "full")
@@ -6134,7 +6183,9 @@ class LiveSession implements EngineSession {
     }
     if (!offersDiagnostics(plan)) return drop()
     // Why an edit got no diagnostics is the user's to read, once per server and reason; the model is told nothing.
-    const held = lsp.hub.acquire(plan, cwd, (notice: LspNotice) => this.say("lsp", notice.message), () => this.featureChanged("lsp"))
+    // A language server is started for the session like a command: it is not given a variable the session's commands are not.
+    const withhold = this.core.approvals === null ? [] : this.commandEnv().withhold
+    const held = lsp.hub.acquire(plan, cwd, (notice: LspNotice) => this.say("lsp", notice.message), () => this.featureChanged("lsp"), withhold)
     // Taken before the old one is let go of, so a registry both configurations name is never stopped in between.
     previous?.release()
     this.lspHeld = held
@@ -6558,6 +6609,8 @@ class LiveSession implements EngineSession {
     const checks = work.checks.filter((item) => !reused.some((entry) => entry.check === item))
     const runner = this.checkRunner()
     const confined = "sandbox" in runner ? runner.sandbox : undefined
+    // Checks that run without the sandbox are commands of the session: they are not given what its commands are not.
+    const plain = confined === undefined ? this.core.approvals?.sandbox().environment?.unsandboxed(this.id) : undefined
     const [started] = this.write([event("checks.started", { run: number, checks: checks.map((item) => item.name) })])
     this.probe("checks.started")
 
@@ -6568,6 +6621,7 @@ class LiveSession implements EngineSession {
         spillDir: confined === undefined ? join(this.core.spillDir, "checks", this.id) : join(this.tempContext().temp?.dir ?? this.core.spillDir, SPILL_IN_TEMP, "checks"),
         signal,
         ...(confined === undefined ? {} : { sandbox: confined }),
+        ...(plain === undefined ? {} : { env: plain }),
         progress: (name, value) => this.ephemeral({ type: "checks.progress", sessionId: this.id, run: number, check: name, text: value }),
         // A check's output is tool output: what is shown while it runs and what is kept in full are redacted too.
         ...(this.core.approvals === null ? {} : { redact: redactor(this.core.approvals.secrets), unfinishedSecret: (value: string) => unfinishedSecret(value, this.core.approvals!.secrets) }),

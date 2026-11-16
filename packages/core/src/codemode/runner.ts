@@ -73,6 +73,8 @@ export interface RunProgramOptions {
   readonly limits?: Partial<ProgramLimits>
   /** The Bun that runs the program. Default: this process's own (a compiled harness runs as Bun with `BUN_BE_BUN`). */
   readonly bun?: string
+  /** Where the few variables the program is given (`BUN_ENV`) are taken from. Default: the harness's own environment. */
+  readonly env?: Readonly<Record<string, string | undefined>>
 }
 
 export type ProgramError = {
@@ -122,7 +124,8 @@ export async function runProgram(options: RunProgramOptions): Promise<ProgramOut
   const bun = options.bun ?? process.execPath
   const argv = (root: string) => [bun, "--no-install", join(root, "prelude.mjs"), nonce, join(root, "program.mjs"), JSON.stringify(options.tools)]
   const env: Record<string, string> = { BUN_BE_BUN: "1", NO_COLOR: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" }
-  for (const name of BUN_ENV) if (process.env[name] !== undefined) env[name] = process.env[name]!
+  const from = options.env ?? process.env
+  for (const name of BUN_ENV) if (from[name] !== undefined) env[name] = from[name]!
   const planned: ProgramPlan | { readonly refused: string } = options.confine === null ? { argv: argv(options.dir), env, cwd: options.dir } : options.confine({ root: options.dir, argv, env })
 
   const printed: string[] = []

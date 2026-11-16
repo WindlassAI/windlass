@@ -67,6 +67,8 @@ export interface CodeToolOptions {
   readonly confine: (context: ToolContext) => Confine | null
   /** Where each run's directory is made, for this call: a place the confined process can be given as its own. */
   readonly runDir: (context: ToolContext) => string
+  /** The environment the program's few variables are taken from, for this call. `undefined`, or no function: the harness's own. */
+  readonly env?: (context: ToolContext) => Readonly<Record<string, string | undefined>> | undefined
   readonly limits?: Partial<ProgramLimits>
   readonly bun?: string
 }
@@ -84,6 +86,7 @@ export function codeTool(options: CodeToolOptions): Tool<CodeInput> {
       const confine = sandboxed ? options.confine(context) : null
       if (sandboxed && confine === null) return result("error", "The program was not run: it must run in the sandbox, and this build has none.", null)
       runs += 1
+      const env = options.env?.(context)
       const outcome = await runProgram({
         source: input.code,
         tools: setup.tools,
@@ -91,6 +94,7 @@ export function codeTool(options: CodeToolOptions): Tool<CodeInput> {
         signal: context.signal,
         dir: join(options.runDir(context), `run-${process.pid}-${Date.now().toString(36)}-${runs}`),
         confine,
+        ...(env === undefined ? {} : { env }),
         ...(options.limits === undefined ? {} : { limits: options.limits }),
         ...(options.bun === undefined ? {} : { bun: options.bun }),
       })

@@ -315,6 +315,8 @@ Every key:
 | Key in `sandbox` | Value |
 |---|---|
 | `home` | `user` (default): a sandboxed command finds your home, read-only. `session`: on Linux it finds a home of the session's own, with your entries read-only in it ([safety.md](safety.md), "The session's home"). Only your own file can say `session`; a project's file can only say `user` |
+| `withholdEnv` | names of environment variables that no command the agent runs is given, whatever the name looks like; an MCP server that names one still gets it ([safety.md](safety.md), "A command's environment"). Only your own file: a project's is not followed |
+| `passEnv` | names of environment variables that sandboxed commands are given although the name looks like a credential (`DEPLOY_KEY`). Only your own file: a project's is not followed |
 
 ## Project instructions (AGENTS.md)
 

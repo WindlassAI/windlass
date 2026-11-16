@@ -331,10 +331,21 @@ describe("the sandbox section", () => {
     expect(Object.keys(resolveConfig(parseConfigFile(JSON.stringify({ sandbox: { home: "session" } }), "f.json"))).sort()).toEqual(["checks", "effort", "model", "verify"])
   })
 
+  test("the variables commands are not given, and the credential-looking ones they are, are lists of names: no value has a place in them", () => {
+    const section = { withholdEnv: ["SENTRY_DSN", "SENTRY_DSN", "_private1"], passEnv: ["DEPLOY_KEY"] }
+    expect(parseConfigFile(JSON.stringify({ sandbox: section }), "f.json").sandbox).toEqual({ withholdEnv: ["SENTRY_DSN", "_private1"], passEnv: ["DEPLOY_KEY"] })
+    expect(parseConfigFile(JSON.stringify({ sandbox: { withholdEnv: [] } }), "f.json").sandbox).toEqual({ withholdEnv: [] })
+    const names = "expected a list of at most 256 environment variable names (letters, digits and _)"
+    for (const bad of ["SENTRY_DSN", ["SENTRY_DSN=value"], ["1ST"], [""], [7], { SENTRY_DSN: "value" }, Array.from({ length: 257 }, (_, index) => `N${index}`)]) {
+      expect(errorOf(() => parseConfigFile(JSON.stringify({ sandbox: { withholdEnv: bad } }), "f.json")).message).toBe(`f.json: sandbox.withholdEnv: ${names}`)
+      expect(errorOf(() => parseConfigFile(JSON.stringify({ sandbox: { passEnv: bad } }), "f.json")).message).toBe(`f.json: sandbox.passEnv: ${names}`)
+    }
+  })
+
   test("a bad value names the file and the path", () => {
     expect(errorOf(() => parseConfigFile(JSON.stringify({ sandbox: { home: true } }), "f.json")).message).toBe("f.json: sandbox.home: expected one of: user, session")
     expect(errorOf(() => parseConfigFile(JSON.stringify({ sandbox: { home: "own" } }), "f.json")).message).toBe("f.json: sandbox.home: expected one of: user, session")
-    expect(errorOf(() => parseConfigFile(JSON.stringify({ sandbox: { sessionHome: true } }), "f.json")).message).toBe('f.json: sandbox.sessionHome: unknown key "sessionHome"; known keys: home')
+    expect(errorOf(() => parseConfigFile(JSON.stringify({ sandbox: { sessionHome: true } }), "f.json")).message).toBe('f.json: sandbox.sessionHome: unknown key "sessionHome"; known keys: home, withholdEnv, passEnv')
     expect(errorOf(() => parseConfigFile(JSON.stringify({ sandbox: "session" }), "f.json")).message).toBe("f.json: sandbox: expected an object")
   })
 

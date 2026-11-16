@@ -175,6 +175,20 @@ export interface OpenMeta {
    */
   readonly sandboxHome?: string | null
   /**
+   * Names of environment variables that no command of the session is given, whatever the name looks like, as the
+   * user chose for this session: the shell tool's commands, sandboxed or not, the project's checks, hooks, programs
+   * and language servers. An MCP server still gets the ones its definition names. Names only: the values are in the
+   * environment this process was started with. They add to `sandbox.withholdEnv` of the user's configuration file.
+   * Absent: that file alone says.
+   */
+  readonly withholdEnv?: readonly string[] | null
+  /**
+   * Names that look like credentials and that the session's sandboxed commands are given all the same, as the user
+   * chose for this session. They add to `sandbox.passEnv` of the user's configuration file; a name that is also
+   * withheld is withheld. Absent: that file alone says.
+   */
+  readonly passEnv?: readonly string[] | null
+  /**
    * Whether a person is there to answer `session/request_permission`. Default
    * `true`: an ACP client can answer. A client that runs unattended (a
    * script, an eval) says `false`, and nothing ever waits for it.

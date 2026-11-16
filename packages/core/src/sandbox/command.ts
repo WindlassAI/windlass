@@ -35,6 +35,12 @@
  * - With the network granted, Bun's install cache in the temp directory: a
  *   download needs a writable cache, and the user's own cache is what later
  *   installs outside the sandbox trust, so it stays read-only.
+ * - Where the session named any (`environment.use`), the variables it is not
+ *   given whatever their name, and the credential-looking ones it is given
+ *   all the same. A command of the session that runs without the sandbox is
+ *   not given the first either (`environment.unsandboxed`); it is the same
+ *   user as the harness, though, and can read them from the harness's
+ *   process, which a sandboxed command on Linux cannot see.
  *
  * Nothing else was needed for `bun test`, `bun run`, an offline `bun install`
  * from the lockfile, `tsc` and local git commits: they read the user's Bun
@@ -43,12 +49,14 @@
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { dirname, isAbsolute, join, resolve } from "node:path"
+import { ACCESS_TOKEN_FILE_ENV } from "../auth/handed-in.ts"
 import { brand } from "../brand.ts"
 import type { SandboxRun, TempDirectory } from "../tool/tool.ts"
 import { HOME_BINDS, type HomeMounts, homeMounts, homeView } from "./bwrap.ts"
 import { type SandboxDetection, detectSandbox } from "./detect.ts"
 import { type SandboxPlan, type SandboxUnavailable, sandboxCommand } from "./index.ts"
-import { type SandboxPolicy, defaultPolicy } from "./policy.ts"
+import type { CommandEnv } from "./config.ts"
+import { type SandboxPolicy, defaultPolicy, filterEnv } from "./policy.ts"
 
 export interface CommandSandboxOptions {
   /** Where the sessions' temp directories are made. Default: `<os temp>/<brand.directory>-<uid>`. */
@@ -90,6 +98,29 @@ export interface CommandSandbox {
   readonly confined?: (input: ConfinedInput) => SandboxPlan | SandboxUnavailable
   /** The homes of the sessions' own. Absent in a stand-in that has none: every command's home is then the user's, read-only. */
   readonly sessionHome?: SessionHomes
+  /**
+   * What of the environment the commands of a session get besides the rule.
+   * Absent in a stand-in that keeps none: a sandboxed command then gets what
+   * `plan` gives, and one without the sandbox the harness's own environment.
+   */
+  readonly environment?: CommandEnvironments
+}
+
+export interface CommandEnvironments {
+  /**
+   * The names for a session's commands, from the next one started:
+   * `withhold` is given to none of them, sandboxed or not, and `pass` to the
+   * sandboxed ones although the names look like credentials. A name in both
+   * is withheld. Nothing is kept for a session nothing was said about.
+   */
+  readonly use: (sessionId: string, names: CommandEnv) => void
+  /**
+   * The environment of a command of the session that runs without the
+   * sandbox: the one commands inherit from, without the withheld names.
+   * `undefined` when the session withholds none: the caller's own
+   * environment, as it is.
+   */
+  readonly unsandboxed: (sessionId: string) => Record<string, string> | undefined
 }
 
 export interface SessionHomes {
@@ -126,6 +157,8 @@ export function createCommandSandbox(options: CommandSandboxOptions = {}): Comma
    */
   const homes = new Map<string, { on: boolean; readonly mounts: HomeMounts }>()
   const homeOn = (sessionId: string) => homes.get(sessionId)?.on === true
+  /** The sessions that named variables for their commands, each with the names in force now. */
+  const environments = new Map<string, CommandEnv>()
   let base: string | null = null
 
   const sessionDirectory = (sessionId: string) => {
@@ -149,7 +182,16 @@ export function createCommandSandbox(options: CommandSandboxOptions = {}): Comma
     return dir
   }
   const policy = (input: Pick<CommandInput, "sessionId" | "cwd" | "run">) =>
-    workspacePolicy({ cwd: input.cwd, tempRoot: temp(input.sessionId).dir, homeRoot: homeRoot(input.sessionId), ownHome: bwrap && homeOn(input.sessionId), run: input.run, home, env })
+    workspacePolicy({
+      cwd: input.cwd,
+      tempRoot: temp(input.sessionId).dir,
+      homeRoot: homeRoot(input.sessionId),
+      ownHome: bwrap && homeOn(input.sessionId),
+      ...(environments.has(input.sessionId) ? { commandEnv: environments.get(input.sessionId)! } : {}),
+      run: input.run,
+      home,
+      env,
+    })
 
   return {
     state: detection.available ? { available: true } : { available: false, reason: detection.reason, remedy: detection.remedy },
@@ -170,6 +212,16 @@ export function createCommandSandbox(options: CommandSandboxOptions = {}): Comma
         if (view.over !== null) return { used: false, notice: HOME_NOTICE.over(own.path, view.over) }
         const whole = view.layers.filter((layer) => layer.whole)
         return { used: true, notice: whole.length === 0 ? null : HOME_NOTICE.whole(whole.map((layer) => `${join(own.path, layer.directory)} (${layer.count} entries)`)) }
+      },
+    },
+    environment: {
+      use: (sessionId, names) => {
+        if (names.withhold.length > 0 || names.pass.length > 0) environments.set(sessionId, { withhold: [...names.withhold], pass: [...names.pass] })
+        else environments.delete(sessionId)
+      },
+      unsandboxed: (sessionId) => {
+        const withheld = environments.get(sessionId)?.withhold ?? []
+        return withheld.length === 0 ? undefined : filterEnv(env, { mode: "deny", names: withheld, stripCredentials: false })
       },
     },
     plan: (input) => {
@@ -217,6 +269,8 @@ export function workspacePolicy(input: {
   readonly homeRoot?: string
   /** `false`: the command's home is the user's, read-only, although the session has a directory for one. Default `true`. */
   readonly ownHome?: boolean
+  /** The names the session's commands are not given, and the credential-looking ones they are. Without it the rule alone decides. */
+  readonly commandEnv?: CommandEnv
   readonly run: SandboxRun
   readonly home?: string
   readonly env?: Readonly<Record<string, string | undefined>>
@@ -244,6 +298,8 @@ export function workspacePolicy(input: {
     ...(reached ? { hiddenPaths: [...base.hiddenPaths, kept] } : {}),
     writableRoots,
     readOnlyPaths: [...(git === null ? [] : gitProtected(git)), join(input.cwd, `.${brand.directory}`)],
+    // The variable that names the file a sign-in is handed in through is never passed: a sandboxed command is not told where that file is.
+    ...(input.commandEnv === undefined ? {} : { env: { mode: "deny" as const, names: input.commandEnv.withhold, keep: input.commandEnv.pass.filter((name) => name !== ACCESS_TOKEN_FILE_ENV) } }),
   }
 }
 

@@ -72,6 +72,8 @@ import {
   type StoredEvent,
   StoreError,
   approvalModes,
+  envNames,
+  MAX_ENV_NAMES,
   sandboxHomeChoices,
   brand,
   currentTodos,
@@ -197,7 +199,7 @@ export const EXTENSION_CAPABILITIES = {
   /** Keys of `clientCapabilities._meta[<ns>]` this server reads (`ClientMeta`). */
   clientMeta: ["events", "updates"],
   /** Keys of `_meta[<ns>]` on `session/new`, `session/load` and `session/resume` (`OpenMeta`). */
-  openMeta: ["model", "effort", "agent", "approval", "unattended", "sandboxHome", "attended", "children"],
+  openMeta: ["model", "effort", "agent", "approval", "unattended", "sandboxHome", "withholdEnv", "passEnv", "attended", "children"],
   /** The permission requests this server sends: the hand-edit question of an undo, and the approval of a tool call (the session's own, or a subagent's). */
   permissionRequests: ["revert", APPROVAL_META],
 } as const
@@ -1730,6 +1732,8 @@ function openMeta(meta: unknown): OpenMeta | null {
     approval: oneOfOrNull(value.approval, approvalModes, `_meta.${META.capabilities}.approval`),
     unattended: oneOfOrNull(value.unattended, UNATTENDED, `_meta.${META.capabilities}.unattended`),
     sandboxHome: oneOfOrNull(value.sandboxHome, sandboxHomeChoices, `_meta.${META.capabilities}.sandboxHome`),
+    withholdEnv: envNamesOrNull(value.withholdEnv, `_meta.${META.capabilities}.withholdEnv`),
+    passEnv: envNamesOrNull(value.passEnv, `_meta.${META.capabilities}.passEnv`),
     ...(typeof value.attended === "boolean" ? { attended: value.attended } : {}),
     ...(typeof value.children === "boolean" ? { children: value.children } : {}),
   }
@@ -1742,12 +1746,21 @@ function oneOfOrNull<const T extends readonly string[]>(value: unknown, allowed:
   return value
 }
 
+/** A list of environment variable names, or `null` when it is absent. Anything else is a bad request; the names are not repeated in the error. */
+function envNamesOrNull(value: unknown, name: string): readonly string[] | null {
+  if (value === undefined || value === null) return null
+  const names = envNames(value)
+  if (names === null) throw RequestError.invalidParams({ field: name }, `${name} must be a list of at most ${MAX_ENV_NAMES} environment variable names (letters, digits and _)`)
+  return names
+}
+
 /**
  * What a client says about approval when it opens a session: whether a
  * person is there to answer (yes, unless it says otherwise: an ACP client
  * can answer `session/request_permission`), the user's own mode and
- * unattended behaviour for this session, and the home its sandboxed commands
- * get, when the client says which.
+ * unattended behaviour for this session, the home its sandboxed commands
+ * get, when the client says which, and the environment variables it names
+ * for the session's commands.
  */
 function applyApproval(session: EngineSession, meta: OpenMeta | null): void {
   const attended = meta?.attended ?? true
@@ -1762,6 +1775,9 @@ function applyApproval(session: EngineSession, meta: OpenMeta | null): void {
     })
   const home = meta?.sandboxHome ?? null
   if (home !== null) session.setSandboxHome(home as (typeof sandboxHomeChoices)[number])
+  const withhold = meta?.withholdEnv ?? null
+  const pass = meta?.passEnv ?? null
+  if (withhold !== null || pass !== null) session.setCommandEnv({ withhold: withhold ?? [], pass: pass ?? [] })
 }
 
 function stepLimit(value: unknown): number | undefined {

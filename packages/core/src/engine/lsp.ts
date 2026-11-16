@@ -173,17 +173,25 @@ export class LspHub {
    * the plan says are approved may start in it, also when the registry was
    * created before that approval was given. `onNotice` hears why an edit got
    * no diagnostics, once per server and reason; `onStatus` hears that what
-   * the registry reports of its servers may have changed.
+   * the registry reports of its servers may have changed. `withhold` names
+   * the environment variables its servers are not given
+   * (`LspRegistryOptions.withhold`): sessions that withhold different ones
+   * do not share a registry.
    */
-  acquire(plan: LspPlan, cwd: string, onNotice: (notice: LspNotice) => void, onStatus: () => void = () => {}): HeldRegistry | null {
+  acquire(plan: LspPlan, cwd: string, onNotice: (notice: LspNotice) => void, onStatus: () => void = () => {}, withhold: readonly string[] = []): HeldRegistry | null {
     if (this.stopping !== null) return null
     // Who approved what is not part of what a registry is: an approval given later is told to the one that exists.
-    const key = stableJson({ cwd: resolve(cwd), config: plan.config as unknown as Json, servers: plan.servers.map((server) => ({ name: server.config.name, origin: server.origin, fingerprint: server.fingerprint })) })
+    const key = stableJson({
+      cwd: resolve(cwd),
+      config: plan.config as unknown as Json,
+      servers: plan.servers.map((server) => ({ name: server.config.name, origin: server.origin, fingerprint: server.fingerprint })),
+      ...(withhold.length === 0 ? {} : { withhold: [...withhold].sort() }),
+    })
     let held = this.held.get(key)
     if (held === undefined) {
       const listeners = new Set<(notice: LspNotice) => void>()
       const watchers = new Set<() => void>()
-      const registry = createLspRegistry({ ...this.setup, plan, cwd, onNotice: (notice) => [...listeners].forEach((listener) => listener(notice)), onStatus: () => [...watchers].forEach((watcher) => watcher()) })
+      const registry = createLspRegistry({ ...this.setup, plan, cwd, ...(withhold.length === 0 ? {} : { withhold }), onNotice: (notice) => [...listeners].forEach((listener) => listener(notice)), onStatus: () => [...watchers].forEach((watcher) => watcher()) })
       held = { key, registry, listeners, watchers }
       this.held.set(key, held)
     }

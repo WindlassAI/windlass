@@ -48,9 +48,16 @@ export interface ShellOptions extends ToolOptions {
   /**
    * Wraps a command the step loop decided to run sandboxed. Without it such
    * a command is refused: the tool never runs unsandboxed what it was told
-   * to sandbox.
+   * to sandbox. It also says what of the environment a command of a session
+   * that runs without the sandbox is not given (`CommandSandbox.environment`).
    */
   readonly sandbox?: CommandSandbox
+  /**
+   * The environment of a command that runs without the sandbox, for a caller
+   * that knows it. Default: what `sandbox` says for the session, and without
+   * that the harness's own.
+   */
+  readonly env?: Readonly<Record<string, string | undefined>>
 }
 
 export const DEFAULT_TIMEOUT_SECONDS = 120
@@ -90,14 +97,14 @@ export function shellTool(options: ShellOptions): Tool<ShellInput> {
     },
     effect: "exec",
     execute: (input, context) =>
-      (input.background === true ? startBackground : runShell)(input, context, { shell, graceMs, spillLimit, spillDir: options.spillDir, sandbox: options.sandbox ?? null }),
+      (input.background === true ? startBackground : runShell)(input, context, { shell, graceMs, spillLimit, spillDir: options.spillDir, sandbox: options.sandbox ?? null, env: options.env ?? null }),
   }
 }
 
 async function runShell(
   input: ShellInput,
   context: ToolContext,
-  options: { shell: string; graceMs: number; spillLimit: number; spillDir: string; sandbox: CommandSandbox | null },
+  options: { shell: string; graceMs: number; spillLimit: number; spillDir: string; sandbox: CommandSandbox | null; env: Readonly<Record<string, string | undefined>> | null },
 ): Promise<ToolResult> {
   const startedAt = performance.now()
   const timeoutSeconds = input.timeout ?? DEFAULT_TIMEOUT_SECONDS
@@ -114,7 +121,7 @@ async function runShell(
   const spillPath = join(spillDir, `shell-${safeName(context.messageId)}-${safeName(context.callId)}.log`)
   const buffer = createOutputBuffer(Bun.file(spillPath).writer(), options.spillLimit, context)
 
-  const spawned = spawn(wrapped ?? { argv: [options.shell, "-c", input.command], env: process.env, cwd: context.cwd })
+  const spawned = spawn(wrapped ?? { argv: [options.shell, "-c", input.command], env: unsandboxedEnv(context, options), cwd: context.cwd })
   if (spawned instanceof Error) {
     void wrapped?.ended?.()
     await buffer.close()
@@ -185,7 +192,7 @@ async function runShell(
 async function startBackground(
   input: ShellInput,
   context: ToolContext,
-  options: { shell: string; graceMs: number; spillLimit: number; spillDir: string; sandbox: CommandSandbox | null },
+  options: { shell: string; graceMs: number; spillLimit: number; spillDir: string; sandbox: CommandSandbox | null; env: Readonly<Record<string, string | undefined>> | null },
 ): Promise<ToolResult> {
   const refused = (output: string): ToolResult => ({ status: "error", output, truncation: null, attachments: [], display: { exitCode: null, signal: null, timedOut: false, interrupted: null } })
   const host = context.background
@@ -201,7 +208,7 @@ async function startBackground(
   const sink = Bun.file(logPath).writer()
   // No progress events: the call is over long before the command prints anything.
   const buffer = createOutputBuffer(sink, options.spillLimit, { ...context, progress: () => {} })
-  const spawned = spawn(wrapped ?? { argv: [options.shell, "-c", input.command], env: process.env, cwd: context.cwd })
+  const spawned = spawn(wrapped ?? { argv: [options.shell, "-c", input.command], env: unsandboxedEnv(context, options), cwd: context.cwd })
   if (spawned instanceof Error) {
     void wrapped?.ended?.()
     await buffer.close()
@@ -281,6 +288,11 @@ function sandboxed(command: string, context: ToolContext, options: { shell: stri
   const plan = options.sandbox.plan({ sessionId: context.sessionId, cwd: context.cwd, run: context.sandbox!, command, shellPath: options.shell })
   if (plan.kind !== "ready") return { refused: `it must run in the sandbox, which is unavailable: ${plan.reason}` }
   return { argv: plan.argv, env: plan.env, cwd: plan.cwd, started: plan.started, ended: plan.ended }
+}
+
+/** The environment of a command that runs without the sandbox: the harness's own, without what the session's commands are not given. */
+function unsandboxedEnv(context: ToolContext, options: { sandbox: CommandSandbox | null; env: Readonly<Record<string, string | undefined>> | null }) {
+  return options.env ?? options.sandbox?.environment?.unsandboxed(context.sessionId) ?? process.env
 }
 
 function spawn(plan: { readonly argv: readonly string[]; readonly env: Readonly<Record<string, string | undefined>>; readonly cwd: string }) {

@@ -88,6 +88,8 @@ export function createHookRunner(options: HookRunnerOptions): HookRunner {
     const forward = () => interrupt.interrupt(interruptReasonOf(request.signal) ?? "user")
     request.signal.addEventListener("abort", forward, { once: true })
     const secrets = options.secrets?.() ?? []
+    // A hook that runs without the sandbox is a command of the session: it is not given what the session's commands are not.
+    const env = options.sandbox?.environment?.unsandboxed(request.sessionId)
     try {
       const result = await runCheck(
         { name: `hook-${request.hook.id.replace(/[^A-Za-z0-9_.-]/g, "_")}-${nonce.slice(0, 8)}`, command, timeoutSeconds: request.hook.timeoutSeconds, when: null },
@@ -101,7 +103,7 @@ export function createHookRunner(options: HookRunnerOptions): HookRunner {
           // A hook's output is tool output: redacted as it arrives, before it is kept, cut or read back.
           redact: (value: string) => redactPieces(value, secrets),
           unfinishedSecret: (value: string) => unfinishedSecret(value, secrets),
-          ...(request.sandbox === null ? {} : { sandbox: { sandbox: options.sandbox!, run: request.sandbox, sessionId: request.sessionId } }),
+          ...(request.sandbox !== null ? { sandbox: { sandbox: options.sandbox!, run: request.sandbox, sessionId: request.sessionId } } : env === undefined ? {} : { env }),
         },
       )
       if (result.output.path !== null) await rm(result.output.path, { force: true })
