@@ -201,6 +201,7 @@ describe("the user guide against the code", () => {
     expect(tableKeys("Key in `checks[]`")).toEqual(validatorKeys('{ "checks": [{ "zzz": 1 }] }'))
     expect(tableKeys("Key in `verify`")).toEqual(validatorKeys('{ "verify": { "zzz": 1 } }'))
     expect(tableKeys("Key in `approval`")).toEqual(validatorKeys('{ "approval": { "zzz": 1 } }'))
+    expect(tableKeys("Key in `sandbox`")).toEqual(validatorKeys('{ "sandbox": { "zzz": 1 } }'))
   })
 
   test("the configuration error in the troubleshooting page lists the validator's keys", () => {

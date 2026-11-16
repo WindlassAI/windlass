@@ -140,7 +140,7 @@ describe("validation errors name the file and the path", () => {
     ["model type", `{"model": 3}`, "f.json: model: expected non-empty string, got 3"],
     ["empty effort", `{"effort": ""}`, `f.json: effort: expected non-empty string, got ""`],
     ["unknown top-level key, close", `{"modle": "x"}`, `f.json: modle: unknown key "modle" (did you mean "model"?); known keys: $schema, model, effort, checks, verify`],
-    ["unknown key, nothing close", `{"sandbox": {}}`, `f.json: sandbox: unknown key "sandbox"; known keys: $schema, model, effort, checks, verify`],
+    ["unknown key, nothing close", `{"permissions": {}}`, `f.json: permissions: unknown key "permissions"; known keys: $schema, model, effort, checks, verify`],
     ["unknown verify key", `{"verify": {"maxRound": 2}}`, `f.json: verify.maxRound: unknown key "maxRound" (did you mean "maxRounds"?); known keys: mode, maxRounds`],
     ["bad mode", `{"verify": {"mode": "gated"}}`, `f.json: verify.mode: expected "off" | "report" | "gate", got "gated"`],
     ["maxRounds zero", `{"verify": {"maxRounds": 0}}`, "f.json: verify.maxRounds: expected integer >= 1, got 0"],
@@ -320,6 +320,31 @@ describe("the commands and telemetry sections", () => {
     expect(loaded.files.project?.telemetry).toEqual({ enabled: false })
     expect(loaded.files.user?.commands).toEqual({ disabled: ["a"] })
     expect(loaded.files.project?.commands).toEqual({ disabled: ["b"] })
+  })
+})
+
+describe("the sandbox section", () => {
+  test("the home of sandboxed commands is the user's or the session's, validated by its own module, and not part of the merged configuration", () => {
+    expect(parseConfigFile(JSON.stringify({ sandbox: { home: "session" } }), "f.json").sandbox).toEqual({ home: "session" })
+    expect(parseConfigFile(JSON.stringify({ sandbox: { home: "user" } }), "f.json").sandbox).toEqual({ home: "user" })
+    expect(parseConfigFile(JSON.stringify({ sandbox: {} }), "f.json").sandbox).toEqual({})
+    expect(Object.keys(resolveConfig(parseConfigFile(JSON.stringify({ sandbox: { home: "session" } }), "f.json"))).sort()).toEqual(["checks", "effort", "model", "verify"])
+  })
+
+  test("a bad value names the file and the path", () => {
+    expect(errorOf(() => parseConfigFile(JSON.stringify({ sandbox: { home: true } }), "f.json")).message).toBe("f.json: sandbox.home: expected one of: user, session")
+    expect(errorOf(() => parseConfigFile(JSON.stringify({ sandbox: { home: "own" } }), "f.json")).message).toBe("f.json: sandbox.home: expected one of: user, session")
+    expect(errorOf(() => parseConfigFile(JSON.stringify({ sandbox: { sessionHome: true } }), "f.json")).message).toBe('f.json: sandbox.sessionHome: unknown key "sessionHome"; known keys: home')
+    expect(errorOf(() => parseConfigFile(JSON.stringify({ sandbox: "session" }), "f.json")).message).toBe("f.json: sandbox: expected an object")
+  })
+
+  test("both files are handed on apart: only the user's own turns the session's home on", async () => {
+    const { home, repo, userFile } = layout()
+    write(userFile, { sandbox: { home: "session" } })
+    write(projectFile(repo), { sandbox: { home: "user" } })
+    const loaded = await loadConfig({ cwd: repo, home, env: {} })
+    expect(loaded.files.user?.sandbox).toEqual({ home: "session" })
+    expect(loaded.files.project?.sandbox).toEqual({ home: "user" })
   })
 })
 

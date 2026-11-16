@@ -265,5 +265,5 @@ work goes on, only more slowly and with more tokens. Please report it with the s
     /home/me/project/.windlass/config.json: chekcs: unknown key
     "chekcs" (did you mean "checks"?); known keys: $schema, model, effort, checks,
     verify, approval, mcp, skills, wake, memory, agents, hooks, lsp, commands,
-    telemetry
+    telemetry, sandbox
   ```

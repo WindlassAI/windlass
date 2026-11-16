@@ -708,7 +708,7 @@ export class Transcript {
         this.notice(SYMBOL.note, "dim", [span("the conversation is trusted again (/clear-taint): approvals apply as before", "dim")], [], replay, "session")
         return
       case "notice": {
-        const what = event.kind === "sandbox_unavailable" ? "no sandbox" : event.kind === "approval_ignored" ? "a project setting was not followed" : event.kind === "checks_not_run" ? "checks not run" : event.kind === "no_closing_answer" ? "no closing answer" : String(event.kind).replace(/_/g, " ")
+        const what = event.kind === "sandbox_unavailable" ? "no sandbox" : event.kind === "approval_ignored" ? "a project setting was not followed" : event.kind === "checks_not_run" ? "checks not run" : event.kind === "session_home" ? "session home" : event.kind === "no_closing_answer" ? "no closing answer" : String(event.kind).replace(/_/g, " ")
         const [first = "", ...rest] = sanitize(event.message)
           .split("\n")
           .map((line) => line.trim())

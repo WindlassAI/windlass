@@ -5,7 +5,7 @@
  *
  * Every key is optional in a file. Unknown keys are errors, with a suggestion
  * when a known key is close, so a typo never silently disables a setting.
- * Sections are objects (`verify`, and later `sandbox`, `permissions`), so a new
+ * Sections are objects (`verify`, `sandbox`, and later `permissions`), so a new
  * section or a new key in a section is an addition that leaves existing files valid.
  *
  * Merging (`mergeConfigFiles`): the project file overrides the user file key by
@@ -21,6 +21,7 @@ import { type HookOrigin, type HooksConfigSection, parseHooksSection } from "../
 import { type LspConfigSection, parseLspSection } from "../lsp/config.ts"
 import { type McpConfigSection, parseMcpSection } from "../mcp/config.ts"
 import { type MemoryConfigSection, parseMemorySection } from "../memory/config.ts"
+import { type SandboxConfigSection, parseSandboxSection } from "../sandbox/config.ts"
 import { type SkillsConfigSection, parseSkillsSection } from "../skills/config.ts"
 import { type TelemetryConfigSection, parseTelemetrySection } from "../telemetry/config.ts"
 import { DecodeError, type Infer, type Validator, integer, nonEmptyString, oneOf, string } from "../validate.ts"
@@ -117,7 +118,7 @@ const checks: Validator<readonly ReturnType<typeof check>[]> = (input, path) => 
 /**
  * The sections other modules define (`mcp/config.ts`, `skills/config.ts`,
  * `wake/config.ts`, `memory/config.ts`, `agents/config.ts`, `lsp/config.ts`, `commands/config.ts`,
- * `telemetry/config.ts`). Each is validated by its own module,
+ * `telemetry/config.ts`, `sandbox/config.ts`). Each is validated by its own module,
  * which names the file and the path of a bad value, in `parseConfigFile`;
  * here they are only known keys. None of them is merged like the other keys
  * where it matters who wrote it: `load.ts` hands on both files as written.
@@ -133,6 +134,7 @@ const FEATURE_SECTIONS = {
   lsp: parseLspSection,
   commands: parseCommandsSection,
   telemetry: parseTelemetrySection,
+  sandbox: parseSandboxSection,
 } as const
 const passed: Validator<unknown> = (input) => input
 
@@ -160,6 +162,7 @@ const baseFile = section({
   lsp: passed,
   commands: passed,
   telemetry: passed,
+  sandbox: passed,
 })
 
 /** One configuration file, as written. */
@@ -190,6 +193,12 @@ export type ConfigFile = Omit<Infer<typeof baseFile>, keyof typeof FEATURE_SECTI
    * (`resolveTelemetryConfig` is handed both files' sections).
    */
   readonly telemetry?: TelemetryConfigSection
+  /**
+   * The sandbox (`sandbox/config.ts`): whether sandboxed commands get a home of the session's own. Never merged: only
+   * the user's own file can turn it on; a project's file can only turn it off (`resolveSandboxHome` is handed both
+   * files' sections).
+   */
+  readonly sandbox?: SandboxConfigSection
 }
 
 /**
@@ -197,7 +206,7 @@ export type ConfigFile = Omit<Infer<typeof baseFile>, keyof typeof FEATURE_SECTI
  * `origin` says whose file it is, for the one section that is validated differently for a project's (`hooks`).
  */
 export function configFile(input: unknown, path: string, file = "configuration", origin: HookOrigin = "user"): ConfigFile {
-  const { mcp, skills, wake, memory, agents, hooks, lsp, commands, telemetry, ...rest } = baseFile(input, path)
+  const { mcp, skills, wake, memory, agents, hooks, lsp, commands, telemetry, sandbox, ...rest } = baseFile(input, path)
   return {
     ...rest,
     ...(mcp === undefined ? {} : { mcp: FEATURE_SECTIONS.mcp(mcp, file) }),
@@ -209,6 +218,7 @@ export function configFile(input: unknown, path: string, file = "configuration",
     ...(lsp === undefined ? {} : { lsp: FEATURE_SECTIONS.lsp(lsp, file) }),
     ...(commands === undefined ? {} : { commands: FEATURE_SECTIONS.commands(commands, file) }),
     ...(telemetry === undefined ? {} : { telemetry: FEATURE_SECTIONS.telemetry(telemetry, file) }),
+    ...(sandbox === undefined ? {} : { sandbox: FEATURE_SECTIONS.sandbox(sandbox, file) }),
   }
 }
 

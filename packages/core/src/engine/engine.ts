@@ -122,6 +122,8 @@ import { type ProviderError, makeProviderError } from "../provider/error.ts"
 import type { FinishReason, Provider, ResponseFacts, StreamEvent } from "../provider/provider.ts"
 import { type Usage, sumUsage } from "../provider/usage.ts"
 import type { CommandSandbox } from "../sandbox/command.ts"
+import { type SandboxHomeChoice, resolveSandboxHome } from "../sandbox/config.ts"
+import { SESSION_HOME_KEY, sessionHomeUpdate } from "../sandbox/home-note.ts"
 import { type PrefixVerdict, checkPrefix } from "../request/build-break.ts"
 import { CHECKPOINT_ORIGIN, type CallOptions, HARNESS_CLOSE, buildCompactionRequest, buildRequest, harnessOpen } from "../request/build.ts"
 import { canonicalJson } from "../request/canonical.ts"
@@ -1043,6 +1045,16 @@ export interface EngineSession {
    * the next decision. Not stored: a client says it again when it opens the session.
    */
   readonly setApproval: (section: ApprovalSection) => void
+  /**
+   * What this session's sandboxed commands find at the home directory's
+   * path, as the client that opened it chose for the user: the user's home,
+   * read-only (`"user"`), or on Linux a home of the session's own
+   * (`"session"`, `sandbox/config.ts`). It goes on top of the user's file;
+   * the project's file can still only turn the session's home off. `null`:
+   * the client says nothing, and the files decide. Applies from the next
+   * command. Not stored: a client says it again when it opens the session.
+   */
+  readonly setSandboxHome: (home: SandboxHomeChoice | null) => void
   /** How calls are decided right now; `null` when the approval layer is off. */
   readonly approval: () => ApprovalState | null
   /**
@@ -1430,6 +1442,8 @@ export function createEngine(options: EngineOptions): Engine {
           if (summary === null) return { refused: "its session no longer exists" }
           const config = core.loadConfigSync === null ? null : core.loadConfigSync(summary.session.cwd)
           const resolved = effectivePolicy({ file: config?.approval?.user ?? null, process: core.approvals.user, session: null, project: config?.approval?.project ?? null }).policy
+          // The check gets the home of the session's own where the files turn it on, as a command of the open session would.
+          if (resolveSandboxHome({ user: config?.files?.user?.sandbox, session: null, project: config?.files?.project?.sandbox }).home === "session") core.approvals.sandbox().sessionHome?.use(id, true)
           const agent = summary.session.agent ?? null
           const mode = agent === null || agent.restrictions.approval === null ? resolved.mode : effectiveApprovalMode(resolved.mode, agent).mode
           // Untrusted content the session itself told the user about counts too: where this process cannot read the
@@ -2021,6 +2035,10 @@ class LiveSession implements EngineSession {
   private attended = false
   /** The user's approval settings for this session, as a client gave them. */
   private override: ApprovalSection | null = null
+  /** The home the user chose for this session's sandboxed commands, as a client gave it; `null`: the files decide. */
+  private homeChoice: SandboxHomeChoice | null = null
+  /** Whether the sandbox was told to give this session a home of its own, and whether its commands get one (`applyHome`). */
+  private home = { on: false, used: false }
   /** The question that waits for an answer. One at a time. */
   private question: PendingQuestion | null = null
   /** The questions asked so far, as a chain: each waits for the one before it. */
@@ -2342,6 +2360,12 @@ class LiveSession implements EngineSession {
   setApproval = (section: ApprovalSection): void => {
     this.override = { ...this.override, ...section }
     for (const child of this.children) child.setApproval(section)
+  }
+
+  setSandboxHome = (home: SandboxHomeChoice | null): void => {
+    this.homeChoice = home
+    for (const child of this.children) child.setSandboxHome(home)
+    this.applyHome()
   }
 
   approval = (): ApprovalState | null => {
@@ -3844,7 +3868,7 @@ class LiveSession implements EngineSession {
           this.decided.delete(key)
           const settlement = this.settlement(result, effect, stopOf(call).signal)
           // The note for a failure the sandbox causes, then the redaction: what is stored is what is replayed.
-          const shown = approvals === null ? settlement : { ...settlement, ...finishOutput(settlement, decided?.run, effect, approvals.secrets, place.temp) }
+          const shown = approvals === null ? settlement : { ...settlement, ...finishOutput(settlement, decided?.run, effect, approvals.secrets, place.temp, this.home.used) }
           // The hooks that applied to the call are recorded with what they decided, and what the language servers said with the result their note is in.
           const hooks = this.hookRecords.get(key) ?? []
           const diagnostics = this.lspSaid.get(key)
@@ -4501,6 +4525,7 @@ class LiveSession implements EngineSession {
     // It asks through this session's client, or nobody; it runs under this session's approval settings.
     child.setAttended(this.attended && this.childQuestions, { children: this.childQuestions })
     if (this.override !== null) child.setApproval(this.override)
+    if (this.homeChoice !== null) child.setSandboxHome(this.homeChoice)
     const fromSeq = child.projection().lastSeq
     const forward = child.subscribe((item) => {
       if ("seq" in item) this.ephemeral({ type: "child.event", sessionId: this.id, child: child.id, spawnId, title: work.title, event: item })
@@ -5107,10 +5132,34 @@ class LiveSession implements EngineSession {
     this.ephemeral({ type: "notice", sessionId: this.id, kind, message })
   }
 
+  /**
+   * Tells the sandbox whether this session's commands get a home of the
+   * session's own, as the configuration and the client's choice say now, and
+   * the user, once, what they should know about it: that the project's file
+   * asked for one and was not followed, or that the home is on and the
+   * session gets none, or not all of the user's home in it, and why. The
+   * sandbox is not looked at for a session that never had the home on.
+   */
+  private applyHome(): void {
+    const approvals = this.core.approvals
+    if (approvals === null) return
+    const files = this.files()
+    const { home, ignored } = resolveSandboxHome({ user: files?.user?.sandbox, session: this.homeChoice, project: files?.project?.sandbox })
+    if (ignored !== null) this.notice("approval_ignored", `The project's configuration asks for a home of the session's own for sandboxed commands and was not followed: ${ignored}. A project file can only turn it off.`)
+    const on = home === "session"
+    if (!on && !this.home.on) return
+    const homes = approvals.sandbox().sessionHome
+    homes?.use(this.id, on)
+    const state = on ? homes?.state({ sessionId: this.id, cwd: this.projection().session.cwd }) : undefined
+    this.home = { on, used: state?.used === true }
+    if (state != null && state.notice !== null) this.notice("session_home", state.notice)
+  }
+
   /** When an execution starts under the configuration just read: what is missing or was not followed, and taint that is not on record yet. */
   private announcePolicy(): void {
     const approvals = this.core.approvals
     if (approvals === null) return
+    this.applyHome()
     const { policy, ignored } = this.policy()
     const state = approvals.sandbox().state
     if (!state.available && policy.mode !== "full")
@@ -5541,6 +5590,8 @@ class LiveSession implements EngineSession {
       for (const problem of set.problems) this.say("agents", describeAgentProblem(problem, inForce, set.agents.find((agent) => agent.name === problem.name)?.path ?? null))
       sources.push(agentIndexAppended(set))
     }
+    // The home of the session's own, for a session that can run a command: said when its commands get one, withdrawn when they no longer do.
+    if (this.core.approvals !== null && this.offers(projection, "shell")) sources.push({ key: SESSION_HOME_KEY, update: (known) => sessionHomeUpdate(known, this.home.used) })
     const notes = this.memoryStore(projection)
     if (notes !== null)
       sources.push(memorySource({ session: this.id, store: notes, config: this.memoryConfig(), now: new Date(this.core.clock.now()), problem: (message) => this.say("memory", message) }))

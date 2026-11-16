@@ -72,6 +72,7 @@ import {
   type StoredEvent,
   StoreError,
   approvalModes,
+  sandboxHomeChoices,
   brand,
   currentTodos,
   describeRestrictions,
@@ -196,7 +197,7 @@ export const EXTENSION_CAPABILITIES = {
   /** Keys of `clientCapabilities._meta[<ns>]` this server reads (`ClientMeta`). */
   clientMeta: ["events", "updates"],
   /** Keys of `_meta[<ns>]` on `session/new`, `session/load` and `session/resume` (`OpenMeta`). */
-  openMeta: ["model", "effort", "agent", "approval", "unattended", "attended", "children"],
+  openMeta: ["model", "effort", "agent", "approval", "unattended", "sandboxHome", "attended", "children"],
   /** The permission requests this server sends: the hand-edit question of an undo, and the approval of a tool call (the session's own, or a subagent's). */
   permissionRequests: ["revert", APPROVAL_META],
 } as const
@@ -1728,6 +1729,7 @@ function openMeta(meta: unknown): OpenMeta | null {
     archived: value.archived === true,
     approval: oneOfOrNull(value.approval, approvalModes, `_meta.${META.capabilities}.approval`),
     unattended: oneOfOrNull(value.unattended, UNATTENDED, `_meta.${META.capabilities}.unattended`),
+    sandboxHome: oneOfOrNull(value.sandboxHome, sandboxHomeChoices, `_meta.${META.capabilities}.sandboxHome`),
     ...(typeof value.attended === "boolean" ? { attended: value.attended } : {}),
     ...(typeof value.children === "boolean" ? { children: value.children } : {}),
   }
@@ -1743,8 +1745,9 @@ function oneOfOrNull<const T extends readonly string[]>(value: unknown, allowed:
 /**
  * What a client says about approval when it opens a session: whether a
  * person is there to answer (yes, unless it says otherwise: an ACP client
- * can answer `session/request_permission`), and the user's own mode and
- * unattended behaviour for this session.
+ * can answer `session/request_permission`), the user's own mode and
+ * unattended behaviour for this session, and the home its sandboxed commands
+ * get, when the client says which.
  */
 function applyApproval(session: EngineSession, meta: OpenMeta | null): void {
   const attended = meta?.attended ?? true
@@ -1757,6 +1760,8 @@ function applyApproval(session: EngineSession, meta: OpenMeta | null): void {
       ...(mode === null ? {} : { mode: mode as (typeof approvalModes)[number] }),
       ...(unattended === null ? {} : { unattended: unattended as (typeof UNATTENDED)[number] }),
     })
+  const home = meta?.sandboxHome ?? null
+  if (home !== null) session.setSandboxHome(home as (typeof sandboxHomeChoices)[number])
 }
 
 function stepLimit(value: unknown): number | undefined {

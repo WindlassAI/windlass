@@ -82,6 +82,8 @@ export interface SandboxRun {
   readonly sandboxed: boolean
   /** It had the network on. */
   readonly network: boolean
+  /** It had a home of the session's own (`sandbox/home-note.ts`), where it could write besides the workspace and the temp directory. */
+  readonly home?: boolean
   /** Null when it was stopped (timeout, interrupt). */
   readonly exitCode: number | null
   readonly output: string
@@ -163,7 +165,8 @@ export function sandboxHint(run: SandboxRun): SandboxHint | null {
   if (suspects.length === 0) return null
   const notes: string[] = []
   if (network || write) {
-    const limits = run.network ? "writes only inside the workspace and the temp directory" : "no network, and writes only inside the workspace and the temp directory"
+    const writes = run.home === true ? "writes only inside the workspace, the temp directory and this session's own home, where what the user already has is read-only" : "writes only inside the workspace and the temp directory"
+    const limits = run.network ? writes : `no network, and ${writes}`
     const ask = [...(network ? ['`sandbox: { "network": true }`'] : []), ...(write ? ['`sandbox: { "write": ["<directory>"] }`'] : [])].join(" or ")
     const shows = failed ? "its output shows an error the sandbox can cause" : "its output shows that a network request failed, although it exited 0 (a pipeline or `|| true` hides a failure)"
     notes.push(`[sandbox] This command ran in the sandbox (${limits}), and ${shows}. If it needs that access, run it again with ${ask}; the user will be asked.`)
