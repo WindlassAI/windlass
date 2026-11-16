@@ -59,7 +59,7 @@ every command the agent started is stopped, and the session resumes later where 
 | --- | --- |
 | `initialize` | Protocol version 1. Capabilities: `loadSession`, embedded text context in prompts, `sessionCapabilities` `list`, `resume`, `close`, `delete`. One auth method, "Sign in with ChatGPT". |
 | `authenticate` | Checks the saved sign-in, or the access token handed in through `WINDLASS_ACCESS_TOKEN_FILE`; succeeds if it is usable, otherwise answers auth-required with how to sign in, or that a new token must be handed in. There is no in-client browser flow. |
-| `session/new` | A session in the client's `cwd` (an absolute directory). The response carries the config options below. `_meta["windlass"] = { model, effort }` starts it with those settings, checked against the account's models first (an unknown model is refused with `-32602` and the list of valid ones, an effort the model does not take with the ones it accepts). `agent` in the same object is the agent it starts as, by name (`"none"`: no agent; absent: the default of the user's configuration); a name that is no agent is refused with `-32602` and a sentence that suggests the near ones, and no session is created. `approval` (`ask`, `auto`, `full`), `unattended` (`deny`, `stop`), `attended` (default `true`) and `children` (default: as `attended`) in the same object say how tool calls are approved (see "Approval" below), and `sandboxHome` (`user`, `session`) what sandboxed commands find at the home directory's path (see "The session's home" below); they are read on `session/load` and `session/resume` too. |
+| `session/new` | A session in the client's `cwd` (an absolute directory). The response carries the config options below. `_meta["windlass"] = { model, effort }` starts it with those settings, checked against the account's models first (an unknown model is refused with `-32602` and the list of valid ones, an effort the model does not take with the ones it accepts). `agent` in the same object is the agent it starts as, by name (`"none"`: no agent; absent: the default of the user's configuration); a name that is no agent is refused with `-32602` and a sentence that suggests the near ones, and no session is created. `approval` (`ask`, `auto`, `full`), `unattended` (`deny`, `stop`), `attended` (default `true`) and `children` (default: as `attended`) in the same object say how tool calls are approved (see "Approval" below), `sandboxHome` (`user`, `session`) what sandboxed commands find at the home directory's path (see "The session's home" below), and `withholdEnv` and `passEnv` (lists of environment variable names) what of the server's environment the session's commands get (see "A command's environment" below); they are read on `session/load` and `session/resume` too. |
 | `session/load` | Replays the whole stored conversation as `session/update`s (user messages, reasoning, text, tool calls with their final status), then reports the title (`session_info_update`), the context use (`usage_update`), and the session's state (the `_windlass/state` notification below), then answers. The `cwd` must be the session's own. |
 | `session/resume` | The same without the replay. On load and resume, `_meta["windlass"] = { model, effort }` switches the session to them (checked first, recorded as `settings.changed`), `agent` switches it to that agent (recorded as `agent.switched`; a refusal leaves the session closed), and `archived: true` opens an archived session too. |
 | `session/list` | Sessions (not deleted), newest first, filtered by `cwd`, 100 per page. Each has `_meta["windlass"] = { model, effort, archived?, forkedFrom?, forkedThroughSeq? }` (a fork names the session it was forked from and the last event it inherited). With `_meta["windlass"] = { archived: true }` archived sessions are listed too. The `title` is the session's own, or else derived from its first prompt (below). Each page is read from the engine: `nextCursor` is a place in the order (when a session was last updated, then its ID), so the server keeps nothing between two pages, a session that arrives meanwhile is in no later page, and none is listed twice; a new listing has it at the front. A cursor the server did not give is refused with `-32602`. |
@@ -166,7 +166,7 @@ Before every tool call the harness decides whether it runs, runs in the sandbox,
   `_windlass/taint` `{ tainted: false }`.
 - **Notices.** `_windlass/notice` `{ sessionId, kind, message }` says once what the user should know about how
   tools run here: `sandbox_unavailable` (why, and what would fix it), `approval_ignored` (a project setting that
-  would have loosened the policy, or asked for the session's home), `checks_not_run`, `session_home` (the session's
+  would have loosened the policy, asked for the session's home, or named environment variables for commands), `checks_not_run`, `session_home` (the session's
   home is on and the session gets none, or not all of the user's home in it, and why); and about how a turn ended,
   `no_closing_answer` (the model did its work and then returned nothing twice, so the turn ended without a last
   word from it).
@@ -181,6 +181,34 @@ Before every tool call the harness decides whether it runs, runs in the sandbox,
   `session/load` and `session/resume` it sends. The model is told in a message of the session when its commands
   get the home, and again when they no longer do; a value that is neither `user` nor `session` is refused with
   `-32602`.
+- **A command's environment.** The server's commands inherit from the environment the server was started with:
+  a sandboxed one gets every variable but those whose name looks like a credential, one without the sandbox gets
+  all of them ([safety.md](safety.md), "A command's environment"). Two lists in `_meta["windlass"]` when a session
+  is opened change that for the session, by name:
+
+  ```json
+  { "_meta": { "windlass": { "withholdEnv": ["SENTRY_DSN"], "passEnv": ["DEPLOY_KEY"] } } }
+  ```
+
+  `withholdEnv` names variables that no command the agent runs is given, whatever the name looks like: the shell
+  tool's commands, the project's checks, hooks, programs, language servers, and the same for subagents. An MCP
+  server whose definition names such a variable (`${SENTRY_DSN}`) still gets it. `passEnv` names variables that
+  sandboxed commands are given although the name looks like a credential. A name in both is withheld. This is how
+  a client that hands the server a user's secrets in its environment keeps "for the MCP servers only" and "also
+  for the commands" apart. The lists hold names and never a value; a value that is not a list of at most 256
+  names of letters, digits and `_` is refused with `-32602`, and the refusal does not repeat it.
+
+  They are the user's choice for the session: they add to `sandbox.withholdEnv` and `sandbox.passEnv` of the
+  user's own configuration file, and a project's file sets neither. They are not stored, so a client says them
+  again each time it opens the session, on `session/load` and `session/resume` too. In a server that still has
+  the session open, opening it again without either key keeps what was said, and `[]` for both takes them back. A
+  wake-up that fires while no server has the session open runs under the user's file alone.
+
+  In the sandbox on Linux a withheld variable cannot be had: the command is not given it and cannot see the
+  server's process. Without the sandbox (`approval: "full"`, a machine where the sandbox is unavailable, a
+  command the user allowed to run without it) the command is not given it either, but it runs as the server's
+  user and can read it from the server's process: there `withholdEnv` keeps a variable out of what a command
+  prints or passes on by accident, and protects nothing. The model is told nothing about the lists.
 - **A session that is loaded** replays an asked-and-answered call as the call with its final status and content.
   A client that takes the harness's events gets `approval.requested`, `approval.answered` and `approval.denied`
   with `replay: true`; it shows them as history and puts no question. No question is ever pending in a stored

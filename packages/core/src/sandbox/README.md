@@ -8,7 +8,7 @@ It stops a command from:
 - writing outside the writable roots, the temp directory and, where it has one, its own home (below), including through `..`, absolute paths, and symlinks (old ones or ones it creates);
 - reading or listing hidden paths: SSH, GPG, cloud and AI-tool credentials, browser profiles, the harness's own data and config directories, and the file an access token is handed in through (`auth/handed-in.ts`), wherever it is;
 - using the network when it is `off`: TCP, UDP and DNS, including loopback to the host and abstract unix sockets;
-- receiving credential-looking environment variables;
+- receiving credential-looking environment variables, except the ones named to pass, and any variable named as withheld ("The environment of a session's commands" below);
 - on Linux, seeing or signalling host processes, and outliving a kill of its process group.
 
 The default policy also hides `/run/user/<uid>` and the Docker, Podman, containerd, LXD and Incus sockets. Without that, `systemd-run --user` and `curl --unix-socket /var/run/docker.sock` both escaped here with network off. A unix socket on the filesystem stays reachable through a read-only mount.
@@ -69,6 +69,28 @@ And three conditions under which the race could still be run. None of them was c
 - Tells the sandbox which sessions have it: `sessionHome.use(sessionId, on)` when an execution starts and when the client changes its choice, from `resolveSandboxHome` (the user's file, the client's choice for the session, the project's file, which can only turn it off).
 - Tells the user once what `sessionHome.state` has to say (a `session_home` notice: the home is on and the session gets none, or not all of the user's home), and that a project's file asked for the home and was not followed.
 - Tells the model, in a stored message and never in the shell tool's description, which is frozen with the tool list and the same for every session: `sessionHomeUpdate` (`home-note.ts`) as an appended instruction source when the session's commands get the home, and a withdrawal when they no longer do. The note under a failed sandboxed command names the home too (`sandboxHint` with `home`).
+
+## The environment of a session's commands
+
+`filterEnv` gives a command every variable except the names `isCredentialName` matches. `EnvPolicy` can also leave names out whatever they look like (`names`) and exempt names from the credential rule (`keep`). `createCommandSandbox` sets the two for the commands of a session it was told names for (`environment.use(sessionId, { withhold, pass })`) and for no other: a session nothing was said about gets `{ mode: "deny" }`, as before. The settings are `sandbox.withholdEnv` and `sandbox.passEnv` (`config.ts`), both empty by default. They hold names only.
+
+`environment.unsandboxed(sessionId)` is the environment of a command of the session that runs without the sandbox: the one commands inherit from without the withheld names, or `undefined` when the session withholds none, and the caller then uses its own environment as it is. `pass` means nothing there, since such a command gets every credential.
+
+What a withheld name is worth:
+- under bubblewrap the command is not given the variable and cannot read it from the harness either: `--unshare-pid` with a fresh `/proc` shows it its own processes only. `test/sandbox/command-env.e2e.test.ts` looks through `/proc/*/environ` from inside for a variable a process outside was started with, and finds none;
+- without the sandbox the command is the harness's own user. It is not given the variable, and it can read it from `/proc/<pid of the harness>/environ` (the same test reads it from a process of its own user that was started with it). That keeps a variable out of what a command prints or hands to a child by accident, and is no protection;
+- under `sandbox-exec` the profile allows `process-info*` for the same sandbox only. Whether that keeps another process's environment from a command was not run.
+
+`workspacePolicy` never passes the variable that names the file a sign-in is handed in through (`ACCESS_TOKEN_FILE_ENV`): a sandboxed command is not told where that file is.
+
+Why a project's file sets neither list (`resolveCommandEnv`): `passEnv` would let a repository hand itself the user's credentials, and `withholdEnv` reaches the user's own hooks and checks, which run in the same environment, so a repository could take away a variable one of them decides by.
+
+### What the engine does to use it
+
+- Tells the sandbox the names of each session: `environment.use` when an execution starts, when the client names some (`EngineSession.setCommandEnv`) and with empty lists when the session is closed, from `resolveCommandEnv` (the user's file and the client's lists, which add up). A subagent is told its parent's. A wake-up's check for a session that is not open is run under the user's file alone.
+- Tells the user once that a project's file named some and was not followed (an `approval_ignored` notice, with the names).
+- Tells the model nothing: the shell tool's description and the note under a failed command say nothing about the environment, and no message is appended.
+- Passes the environment on wherever a command of the session runs without the sandbox, which is where `plan` is not asked: the shell tool (`ShellOptions.sandbox`), the project's checks (`RunCheckOptions.env`), hooks and a wake-up's check (their runners ask `environment.unsandboxed`), and a program's process, which takes its handful of variables from it (`CodeToolOptions.env`). A language server gets the withheld names as `LspRegistryOptions.withhold`: they are left out of its base variables, and a server whose `env` reads one does not start. An MCP server is not told: it gets what its definition names.
 
 ## Platforms
 

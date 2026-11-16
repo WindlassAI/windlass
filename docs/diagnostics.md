@@ -78,7 +78,7 @@ New warnings are not reported by default. With `"warnings": true` the note lists
 |---|---|
 | `command` | the program to start; it speaks the Language Server Protocol on its standard input and output |
 | `args` | its arguments, a list of strings |
-| `env` | environment variables for it, added to a basic set (`PATH`, `HOME`, ...) |
+| `env` | environment variables for it, added to a basic set (`PATH`, `HOME`, ...). A variable you withhold from the agent's commands (`sandbox.withholdEnv`, [safety.md](safety.md)) is not given to a language server either: one whose `env` names it does not start, and you are told why |
 | `languages` | required: each language ID the server is told, with the glob patterns of the files it serves, relative to the working directory |
 | `rootMarkers` | file names that mark a project root (`Cargo.toml`, `tsconfig.json`): the server is started for the nearest directory above the edited file that holds one |
 | `startupTimeoutSeconds` | how long the server may take to start, 1 to 300; default 30 |

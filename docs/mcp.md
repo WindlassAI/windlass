@@ -65,7 +65,9 @@ started by a `command` or reached at a `url`, never both.
 
 `${NAME}` in `env` and `headers` is replaced by the variable from the environment `windlass` runs in, when the server
 starts. That is how a token gets to a server without being written in the file. If the variable is not set, that
-server does not start.
+server does not start. A variable you withhold from the agent's commands (`sandbox.withholdEnv`,
+[safety.md](safety.md), "A command's environment") is still given to a server that names it: withholding it is how
+a server gets a secret that no command gets.
 
 ## A server in the project's file
 
