@@ -267,13 +267,15 @@ export interface Output {
  * note for a sandboxed command that failed in a way the sandbox causes, then
  * the redaction of the text and of every string in the structured data a
  * client shows. Deterministic: the same output and the same secrets give
- * the same bytes, and what is stored is what is replayed.
+ * the same bytes, and what is stored is what is replayed. `home`: the
+ * session's sandboxed commands have a home of the session's own, which the
+ * note then names.
  */
-export function finishOutput(result: Output, run: CallRun | undefined, effect: string | undefined, secrets: readonly string[], temp?: TempDirectory): Output {
+export function finishOutput(result: Output, run: CallRun | undefined, effect: string | undefined, secrets: readonly string[], temp?: TempDirectory, home = false): Output {
   const code = fields(result.display)?.exitCode
   const exitCode = typeof code === "number" ? code : null
   const hint =
-    effect === "exec" && run !== undefined && run.sandbox !== null ? sandboxHint({ sandboxed: true, network: run.sandbox.network, exitCode, output: result.output }) : null
+    effect === "exec" && run !== undefined && run.sandbox !== null ? sandboxHint({ sandboxed: true, network: run.sandbox.network, home, exitCode, output: result.output }) : null
   const output = hint === null ? result.output : `${result.output}${result.output.endsWith("\n") ? "" : "\n"}${hint.note}`
   return { output: redact(aliased(output, temp), secrets).text, display: redactJson(result.display, secrets) }
 }

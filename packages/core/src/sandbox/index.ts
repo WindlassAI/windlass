@@ -24,7 +24,8 @@ export {
 } from "./policy.ts"
 export { seatbeltProfile } from "./seatbelt.ts"
 export { type HomeLayer, type HomeMounts, HOME_BINDS, homeMounts, homeView } from "./bwrap.ts"
-export { type CommandInput, type CommandSandbox, type CommandSandboxOptions, type ConfinedInput, type GitLayout, confinedPolicy, createCommandSandbox, gitLayout, workspacePolicy } from "./command.ts"
+export { type CommandInput, type CommandSandbox, type CommandSandboxOptions, type ConfinedInput, type GitLayout, type SessionHomes, confinedPolicy, createCommandSandbox, gitLayout, workspacePolicy } from "./command.ts"
+export { type SandboxConfigSection, type SandboxHomeChoice, parseSandboxSection, resolveSandboxHome, sandboxHomeChoices } from "./config.ts"
 
 export type SandboxCommand =
   | { readonly argv: readonly string[]; readonly cwd: string }

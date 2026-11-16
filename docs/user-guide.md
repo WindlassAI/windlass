@@ -227,10 +227,12 @@ Before every tool call the program decides whether it runs, runs in a sandbox, a
 | `auto` (default) | run | run | run in the sandbox; more access asks |
 | `full` | run | run | run with your full permissions, nothing asks |
 
-- The sandbox (bubblewrap on Linux) lets a command write only in the project, a session temp directory and, on
-  Linux, a session home that stands in for yours so that tools can keep their caches and settings
-  ([safety.md](safety.md), "The session's home"). It hides credential stores and has no network. A command that
-  needs more is run only after you approve it.
+- The sandbox (bubblewrap on Linux) lets a command write only in the project and a session temp directory, hides
+  credential stores, and has no network. A command that needs more is run only after you approve it.
+- Tools that keep a cache or settings under your home directory fail there until you allow the directory. With
+  `"sandbox": { "home": "session" }` in your own configuration, commands on Linux get a session home that stands
+  in for yours instead. It is off by default: [safety.md](safety.md), "The session's home", says what it does and
+  what it costs.
 - Choose with `--approval <mode>`, or `/approval ask|auto|full` while working. A project's own configuration can make
   the policy stricter, never looser.
 - When nobody can answer (a one-shot run, `--json`, a pipe), a call that would ask is refused and the agent is told
@@ -254,8 +256,8 @@ Two JSON files, both optional:
 - the project's: `.windlass/config.json`, looked for from the working directory up to the repository root.
 
 The project file overrides yours key by key (a list such as `checks` replaces yours whole), except `approval`,
-where the project can only tighten what you chose. An unknown key is an error that names the file and suggests the
-key you probably meant.
+where the project can only tighten what you chose, and `sandbox`, where it can only turn the session's home off.
+An unknown key is an error that names the file and suggests the key you probably meant.
 
 ```json
 {
@@ -289,6 +291,7 @@ Every key:
 | `lsp` | language servers: `servers`, by name, each with a `command` and the `languages` it serves; `waitMs`, `warnings`, `maxDiagnostics`, `enabled`. After an edit, what the edit made worse is added to its result as a short note; one a project's file names is not started until you approve it |
 | `commands` | slash commands (prompt templates kept as Markdown files): `paths` (extra directories) and `disabled` (names to leave out); see [commands.md](commands.md) |
 | `telemetry` | live OpenTelemetry export of a session's spans: `enabled` (default off), `endpoint` (an OTLP/HTTP collector), `headers`, `content` (default off: no message text, tool arguments or output), `timeoutMs`. Only your own file can turn it on or say where it goes; a project's file can only turn it off; see [telemetry.md](telemetry.md) |
+| `sandbox` | the sandbox: `home`, what a sandboxed command finds at your home directory's path (below). Only your own file can turn the session's home on; a project's file can only turn it off |
 
 | Key in `checks[]` | Value |
 |---|---|
@@ -308,6 +311,10 @@ Every key:
 | `unattended` | `deny` (default) or `stop` |
 | `taint` | `enforce` (default) or `off` |
 | `untrustedPaths` | glob patterns of project files to treat as untrusted content (`["**"]`: the whole repository) |
+
+| Key in `sandbox` | Value |
+|---|---|
+| `home` | `user` (default): a sandboxed command finds your home, read-only. `session`: on Linux it finds a home of the session's own, with your entries read-only in it ([safety.md](safety.md), "The session's home"). Only your own file can say `session`; a project's file can only say `user` |
 
 ## Project instructions (AGENTS.md)
 
@@ -532,9 +539,9 @@ directory because sandboxed commands must run there, and the data directory is h
 
 Each session also has a temp directory, `/tmp/windlass-<uid>/<session id>/` (under `$TMPDIR` instead of `/tmp`
 when that is set), which sandboxed commands can write to (they see it as `/tmp` on Linux) and which holds the full
-output of long commands. On Linux `<session id>.home` beside it holds what the session's sandboxed commands wrote
-under the home directory (a package manager's cache can make it large). Windlass removes neither: delete them
-when the session's commands no longer need what they left there.
+output of long commands. With the session's home turned on (`sandbox.home`, Linux), `<session id>.home` beside it
+holds what the session's sandboxed commands wrote under the home directory (a package manager's cache can make it
+large). Windlass removes neither: delete them when the session's commands no longer need what they left there.
 
 ### Deleting everything
 
@@ -554,7 +561,7 @@ work was not merged keeps its `windlass/subagent-<id>` branch.
 |---|---|
 | `XDG_DATA_HOME` | where the data directory is (default `~/.local/share`) |
 | `XDG_CONFIG_HOME` | where your configuration and `AGENTS.md` are (default `~/.config`) |
-| `XDG_CACHE_HOME`, `XDG_STATE_HOME` | read, with the two above, to find the directories of your home in which a sandboxed command may make entries of its own ([safety.md](safety.md), "The session's home") |
+| `XDG_CACHE_HOME`, `XDG_STATE_HOME` | read, with the two above, when the session's home is on: the directories of your home in which a sandboxed command may make entries of its own ([safety.md](safety.md), "The session's home") |
 | `TMPDIR` | where session temp directories and session homes are made (default `/tmp`) |
 | `XDG_RUNTIME_DIR` | read to hide your session bus from sandboxed commands |
 | `PATH` | where `bwrap`, `env` and `git` are found; commands the agent runs get it too |

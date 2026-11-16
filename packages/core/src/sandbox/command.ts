@@ -10,7 +10,8 @@
  *   on macOS. It outlives the command, so a file one command leaves there is
  *   there for the next, and it is the session's own (mode 0700, one per
  *   session), so nothing else on the machine is in it.
- * - On Linux, a home of the session's own (`<temp base>/<session>.home`): the
+ * - Where the session asked for it (`sessionHome.use`, off until told), on
+ *   Linux, a home of the session's own (`<temp base>/<session>.home`): the
  *   command sees it at the home directory's path with the user's entries
  *   read-only in it, so a tool that keeps a cache, settings or state under
  *   the home (`~/.npm`, `~/.cache/uv`, `~/.config/astro`) can write them, and
@@ -44,7 +45,7 @@ import { homedir, tmpdir } from "node:os"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import { brand } from "../brand.ts"
 import type { SandboxRun, TempDirectory } from "../tool/tool.ts"
-import { type HomeMounts, homeMounts } from "./bwrap.ts"
+import { HOME_BINDS, type HomeMounts, homeMounts, homeView } from "./bwrap.ts"
 import { type SandboxDetection, detectSandbox } from "./detect.ts"
 import { type SandboxPlan, type SandboxUnavailable, sandboxCommand } from "./index.ts"
 import { type SandboxPolicy, defaultPolicy } from "./policy.ts"
@@ -87,6 +88,20 @@ export interface CommandSandbox {
    * stand-in that cannot confine a process: nothing is then run confined.
    */
   readonly confined?: (input: ConfinedInput) => SandboxPlan | SandboxUnavailable
+  /** The homes of the sessions' own. Absent in a stand-in that has none: every command's home is then the user's, read-only. */
+  readonly sessionHome?: SessionHomes
+}
+
+export interface SessionHomes {
+  /** Whether the sandboxed commands of a session get a home of the session's own, from the next one planned. Off for a session nothing was said about. */
+  readonly use: (sessionId: string, on: boolean) => void
+  /**
+   * For a session whose home is on: whether a sandboxed command of it in
+   * `cwd` gets the home now, and one message for the user when it gets none,
+   * or one that does not hold all of the user's, saying what was left as it
+   * was and why. `null`: there is nothing to say.
+   */
+  readonly state: (input: { readonly sessionId: string; readonly cwd: string }) => { readonly used: boolean; readonly notice: string | null }
 }
 
 export interface ConfinedInput {
@@ -104,8 +119,13 @@ export function createCommandSandbox(options: CommandSandboxOptions = {}): Comma
   const home = options.home ?? homedir()
   const bwrap = detection.available && detection.backend === "bwrap"
   const temps = new Map<string, string>()
-  /** What the running commands of each session have mounted in its home: the next command of the session is planned beside them. */
-  const homes = new Map<string, HomeMounts>()
+  /**
+   * The sessions that were told to use a home of their own, each with whether it uses it now and with what its
+   * running commands have mounted in it. An entry is kept when the home is turned off: a command that got the
+   * home may still be running, and the next one that gets it is planned beside it.
+   */
+  const homes = new Map<string, { on: boolean; readonly mounts: HomeMounts }>()
+  const homeOn = (sessionId: string) => homes.get(sessionId)?.on === true
   let base: string | null = null
 
   const sessionDirectory = (sessionId: string) => {
@@ -122,23 +142,43 @@ export function createCommandSandbox(options: CommandSandboxOptions = {}): Comma
     // Under bubblewrap the directory is mounted at /tmp; sandbox-exec leaves paths as they are.
     return { dir, alias: bwrap ? "/tmp" : null }
   }
-  /** The session's home, beside its temp directory and not inside it: no command sees it under a second name. */
+  /** The session's home, beside its temp directory and not inside it: no command sees it under a second name. Made for a session that uses it. */
   const homeRoot = (sessionId: string) => {
     const dir = `${sessionDirectory(sessionId)}.home`
-    mkdirSync(dir, { recursive: true, mode: 0o700 })
+    if (bwrap && homeOn(sessionId)) mkdirSync(dir, { recursive: true, mode: 0o700 })
     return dir
   }
   const policy = (input: Pick<CommandInput, "sessionId" | "cwd" | "run">) =>
-    workspacePolicy({ cwd: input.cwd, tempRoot: temp(input.sessionId).dir, ...(bwrap ? { homeRoot: homeRoot(input.sessionId) } : {}), run: input.run, home, env })
+    workspacePolicy({ cwd: input.cwd, tempRoot: temp(input.sessionId).dir, homeRoot: homeRoot(input.sessionId), ownHome: bwrap && homeOn(input.sessionId), run: input.run, home, env })
 
   return {
     state: detection.available ? { available: true } : { available: false, reason: detection.reason, remedy: detection.remedy },
     temp,
     policy,
+    sessionHome: {
+      use: (sessionId, on) => {
+        const known = homes.get(sessionId)
+        if (known !== undefined) known.on = on
+        else if (on) homes.set(sessionId, { on, mounts: homeMounts() })
+      },
+      state: (input) => {
+        if (!homeOn(input.sessionId) || !detection.available) return { used: false, notice: null }
+        if (!bwrap) return { used: false, notice: HOME_NOTICE.backend }
+        const own = policy({ ...input, run: { network: false, writableRoots: [] } }).home
+        const view = own === undefined ? null : homeView(own)
+        if (own === undefined || view === null) return { used: false, notice: null }
+        if (view.over !== null) return { used: false, notice: HOME_NOTICE.over(own.path, view.over) }
+        const whole = view.layers.filter((layer) => layer.whole)
+        return { used: true, notice: whole.length === 0 ? null : HOME_NOTICE.whole(whole.map((layer) => `${join(own.path, layer.directory)} (${layer.count} entries)`)) }
+      },
+    },
     plan: (input) => {
-      const mounts = homes.get(input.sessionId) ?? homeMounts()
-      homes.set(input.sessionId, mounts)
-      const plan = sandboxCommand(policy(input), { shell: input.command, cwd: input.cwd, ...(input.shellPath === undefined ? {} : { shellPath: input.shellPath }) }, { env, detection, homeMounts: mounts })
+      const mounts = homes.get(input.sessionId)?.mounts
+      const plan = sandboxCommand(
+        policy(input),
+        { shell: input.command, cwd: input.cwd, ...(input.shellPath === undefined ? {} : { shellPath: input.shellPath }) },
+        { env, detection, ...(mounts === undefined ? {} : { homeMounts: mounts }) },
+      )
       if (plan.kind !== "ready" || !input.run.network) return plan
       // A download needs a cache it can write. The user's own stays read-only: what is in it runs outside the sandbox later.
       return { ...plan, env: { ...plan.env, BUN_INSTALL_CACHE_DIR: join(plan.env.TMPDIR ?? "/tmp", ".bun-install-cache") } }
@@ -157,12 +197,26 @@ export function confinedPolicy(input: Pick<ConfinedInput, "cwd" | "root" | "env"
   return { ...base, writableRoots: [], env: { mode: "allow", names: Object.keys(input.env) } }
 }
 
+/** The configuration key that turns a session's home on (`config.ts`), as a person writes it. */
+export const SANDBOX_HOME_KEY = "sandbox.home"
+
+/** What the user is told, once, about a session whose home is on and that gets none, or not all of it. */
+const HOME_NOTICE = {
+  backend: `${SANDBOX_HOME_KEY} is "session", and the sandbox of this machine cannot show a command another directory in place of your home: sandboxed commands see your home as it is, read-only.`,
+  over: (path: string, entries: number) =>
+    `${SANDBOX_HOME_KEY} is "session", and the session's home is not used: your home directory ${path} has ${entries} entries, and a session's home shows at most ${HOME_BINDS} of them, each by a mount made when a command starts. Sandboxed commands see your home as it is, read-only, and a tool that writes under it fails until you allow the directory.`,
+  whole: (directories: readonly string[]) =>
+    `${SANDBOX_HOME_KEY} is "session", and the session's home does not hold all of your home: it shows at most ${HOME_BINDS} of your entries one by one, each by a mount made when a command starts. Left as ${directories.length === 1 ? "it is" : "they are"}, yours and read-only as a whole, so that a command can add nothing there: ${directories.join(", ")}.`,
+}
+
 /** The policy of a command in `cwd`: the default one, with the session's temp directory and home, the access the decision granted, and the git hardening. */
 export function workspacePolicy(input: {
   readonly cwd: string
   readonly tempRoot: string
-  /** The session's home (`SandboxHome.root`). Without it the command's home is the user's, read-only. */
+  /** Where the session's home is kept (`SandboxHome.root`). Without it the command's home is the user's, read-only. */
   readonly homeRoot?: string
+  /** `false`: the command's home is the user's, read-only, although the session has a directory for one. Default `true`. */
+  readonly ownHome?: boolean
   readonly run: SandboxRun
   readonly home?: string
   readonly env?: Readonly<Record<string, string | undefined>>
@@ -170,7 +224,7 @@ export function workspacePolicy(input: {
   const base = defaultPolicy({
     workspace: input.cwd,
     tempRoot: input.tempRoot,
-    ...(input.homeRoot === undefined ? {} : { homeRoot: input.homeRoot }),
+    ...(input.homeRoot === undefined || input.ownHome === false ? {} : { homeRoot: input.homeRoot }),
     network: { mode: input.run.network ? "on" : "off" },
     ...(input.home === undefined ? {} : { home: input.home }),
     ...(input.env === undefined ? {} : { env: input.env }),

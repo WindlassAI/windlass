@@ -604,9 +604,10 @@ function stepErrorText(error: EventData<"step.failed">["error"]): string {
   }
 }
 
-function noticeTitle(kind: "sandbox_unavailable" | "approval_ignored" | "checks_not_run" | "no_closing_answer"): string {
+function noticeTitle(kind: "sandbox_unavailable" | "approval_ignored" | "checks_not_run" | "session_home" | "no_closing_answer"): string {
   if (kind === "no_closing_answer") return "The model gave no closing answer"
   if (kind === "sandbox_unavailable") return "Commands cannot be sandboxed on this machine"
   if (kind === "approval_ignored") return "A project setting was not followed"
+  if (kind === "session_home") return "The session's home is not all that was asked for"
   return "The project's checks were not run"
 }

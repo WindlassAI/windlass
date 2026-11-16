@@ -168,6 +168,13 @@ export interface OpenMeta {
   /** What a call that would ask becomes when nobody is present: `deny` (refused, the run goes on) or `stop` (refused, the run ends). */
   readonly unattended?: string | null
   /**
+   * What the session's sandboxed commands find at the home directory's path, as the user chose for this session:
+   * `user`, the user's home, read-only, or `session`, on Linux a home of the session's own where tools can keep
+   * caches and settings. Absent: the user's configuration file says (`sandbox.home`, default `user`). The project's
+   * file can still only turn the session's home off.
+   */
+  readonly sandboxHome?: string | null
+  /**
    * Whether a person is there to answer `session/request_permission`. Default
    * `true`: an ACP client can answer. A client that runs unattended (a
    * script, an eval) says `false`, and nothing ever waits for it.

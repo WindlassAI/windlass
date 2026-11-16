@@ -7,14 +7,16 @@
  * Skipped, visibly, where bubblewrap cannot run.
  */
 import { afterAll, beforeAll, describe, expect, test, setDefaultTimeout } from "bun:test"
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { brand } from "../../src/brand.ts"
 import type { CallId, MessageId, SessionId } from "../../src/id.ts"
 import { createInterrupt } from "../../src/interrupt.ts"
 import { E2E_TIMEOUT_MS, waitFor } from "../../src/testing/wait.ts"
+import { escalationSchema, sandboxHint } from "../../src/approval/escalation.ts"
+import { HOME_BINDS } from "../../src/sandbox/bwrap.ts"
 import { createCommandSandbox, gitLayout, workspacePolicy } from "../../src/sandbox/command.ts"
-import { type SandboxRun, noBlobStore } from "../../src/tool/tool.ts"
+import { type BackgroundCommand, type SandboxRun, noBlobStore } from "../../src/tool/tool.ts"
 import { shellTool } from "../../src/tools/shell.ts"
 import { removeTempDirs, skipReason, tempDir } from "./helpers.ts"
 
@@ -195,6 +197,7 @@ describe.skipIf(skipReason !== null)("what the sandbox stops, and what the harde
     expect(policy(home).home).toBeUndefined()
     expect(policy(base).home).toBeUndefined()
     expect(workspacePolicy({ cwd: workspace, tempRoot: "/var/tmp/t", run: NOTHING, home, env: {} }).home).toBeUndefined()
+    expect(workspacePolicy({ cwd: workspace, tempRoot: "/var/tmp/t", homeRoot: "/var/tmp/t.home", ownHome: false, run: NOTHING, home, env: {} }).home).toBeUndefined()
   })
 
   test("the policy: a command that may write the directory the session's home is kept in gets no home of the session's, and that directory is hidden from it", () => {
@@ -208,6 +211,10 @@ describe.skipIf(skipReason !== null)("what the sandbox stops, and what the harde
       expect(reaching.home).toBeUndefined()
       expect(reaching.hiddenPaths).toContain(kept)
     }
+    // A directory that was never made is not there to hide: the policy is the one without a session's home.
+    expect(workspacePolicy({ cwd: base, tempRoot: "/var/tmp/t", homeRoot: join(base, "never-made.home"), ownHome: false, run: NOTHING, home, env: {} })).toEqual(
+      workspacePolicy({ cwd: base, tempRoot: "/var/tmp/t", run: NOTHING, home, env: {} }),
+    )
   })
 
   test("the policy: what is writable, what is read-only, and that the network is off", () => {
@@ -273,6 +280,7 @@ describe.skipIf(skipReason !== null)("the session's home: what tools write under
   const withHome = createCommandSandbox({ tempBase: join(base, "session-temp"), home, env })
   const homeTool = shellTool({ spillDir: join(base, "spill"), sandbox: withHome, graceMs: 500 })
   const first = "ses_home_first" as SessionId
+  withHome.sessionHome?.use(first, true)
   const run = (cwd: string, command: string, session = first) => sh(cwd, command, NOTHING, new AbortController().signal, homeTool, session)
   const ownHome = (session: SessionId) => join(base, "session-temp", `${session}.home`)
   const listing = () => (readdirSync(home, { recursive: true }) as string[]).sort()
@@ -312,22 +320,11 @@ describe.skipIf(skipReason !== null)("the session's home: what tools write under
 
   test("another session has a home of its own, and nothing a command wrote under the home is in the working directory", async () => {
     const second = "ses_home_second" as SessionId
+    withHome.sessionHome?.use(second, true)
     expect(await run(workspace, "ls ~/.tool 2>&1; echo second > ~/.second && cat ~/.second", second)).toMatchObject({ ok: true, output: expect.stringContaining("No such file or directory") })
     expect(existsSync(join(ownHome(first), "home", ".second"))).toBe(false)
     expect(readFileSync(join(ownHome(second), "home", ".second"), "utf8")).toBe("second\n")
     expect(host(workspace, "git status --short").output).toBe("")
-  })
-
-  test("a working directory that holds the directory the session's home is kept in: its commands get the user's home, and cannot reach the session's", async () => {
-    const own = ownHome(first)
-    const before = readdirSync(own).sort()
-    const swap = await run(join(base, "session-temp"), `ls ${own} 2>&1; mv ${own}/home ${own}/was-home 2>&1; ln -s ${home} ${own}/home 2>&1; echo x > ~/.written-by-a-command 2>&1; echo tried`)
-    expect(swap.output).toContain("tried")
-    expect(swap.output.match(/Permission denied/g)?.length).toBe(3)
-    expect(swap.output).toContain("Read-only file system")
-    expect(readdirSync(own).sort()).toEqual(before)
-    expect(await run(workspace, "echo x > ~/.written-by-a-command && cat ~/.tool/log")).toMatchObject({ ok: true })
-    expect(existsSync(join(home, ".written-by-a-command"))).toBe(false)
   })
 
   test("with the home as the working directory there is no home of the session's: the files are the user's", async () => {
@@ -335,6 +332,165 @@ describe.skipIf(skipReason !== null)("the session's home: what tools write under
     expect(result).toMatchObject({ ok: true, output: "mine\n" })
     expect(readFileSync(join(home, "in-my-home.txt"), "utf8")).toBe("mine\n")
     expect(withHome.policy({ sessionId: first, cwd: home, run: NOTHING }).home).toBeUndefined()
+  })
+})
+
+describe.skipIf(skipReason !== null)("the session's home is a setting, off until the session is told", () => {
+  const home = join(base, "plain-home")
+  const env = { PATH: process.env.PATH, HOME: home }
+  const tempBase = join(base, "plain-temp")
+  const made = () => createCommandSandbox({ tempBase, home, env })
+  const session = "ses_plain" as SessionId
+  let workspace = ""
+  beforeAll(() => {
+    workspace = project("plain")
+    mkdirSync(join(home, ".ssh"), { recursive: true })
+    mkdirSync(join(home, ".config", "tool"), { recursive: true })
+    writeFileSync(join(home, ".npmrc"), "//registry.example.com/:_authToken=NPM-TOKEN-VALUE\n")
+    writeFileSync(join(home, ".gitconfig"), "[user]\n\tname = Configured User\n")
+  })
+  const mounts = (argv: readonly string[]) => argv.slice(argv.indexOf("/tmp") + 1, argv.indexOf("--chdir"))
+  const planned = (sandbox: ReturnType<typeof made>, run: SandboxRun = NOTHING) => {
+    const plan = sandbox.plan({ sessionId: session, cwd: workspace, run, command: "true" })
+    if (plan.kind !== "ready") throw new Error("the sandbox is not available")
+    return plan
+  }
+
+  test("off: the plan of a command is what it was before there was a session's home, mount for mount, and nothing is made for one", async () => {
+    const plain = made()
+    const plan = planned(plain)
+    const mask = plan.argv[plan.argv.indexOf(join(home, ".npmrc")) - 1]!
+    // The workspace, what is read-only in it, then the masks: first the credential stores of this home, then this machine's own sockets.
+    expect(mounts(plan.argv).slice(0, 16)).toEqual([
+      ...["--bind", workspace, workspace],
+      ...["--ro-bind", join(workspace, ".git", "hooks"), join(workspace, ".git", "hooks")],
+      ...["--ro-bind", join(workspace, ".git", "config"), join(workspace, ".git", "config")],
+      ...["--perms", "0000", "--tmpfs", join(home, ".ssh")],
+      ...["--ro-bind", mask, join(home, ".npmrc")],
+    ])
+    expect(plan.argv.filter((arg) => arg.startsWith(base) && arg !== workspace && !arg.startsWith(`${workspace}/`))).toEqual([join(tempBase, session), join(home, ".ssh"), join(home, ".npmrc")])
+    expect(plan.argv.slice(plan.argv.indexOf("/proc") + 1, plan.argv.indexOf("/tmp") + 1)).toEqual(["--bind", join(tempBase, session), "/tmp"])
+    expect(plan.started).toBeUndefined()
+    expect(plan.ended).toBeUndefined()
+    expect(plain.policy({ sessionId: session, cwd: workspace, run: NOTHING }).home).toBeUndefined()
+    expect(plain.sessionHome?.state({ sessionId: session, cwd: workspace })).toEqual({ used: false, notice: null })
+    expect(readdirSync(tempBase)).toEqual([session])
+    // And what a command finds: the home is the user's, read-only.
+    const tool = shellTool({ spillDir: join(base, "spill"), sandbox: plain, graceMs: 500 })
+    const result = await sh(workspace, "mkdir ~/.cache; echo x > ~/.toolrc; git config --global user.name", NOTHING, new AbortController().signal, tool, session)
+    expect(result.output).toContain("Configured User")
+    expect(result.output.match(/Read-only file system/g)?.length).toBe(2)
+    expect(readdirSync(home).sort()).toEqual([".config", ".gitconfig", ".npmrc", ".ssh"])
+  })
+
+  test("off: what the model is told about the sandbox is what it was told before: the shell tool's description, the `sandbox` argument's, and the note under a failed command", () => {
+    const tool = shellTool({ spillDir: join(base, "spill"), sandbox: made() })
+    expect(tool.description).toContain(
+      "Commands normally run in a sandbox: no network, and writes only inside the working directory and the temp directory ($TMPDIR, which is /tmp on Linux; it is private to this session and the file tools see the same files there). When a command needs more, pass `sandbox`.",
+    )
+    expect(tool.description).not.toMatch(/home/i)
+    expect(escalationSchema.description).toBe(
+      "Ask the user for more access than the sandbox gives (no network; writes only inside the workspace and the temp directory). Use only when the command needs it, for example after it failed because of the sandbox.",
+    )
+    const failed = { sandboxed: true, network: false, exitCode: 1, output: "touch: cannot touch '/home/u/.toolrc': Read-only file system" }
+    expect(sandboxHint(failed)?.note).toBe(
+      '[sandbox] This command ran in the sandbox (no network, and writes only inside the workspace and the temp directory), and its output shows an error the sandbox can cause. If it needs that access, run it again with `sandbox: { "write": ["<directory>"] }`; the user will be asked.',
+    )
+    expect(sandboxHint({ ...failed, home: false })?.note).toBe(sandboxHint(failed)?.note)
+    // On, the note names the home; the tool's own text is the same for every session.
+    expect(sandboxHint({ ...failed, home: true })?.note).toBe(
+      '[sandbox] This command ran in the sandbox (no network, and writes only inside the workspace, the temp directory and this session\'s own home, where what the user already has is read-only), and its output shows an error the sandbox can cause. If it needs that access, run it again with `sandbox: { "write": ["<directory>"] }`; the user will be asked.',
+    )
+  })
+
+  test("on for one session, and off again: the session's home is mounted from the next command planned, for that session only", () => {
+    const sandbox = made()
+    sandbox.sessionHome?.use(session, true)
+    const on = planned(sandbox)
+    expect(mounts(on.argv).slice(0, 3)).toEqual(["--bind", join(tempBase, `${session}.home`, "home"), home])
+    expect(on.ended).toBeDefined()
+    void on.ended?.()
+    expect(sandbox.sessionHome?.state({ sessionId: session, cwd: workspace })).toEqual({ used: true, notice: null })
+    const other = sandbox.plan({ sessionId: "ses_other" as SessionId, cwd: workspace, run: NOTHING, command: "true" })
+    expect(other.kind === "ready" && other.argv.join(" ")).not.toContain(".home")
+    sandbox.sessionHome?.use(session, false)
+    expect(mounts(planned(sandbox).argv).slice(0, 3)).toEqual(["--bind", workspace, workspace])
+    expect(sandbox.sessionHome?.state({ sessionId: session, cwd: workspace })).toEqual({ used: false, notice: null })
+    // Turned off and on again while a command that has the home is not over: the next is still planned beside it.
+    sandbox.sessionHome?.use(session, true)
+    const running = planned(sandbox)
+    sandbox.sessionHome?.use(session, false)
+    sandbox.sessionHome?.use(session, true)
+    writeFileSync(join(home, "appeared-while-off"), "")
+    expect(planned(sandbox).argv).not.toContain(join(home, "appeared-while-off"))
+    rmSync(join(home, "appeared-while-off"))
+    void running.ended?.()
+  })
+
+  test("a command in the background and the next one are given the same home: what appears in the user's home meanwhile is shown once the first has ended", async () => {
+    const sandbox = made()
+    const background = "ses_background" as SessionId
+    sandbox.sessionHome?.use(background, true)
+    const tool = shellTool({ spillDir: join(base, "spill"), sandbox, graceMs: 500 })
+    const context = { sessionId: background, messageId: "msg_1" as MessageId, cwd: workspace, signal: new AbortController().signal, progress: () => {}, putBlob: noBlobStore, sandbox: NOTHING }
+    let started: BackgroundCommand | null = null
+    const handle = await tool.execute(
+      { command: "touch running-in-the-background; sleep 300", background: true },
+      { ...context, callId: "call_background" as CallId, background: { command: (work) => ((started = work), { id: "bg_1" }) } },
+    )
+    expect(handle.status).toBe("success")
+    await waitFor(() => existsSync(join(workspace, "running-in-the-background")))
+    writeFileSync(join(home, "appeared-meanwhile"), "the user's\n")
+    const during = await sh(workspace, "cat ~/appeared-meanwhile 2>&1; cat ~/.gitconfig", NOTHING, new AbortController().signal, tool, background)
+    expect(during.output).toContain("No such file or directory")
+    expect(during.output).toContain("Configured User")
+    await (started as BackgroundCommand | null)?.stop()
+    const after = await sh(workspace, "cat ~/appeared-meanwhile", NOTHING, new AbortController().signal, tool, background)
+    expect(after.output).toBe("the user's\n")
+    rmSync(join(home, "appeared-meanwhile"))
+  })
+
+  test("a working directory that holds the directory the session's home is kept in: its commands get the user's home, and cannot reach the session's", async () => {
+    const sandbox = made()
+    const holding = "ses_holding" as SessionId
+    sandbox.sessionHome?.use(holding, true)
+    const tool = shellTool({ spillDir: join(base, "spill"), sandbox, graceMs: 500 })
+    const own = join(tempBase, `${holding}.home`)
+    // A command in the project leaves something in the session's home; one in the directory above the homes tries to swap it.
+    expect(await sh(workspace, "echo kept > ~/.toolrc", NOTHING, new AbortController().signal, tool, holding)).toMatchObject({ ok: true })
+    const swap = await sh(tempBase, `ls ${own} 2>&1; mv ${own}/home ${own}/was-home 2>&1; ln -s ${home} ${own}/home 2>&1; echo x > ~/.written-by-a-command 2>&1; echo tried`, NOTHING, new AbortController().signal, tool, holding)
+    expect(swap.output).toContain("tried")
+    expect(swap.output.match(/Permission denied/g)?.length).toBe(3)
+    expect(swap.output).toContain("Read-only file system")
+    expect(readdirSync(own).sort()).toEqual(["home", "shared"])
+    expect(await sh(workspace, "cat ~/.toolrc && echo x > ~/.written-by-a-command", NOTHING, new AbortController().signal, tool, holding)).toMatchObject({ ok: true, output: "kept\n" })
+    expect(readdirSync(home).sort()).toEqual([".config", ".gitconfig", ".npmrc", ".ssh"])
+    expect(sandbox.sessionHome?.state({ sessionId: holding, cwd: tempBase })).toEqual({ used: false, notice: null })
+  })
+
+  test("over the cap, the user is told what was left as it was and why: a shared directory read-only as a whole, or no session's home at all", () => {
+    const crowded = join(base, "crowded-home")
+    mkdirSync(join(crowded, ".config"), { recursive: true })
+    for (let index = 0; index <= HOME_BINDS; index++) writeFileSync(join(crowded, ".config", `entry-${index}`), "")
+    const sandbox = createCommandSandbox({ tempBase, home: crowded, env: { PATH: process.env.PATH, HOME: crowded } })
+    const over = "ses_over" as SessionId
+    expect(sandbox.sessionHome?.state({ sessionId: over, cwd: workspace })).toEqual({ used: false, notice: null })
+    sandbox.sessionHome?.use(over, true)
+    expect(sandbox.sessionHome?.state({ sessionId: over, cwd: workspace })).toEqual({
+      used: true,
+      notice: `sandbox.home is "session", and the session's home does not hold all of your home: it shows at most ${HOME_BINDS} of your entries one by one, each by a mount made when a command starts. Left as it is, yours and read-only as a whole, so that a command can add nothing there: ${join(crowded, ".config")} (${HOME_BINDS + 1} entries).`,
+    })
+    const whole = sandbox.plan({ sessionId: over, cwd: workspace, run: NOTHING, command: "true" })
+    expect(whole.kind === "ready" && whole.argv.join(" ")).toContain(`--ro-bind ${join(crowded, ".config")} ${join(crowded, ".config")}`)
+    if (whole.kind === "ready") void whole.ended?.()
+
+    for (let index = 0; index <= HOME_BINDS; index++) writeFileSync(join(crowded, `entry-${index}`), "")
+    expect(sandbox.sessionHome?.state({ sessionId: over, cwd: workspace })).toEqual({
+      used: false,
+      notice: `sandbox.home is "session", and the session's home is not used: your home directory ${crowded} has ${HOME_BINDS + 2} entries, and a session's home shows at most ${HOME_BINDS} of them, each by a mount made when a command starts. Sandboxed commands see your home as it is, read-only, and a tool that writes under it fails until you allow the directory.`,
+    })
+    const none = sandbox.plan({ sessionId: over, cwd: workspace, run: NOTHING, command: "true" })
+    expect(none.kind === "ready" && mounts(none.argv).slice(0, 3)).toEqual(["--bind", workspace, workspace])
   })
 })
 

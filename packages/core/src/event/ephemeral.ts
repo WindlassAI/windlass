@@ -63,14 +63,16 @@ export type EphemeralEvent =
    * once: the sandbox is unavailable on this machine (and why, and what
    * would fix it), a project file asked for a looser approval policy than
    * the user's and was not followed, the project's checks were not run
-   * because they could not be sandboxed. Or about how a turn ended:
+   * because they could not be sandboxed, the home of the session's own is on
+   * (`sandbox.home`) and the session gets none, or not all of the user's
+   * home in it. Or about how a turn ended:
    * `no_closing_answer` when the model did its work and then returned
    * nothing twice, so the turn ended without a last word from it.
    */
   | {
       readonly type: "notice"
       readonly sessionId: SessionId
-      readonly kind: "sandbox_unavailable" | "approval_ignored" | "checks_not_run" | "no_closing_answer"
+      readonly kind: "sandbox_unavailable" | "approval_ignored" | "checks_not_run" | "session_home" | "no_closing_answer"
       readonly message: string
     }
 
