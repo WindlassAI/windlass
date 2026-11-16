@@ -44,6 +44,23 @@ All notable changes to Windlass are recorded here. The format follows
   - pnpm still puts its store inside the project; macOS has no session home. `docs/safety.md`, "The session's
     home", has the rest.
 
+- **Saying which environment variables the agent's commands get.** A sandboxed command gets every variable of
+  Windlass's environment except those whose name looks like a credential, and nothing could change that. Two lists
+  of names in the `sandbox` section of your own configuration file now do: `withholdEnv` names variables that no
+  command the agent runs is given, whatever the name looks like (`SENTRY_DSN`), and `passEnv` names variables that
+  sandboxed commands are given although the name looks like a credential (`DEPLOY_KEY`). A program that starts
+  `windlass acp` for you names them for a session with `withholdEnv` and `passEnv` in `_meta["windlass"]` of
+  `session/new`, `session/load` and `session/resume`; they add to your file's. Names only: no value is written in
+  a file or sent over the protocol. With neither named, every command's environment is what it was.
+  - A withheld variable is kept from the shell tool's commands, the project's checks, hooks, a wake-up's check,
+    programs, language servers and subagents. An MCP server whose definition names it (`${SENTRY_DSN}`) still gets
+    it: that is how a server is given a secret that no command gets.
+  - In the sandbox on Linux that holds: the command cannot see Windlass's process. Without the sandbox (`full`, a
+    machine where the sandbox is unavailable, a command you allowed to run without it) the command is not given
+    the variable and can still read it from Windlass's process, so there it is a courtesy and not a protection.
+  - A project's own configuration sets neither list; when it tries you are told once. The model is told nothing
+    about them. `docs/safety.md`, "A command's environment", has the rest.
+
 ### Changed
 
 - A sign-in failure says which one it was by a code, where a program reads it: the `code` of the failed step's

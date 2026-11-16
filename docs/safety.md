@@ -68,7 +68,8 @@ command:
   profiles, the harness's own data and configuration, and the file an access token is handed in through
   (`WINDLASS_ACCESS_TOKEN_FILE`), wherever that file is;
 - has no network at all: no TCP, no UDP, no DNS, and on Linux not even a server on the same machine;
-- gets no environment variable whose name looks like a credential (`*TOKEN*`, `*KEY*`, `AWS_*`, ...);
+- gets no environment variable whose name looks like a credential (`*TOKEN*`, `*KEY*`, `AWS_*`, ...), unless you
+  named it as one to pass, and none that you named as withheld ("A command's environment" below);
 - cannot reach the user's session bus or a container daemon's socket, either of which would run things outside;
 - cannot change the repository's `.git/hooks` and `.git/config`, or the harness's project directory
   (`.windlass/`): a hook or a configured check it planted would run later, outside the sandbox;
@@ -175,6 +176,86 @@ What follows from it:
   stays read-only as a whole, and a tool that writes there fails until you allow the directory. With the setting
   on you are told so once.
 
+## A command's environment
+
+Windlass runs in an environment, the one you or the program that starts it gave it, and a command the agent runs
+inherits from it. What it inherits follows one rule unless you say otherwise:
+
+- a sandboxed command gets every variable except those whose name looks like a credential: a name that contains
+  `TOKEN`, `KEY`, `SECRET`, `PASSWORD`, `PASSWD`, `PASSPHRASE`, `CREDENTIAL`, `PRIVATE` or `COOKIE`, has `AUTH` or
+  `PAT` as a whole word between underscores, begins with a cloud or AI provider's prefix (`AWS_`, `AZURE_`,
+  `GOOGLE_`, `OPENAI_`, `ANTHROPIC_`, ...), or is one of `DATABASE_URL`, `KUBECONFIG`, `DOCKER_HOST`,
+  `DOCKER_CONFIG`, `GPG_AGENT_INFO`, `DBUS_SESSION_BUS_ADDRESS`, `NETRC`;
+- a command that runs without the sandbox (in `full`, or one you allowed to) gets all of them.
+
+The rule goes by the name, and a name can be wrong both ways: `SENTRY_DSN` holds a secret and does not look like
+one, and you may want the agent's commands to have `DEPLOY_KEY`. Two lists of names correct it:
+
+| Key in `sandbox` | What it does |
+|---|---|
+| `withholdEnv` | These variables are given to no command the agent runs, whatever their name looks like |
+| `passEnv` | These variables are given to sandboxed commands although their name looks like a credential |
+
+- for yourself, in your own configuration file, `~/.config/windlass/config.json`:
+
+  ```json
+  { "sandbox": { "withholdEnv": ["SENTRY_DSN"], "passEnv": ["DEPLOY_KEY"] } }
+  ```
+
+- a program that starts `windlass acp` for you names them for a session when it opens it, with `withholdEnv` and
+  `passEnv` in `_meta["windlass"]` of `session/new`, and again in `session/load` and `session/resume`
+  ([acp.md](acp.md)). They add to the lists of your file.
+- a project's own `.windlass/config.json` sets neither. Either key there is not followed, and you are told once,
+  with the names. `passEnv` there would let a repository hand itself your credentials. `withholdEnv` there looks
+  as if it could only take away, and it could switch off something of yours: your own hooks and checks run in the
+  same environment, and a hook that refuses a call while some variable is set stops refusing when a repository
+  withholds that variable.
+
+The lists hold names only. A value is never written in a configuration file or sent over the protocol for this:
+the values are in the environment Windlass was started with. A name in both lists is withheld.
+
+**What a withheld variable is kept from.** Everything Windlass starts for a session that the agent or the project
+has a say in: the commands of the shell tool, in the foreground and in the background; the project's checks;
+hooks, yours and the project's; the check of a wake-up; a program the agent writes (`run_code`), which gets only
+`PATH`, `HOME`, `LANG`, `LC_ALL` and `TZ` in any case; a language server, which is given the variables its
+definition names and does not start when one of them is withheld; and the same for the session's subagents.
+
+**What still gets it.** An MCP server whose definition names the variable (`"env": { "SENTRY_DSN":
+"${SENTRY_DSN}" }`, [mcp.md](mcp.md)): that is the point of withholding a variable instead of leaving it out of
+Windlass's environment. A server a project names is still started only after you approved it, with a question
+that lists the variables it reads. What such a server does with the value is the server's: a tool of it that
+returns the value puts it in front of the model, and the redaction below knows it only if the name looks like a
+credential or the value has a format it recognises.
+
+**How much that is worth depends on the sandbox.**
+
+- *In the sandbox on Linux it holds.* The command is not given the variable, and it cannot get it from Windlass's
+  own process either: it runs in a process namespace of its own, where `/proc` shows no process but the
+  command's. Measured: a sandboxed command that looks through `/proc/*/environ` for a withheld variable finds it
+  nowhere, and `/proc/<pid of Windlass>` does not exist for it.
+- *Without the sandbox it is a courtesy, not a protection.* In `full`, on a machine where the sandbox is
+  unavailable and each command is asked about, and for a command you allowed to run without it, the command is
+  the same user as Windlass. It is still not given the variable, so a script that prints its environment or
+  passes it on does not have it, but it can read the variable from Windlass's process
+  (`/proc/<pid>/environ` on Linux), or from anywhere else you keep it. Do not rely on `withholdEnv` there.
+  `passEnv` changes nothing there: such a command gets every credential already.
+- *macOS: untested*, like the rest of the `sandbox-exec` profile. The profile lets a command inspect only
+  processes of its own sandbox; nothing has been run to see that this covers another process's environment.
+
+What the lists do not do:
+
+- **They are not stored with the session.** A program names them each time it opens the session. In a process
+  that still has the session open, opening it again without either key keeps what was named; empty lists take
+  them back. A wake-up that fires for a session no process has open runs under the lists of your file alone, so a
+  program that needs them for wake-ups writes them to the configuration file of the machine the agent runs on.
+- **The model is told nothing about them.** It learns that a variable is there or missing the way it learns
+  anything about the environment: from a command. The value of a passed credential that a command prints is
+  redacted before the model sees it, like every credential-looking variable's ("Secrets in tool output").
+- **The variable that names a handed-in token's file** (`WINDLASS_ACCESS_TOKEN_FILE`) is never passed, also when
+  `passEnv` names it.
+- **What Windlass itself runs is not covered:** `git` for a subagent's worktree, with hooks off, gets Windlass's
+  environment, and `rg` for the search tool does too. Neither runs a command the agent or the project chose.
+
 ## What the sandbox does not stop
 
 - Reading any file that is not hidden: your source, dotfiles, `/etc`, other projects. What a command prints goes to
@@ -197,7 +278,8 @@ A process started with `WINDLASS_ACCESS_TOKEN_FILE` runs on an access token that
 ([user-guide.md](user-guide.md), "One sign-in for several machines"). That file is the sign-in for as long as the
 token lasts, and it is protected like the saved one, wherever it is, the working directory included:
 
-- a sandboxed command cannot read it or write it, and is not given the variable, so it is not told where the file is;
+- a sandboxed command cannot read it or write it, and is not given the variable, so it is not told where the file
+  is (also when `sandbox.passEnv` names the variable);
 - to the file tools it is a credential store: reading it asks, once only, and editing it is refused;
 - the sandbox cannot be widened to it;
 - every token this process has read from the file is redacted from tool output (`[REDACTED:env]`), also after the
@@ -324,7 +406,8 @@ JWTs that are not secret, and every occurrence of an environment value, includin
 
 Redaction limits what reaches the model provider and the session log by accident. It is not a boundary: a command
 with network access can send a secret it can read. The sandbox's hidden paths and stripped environment are what
-keep credentials away from commands.
+keep credentials away from commands. A variable you withhold from commands (`sandbox.withholdEnv`) is not for that
+reason redacted: its value is replaced only when its name looks like a credential.
 
 ## What is recorded
 
