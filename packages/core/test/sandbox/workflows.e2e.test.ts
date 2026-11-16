@@ -255,7 +255,9 @@ describe.skipIf(skipReason !== null)("what the sandbox stops, and what the harde
 
 describe.skipIf(skipReason !== null)("the session's home: what tools write under the home directory", () => {
   const home = join(base, "user-home")
-  const withHome = createCommandSandbox({ tempBase: join(base, "session-temp"), home, env: { ...process.env, HOME: home } })
+  // The user's own XDG directories are not this home's: git would read its settings from them.
+  const env = { ...process.env, HOME: home, XDG_CONFIG_HOME: undefined, XDG_CACHE_HOME: undefined, XDG_DATA_HOME: undefined, XDG_STATE_HOME: undefined }
+  const withHome = createCommandSandbox({ tempBase: join(base, "session-temp"), home, env })
   const homeTool = shellTool({ spillDir: join(base, "spill"), sandbox: withHome, graceMs: 500 })
   const first = "ses_home_first" as SessionId
   const run = (cwd: string, command: string, session = first) => sh(cwd, command, NOTHING, new AbortController().signal, homeTool, session)

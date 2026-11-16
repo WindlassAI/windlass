@@ -126,7 +126,9 @@ function homeArgs(home: SandboxHome, hidden: readonly string[]): string[] {
   const path = existingRealpath(home.path)
   const root = existingRealpath(home.root)
   // `/` as a home, or one that holds a directory mounted above, cannot be replaced without replacing that as well.
-  if (path === null || root === null || ["/tmp", "/dev", "/proc"].some((mounted) => mounted === path || mounted.startsWith(path === "/" ? "/" : `${path}/`))) return []
+  // Each as the directory it really is: on macOS `/tmp` is a link to `/private/tmp`.
+  const holds = (mounted: string) => mounted === path || mounted.startsWith(path === "/" ? "/" : `${path}/`)
+  if (path === null || root === null || ["/tmp", "/dev", "/proc"].some((mounted) => holds(existingRealpath(mounted) ?? mounted))) return []
   const args: string[] = []
   let shown = 0
   const layered = [""]
