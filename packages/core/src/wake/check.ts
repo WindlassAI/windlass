@@ -69,6 +69,8 @@ export function createCheckRunner(options: CheckRunnerOptions): CheckRunner {
     // value in clear. The fingerprint below is therefore of the redacted output: a check whose output differs
     // only in a credential's value has not changed.
     const secrets = options.secrets?.() ?? []
+    // A check that runs without the sandbox is a command of its session: it is not given what the session's commands are not.
+    const env = options.sandbox?.environment?.unsandboxed(request.sessionId)
     try {
       const result = await runCheck(
         { name: request.name, command: request.command, timeoutSeconds: Math.max(1, Math.ceil(request.timeoutMs / 1000)), when: null },
@@ -82,7 +84,9 @@ export function createCheckRunner(options: CheckRunnerOptions): CheckRunner {
           ...(secrets.length === 0 ? {} : { redact: (value: string) => redactPieces(value, secrets), unfinishedSecret: (value: string) => unfinishedSecret(value, secrets) }),
           ...(sandboxed && request.run.kind === "sandboxed"
             ? { sandbox: { sandbox: options.sandbox!, run: { network: request.run.network, writableRoots: [...request.run.writableRoots] }, sessionId: request.sessionId } }
-            : {}),
+            : env === undefined
+              ? {}
+              : { env }),
         },
       )
       const path = result.output.path

@@ -47,6 +47,8 @@ export function engineCodeTool(options: {
       }
       return confine
     },
+    // A program is a command of the session: it is not given a variable the session's commands are not.
+    env: (context) => options.sandbox()?.environment?.unsandboxed(context.sessionId),
     // A directory of the session's own temp directory, which nothing else of the machine is in; without one, a
     // directory of this user's under the machine's temp directory.
     runDir: (context) => join(options.temp(context) ?? join(tmpdir(), `${brand.directory}-${process.getuid?.() ?? 0}`), ".programs"),

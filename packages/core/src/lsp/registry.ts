@@ -34,6 +34,12 @@ export interface LspRegistryOptions {
   readonly cwd: string
   /** Where `${NAME}` in `env` and the base variables come from. Default `process.env`. */
   readonly env?: Readonly<Record<string, string | undefined>>
+  /**
+   * Names of `env` the servers are not given, as the commands of the session
+   * are not (`sandbox/config.ts`, `withholdEnv`): they are left out of the
+   * base variables, and a server whose own `env` reads one does not start.
+   */
+  readonly withhold?: readonly string[]
   /** How long to keep listening after the first fresh publication, for a second one (within the bound). Default 100 ms. */
   readonly settleMs?: number
   /** Shutdown answer wait, then stdin close, then SIGTERM, each this long. Default 1000 ms. */
@@ -158,6 +164,7 @@ export function createLspRegistry(options: LspRegistryOptions): LspRegistry {
   const config = options.plan.config
   const cwd = resolve(options.cwd)
   const env = options.env ?? process.env
+  const withhold = options.withhold ?? []
   const settleMs = options.settleMs ?? 100
   const graceMs = options.graceMs ?? 1000
   const initialMs = options.backoff?.initialMs ?? 1000
@@ -266,9 +273,10 @@ export function createLspRegistry(options: LspRegistryOptions): LspRegistry {
 
   const start = async (m: Managed): Promise<LspSession | null> => {
     const server = m.plan.config
-    const environment = serverEnvironment(server.env, env)
+    const environment = serverEnvironment(server.env, withhold.length === 0 ? env : Object.fromEntries(Object.entries(env).filter(([name]) => !withhold.includes(name))))
     if (!environment.ok) {
-      fail(m, `the environment variable ${environment.missing} named in its env is not set`, "start_failed")
+      const why = withhold.includes(environment.missing) ? "is withheld from commands and language servers (sandbox.withholdEnv)" : "is not set"
+      fail(m, `the environment variable ${environment.missing} named in its env ${why}`, "start_failed")
       return null
     }
     let connection: Connection

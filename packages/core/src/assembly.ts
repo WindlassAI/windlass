@@ -180,6 +180,13 @@ function lazySandbox(): CommandSandbox {
       use: (sessionId, on) => get().sessionHome?.use(sessionId, on),
       state: (input) => get().sessionHome?.state(input) ?? { used: false, notice: null },
     },
+    environment: {
+      // A sandbox that was never asked about anything holds no session's names: it is not made to be told there are none.
+      use: (sessionId, names) => {
+        if (made !== null || names.withhold.length > 0 || names.pass.length > 0) get().environment?.use(sessionId, names)
+      },
+      unsandboxed: (sessionId) => made?.environment?.unsandboxed(sessionId),
+    },
     confined: (input) => {
       const confined = get().confined
       if (confined === undefined) throw new Error("this sandbox cannot confine a process")

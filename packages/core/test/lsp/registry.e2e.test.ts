@@ -197,6 +197,18 @@ describe("a server that never answers", () => {
     expect(isRunning(pid)).toBe(false)
   })
 
+  test("a variable withheld from the session's commands is not given to a server either: one whose env names it does not start and says why, and one that does not name it starts", async () => {
+    const env = { ...process.env, ACME_DSN: "dsn-made-up-1" }
+    const named = make({ servers: { fixture: fixture([], { env: { SERVER_DSN: "${ACME_DSN}" } }) } }, { env, withhold: ["ACME_DSN"] })
+    named.registry.observe("a.txt", "x")
+    await waitFor(() => named.registry.status()[0]?.state === "retrying", 10_000, "the start to fail")
+    expect(named.registry.status()[0]!.error).toBe("the environment variable ACME_DSN named in its env is withheld from commands and language servers (sandbox.withholdEnv)")
+    expect(named.notices.map((notice) => notice.kind)).toEqual(["start_failed"])
+    // Not withheld, the same server is given it; withheld and not named, the server starts without it.
+    await ready(make({ servers: { fixture: fixture([], { env: { SERVER_DSN: "${ACME_DSN}" } }) } }, { env }))
+    await ready(make({ servers: { fixture: fixture() } }, { env, withhold: ["ACME_DSN"] }))
+  })
+
   test("a start-up timeout fails the start, says why, and backs off", async () => {
     const made = make({ servers: { mute: fixture(["--silent"], { startupTimeoutSeconds: 1 }) } })
     made.registry.observe("a.txt", "x")

@@ -73,6 +73,12 @@ export interface RunCheckOptions {
    * sandboxes the model's own commands.
    */
   readonly sandbox?: { readonly sandbox: CommandSandbox; readonly run: SandboxRun; readonly sessionId: string }
+  /**
+   * The environment of checks that run without the sandbox, where the
+   * session's commands are not given all of the harness's
+   * (`CommandSandbox.environment`). Default: the harness's own.
+   */
+  readonly env?: Readonly<Record<string, string | undefined>>
   /** Ephemeral progress (the tail of the running check's output), for display only. */
   readonly progress?: (check: string, text: string) => void
   /**
@@ -107,6 +113,7 @@ export async function runCheck(check: CheckConfig, options: RunCheckOptions): Pr
     graceMs: options.graceMs,
     spillLimitBytes: options.spillLimitBytes,
     ...(options.sandbox === undefined ? {} : { sandbox: options.sandbox.sandbox }),
+    ...(options.env === undefined ? {} : { env: options.env }),
   })
   const result = await tool.execute(
     { command: check.command, timeout: check.timeoutSeconds },
