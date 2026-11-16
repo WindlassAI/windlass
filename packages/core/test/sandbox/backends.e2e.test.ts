@@ -3,7 +3,7 @@ import { afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { lstatSync, mkdirSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { type SandboxPolicy, defaultPolicy, sandboxCommand, seatbeltProfile } from "../../src/sandbox/index.ts"
-import { HOME_BINDS, bwrapArgv } from "../../src/sandbox/bwrap.ts"
+import { HOME_BINDS, bwrapArgv, homeMounts, homeView } from "../../src/sandbox/bwrap.ts"
 import { removeTempDirs, tempDir } from "./helpers.ts"
 import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
 
@@ -176,7 +176,8 @@ describe("bwrap argv for a home of the command's own", () => {
     mkdirSync(join(l.own, "home"), { recursive: true })
     symlinkSync("/elsewhere", join(l.own, "home", ".config"))
     const argv = mounts(bwrapArgv(l.policy, ["true"], l.workspace, options))
-    expect(argv.filter((arg) => arg.startsWith(join(l.home, ".cache")) || arg.startsWith(join(l.home, ".config")))).toEqual([join(l.home, ".config", "gh")])
+    // Nothing is mounted under the link either: the mask of the credential store below it would be made where the link points.
+    expect(argv.filter((arg) => arg.startsWith(join(l.home, ".cache")) || arg.startsWith(join(l.home, ".config")))).toEqual([])
     expect(readlinkSync(join(l.own, "home", ".cache"))).toBe("work")
     expect(readlinkSync(join(l.own, "home", ".config"))).toBe("/elsewhere")
     expect(readdirSync(join(l.own, "shared")).sort()).toEqual([".local", ".local%2Fshare", ".local%2Fstate"])
@@ -221,6 +222,127 @@ describe("bwrap argv for a home of the command's own", () => {
 
     for (let index = 0; index < HOME_BINDS; index++) writeFileSync(join(l.home, `entry-${index}`), "")
     expect(mounts(bwrapArgv(l.policy, ["true"], l.workspace, options)).slice(0, 3)).toEqual(["--bind", l.workspace, l.workspace])
+  })
+
+  test("what the user is told about is what is mounted: the directories shown, the ones left whole, and a home with too many entries", () => {
+    const l = homeLayout()
+    expect(homeView(l.policy.home!)?.layers.map((layer) => [layer.directory, layer.count, layer.whole])).toEqual([
+      ["", 9, false],
+      [".cache", 1, false],
+      [".config", 2, false],
+      [".local", 2, false],
+      [".local/share", 1, false],
+      [".local/state", 0, false],
+    ])
+    for (let index = 0; index < HOME_BINDS; index++) writeFileSync(join(l.home, ".cache", `entry-${index}`), "")
+    expect(homeView(l.policy.home!)?.layers.filter((layer) => layer.whole)).toEqual([{ directory: ".cache", count: HOME_BINDS + 1, whole: true, entries: [] }])
+    for (let index = 0; index < HOME_BINDS; index++) writeFileSync(join(l.home, `entry-${index}`), "")
+    expect(homeView(l.policy.home!)).toEqual({ over: HOME_BINDS + 9, layers: [] })
+    expect(homeView({ ...l.policy.home!, path: join(l.root, "absent") })).toBeNull()
+  })
+
+  test("while a command runs with the home the next is given the same places: nothing for an entry that appeared, an empty stand-in for one that is gone or of another kind, and no mount point is made or changed", () => {
+    const l = homeLayout()
+    const running = homeMounts()
+    const first = mounts(bwrapArgv(l.policy, ["true"], l.workspace, { ...options, homeMounts: running }))
+    expect(running.running).toBe(1)
+    const made = () => (readdirSync(l.own, { recursive: true }) as string[]).filter((path) => !path.startsWith("nothing")).sort()
+    const before = made()
+
+    writeFileSync(join(l.home, "appeared"), "")
+    mkdirSync(join(l.home, ".config", "appeared"))
+    writeFileSync(join(l.home, ".aws"), "a credential store that appeared\n")
+    rmSync(join(l.home, ".gitconfig"))
+    rmSync(join(l.home, ".cache", "pip"), { recursive: true })
+    writeFileSync(join(l.home, ".cache", "pip"), "a file where the directory was\n")
+    rmSync(join(l.home, ".netrc"))
+    const second = mounts(bwrapArgv(l.policy, ["true"], l.workspace, { ...options, homeMounts: running }))
+    expect(running.running).toBe(2)
+
+    // The same places in the same order; only what is bound on three of them differs, and two masks are added or dropped.
+    const places = (argv: string[]) => argv.filter((arg, index) => arg.startsWith(l.home) && !(argv[index - 1] === "--ro-bind" && argv[index + 1] === arg))
+    expect(places(second).filter((place) => place !== join(l.home, ".ssh") && place !== join(l.home, ".config", "gh")).sort()).toEqual(places(first).filter((place) => place !== join(l.home, ".ssh") && place !== join(l.home, ".config", "gh")).sort())
+    expect(second.join(" ")).not.toContain("appeared")
+    expect(second).not.toContain(join(l.home, ".aws"))
+    expect(second.join(" ")).toContain(`--ro-bind ${join(l.own, "nothing", "file")} ${join(l.home, ".gitconfig")}`)
+    expect(second.join(" ")).toContain(`--ro-bind ${join(l.own, "nothing", "directory")} ${join(l.home, ".cache", "pip")}`)
+    // A credential store that is gone leaves its place a mount; one that is still there is masked on top of the stand-in.
+    expect(second.join(" ")).toContain(`--ro-bind ${join(l.own, "nothing", "file")} ${join(l.home, ".netrc")}`)
+    expect(second.join(" ")).not.toContain(`/mask ${join(l.home, ".netrc")}`)
+    expect(second.join(" ")).toContain(`--ro-bind ${join(l.own, "nothing", "directory")} ${join(l.home, ".ssh")} `)
+    expect(second.join(" ")).toContain(`--perms 0000 --tmpfs ${join(l.home, ".ssh")}`)
+    expect(made()).toEqual(before)
+    expect(lstatSync(join(l.own, "shared", ".cache", "pip")).isDirectory()).toBe(true)
+
+    // Without the mounts of the running commands the same plan is made as for a command that runs alone.
+    const alone = mounts(bwrapArgv(l.policy, ["true"], l.workspace, options))
+    expect(alone.join(" ")).toContain(bind(join(l.home, "appeared")).join(" "))
+  })
+
+  test("a mount on a path under the home is made only where the user's entries lead to it: not under what the command made, and not under an entry that is not shown", () => {
+    const l = homeLayout()
+    const own = join(l.own, "home")
+    mkdirSync(own, { recursive: true })
+    symlinkSync("/elsewhere", join(own, "planted"))
+    writeFileSync(join(own, "the-commands"), "a file the command made under a name the user's home gets as a directory\n")
+    for (const name of ["planted", "the-commands"]) mkdirSync(join(l.home, name, "sub"), { recursive: true })
+    const granted = [join(l.home, "planted", "sub"), join(l.home, "the-commands", "sub"), join(l.home, ".config", "git"), join(l.home, ".cache"), join(l.home, ".local", "bin", "missing")]
+    const policy = { ...l.policy, writableRoots: [...l.policy.writableRoots, ...granted], readOnlyPaths: [join(l.home, "planted", "sub"), join(l.home, "work", "project")], hiddenPaths: [...l.policy.hiddenPaths, join(l.home, "the-commands", "sub")] }
+    const argv = mounts(bwrapArgv(policy, ["true"], l.workspace, options)).join(" ")
+    expect(argv).not.toContain(join(l.home, "planted"))
+    expect(argv).not.toContain(join(l.home, "the-commands"))
+    expect(argv).toContain(`--bind ${join(l.home, ".config", "git")} ${join(l.home, ".config", "git")}`)
+    expect(argv).toContain(`--bind ${join(l.home, ".cache")} ${join(l.home, ".cache")}`)
+    expect(argv).toContain(`--bind ${l.workspace} ${l.workspace} `)
+    expect(argv).toContain(`--ro-bind ${l.workspace} ${l.workspace}`)
+    // The user's home itself, and a path outside it, are mounted on as without a home of the command's own.
+    const whole = mounts(bwrapArgv({ ...l.policy, writableRoots: [l.home, l.root] }, ["true"], l.workspace, options)).join(" ")
+    expect(whole).toContain(`--bind ${l.home} ${l.home}`)
+    expect(whole).toContain(`--bind ${l.root} ${l.root}`)
+  })
+
+  test("a directory of the session's that is not a directory is not bound from, and with the home's own gone there is no home of the command's", () => {
+    const l = homeLayout()
+    mkdirSync(join(l.own, "shared"))
+    symlinkSync(l.home, join(l.own, "shared", ".config"))
+    const argv = mounts(bwrapArgv(l.policy, ["true"], l.workspace, options)).join(" ")
+    expect(argv).not.toContain(join(l.own, "shared", ".config"))
+    expect(argv).not.toContain(join(l.home, ".config"))
+    expect(argv).toContain(`--bind ${join(l.own, "shared", ".cache")} ${join(l.home, ".cache")}`)
+
+    const other = homeLayout()
+    symlinkSync(other.home, join(other.own, "home"))
+    expect(mounts(bwrapArgv(other.policy, ["true"], other.workspace, options)).slice(0, 3)).toEqual(["--bind", other.workspace, other.workspace])
+  })
+
+  test("a plan made with the home's mounts is followed to its end: until it is told that the command is over, the next one is planned as beside a running one", () => {
+    const l = homeLayout()
+    const running = homeMounts()
+    const detection = { available: true as const, backend: "bwrap" as const, bwrapPath: "/usr/bin/bwrap", envPath: null, landlock: false }
+    const planned = () => {
+      const plan = sandboxCommand(l.policy, { argv: ["true"], cwd: l.workspace }, { env: {}, detection, maskFile: "/mask", homeMounts: running })
+      if (plan.kind !== "ready") throw new Error("not planned")
+      return plan
+    }
+    const first = planned()
+    const second = planned()
+    expect(running.running).toBe(2)
+    // A plan nothing was spawned for is over when the caller says so, once.
+    void first.ended?.()
+    void first.ended?.()
+    expect(running).toMatchObject({ running: 1 })
+    expect(running.held).not.toBeNull()
+    writeFileSync(join(l.home, "appeared"), "")
+    expect(planned().argv).not.toContain(join(l.home, "appeared"))
+    expect(running.running).toBe(2)
+    void second.ended?.()
+    expect(running.running).toBe(1)
+
+    // Without a home in the policy, or without the mounts, there is nothing to follow.
+    const without = sandboxCommand({ ...l.policy, home: undefined }, { argv: ["true"], cwd: l.workspace }, { env: {}, detection, maskFile: "/mask", homeMounts: homeMounts() })
+    expect(without.kind === "ready" && without.ended).toBeUndefined()
+    const alone = sandboxCommand(l.policy, { argv: ["true"], cwd: l.workspace }, { env: {}, detection, maskFile: "/mask" })
+    expect(alone.kind === "ready" && alone.ended).toBeUndefined()
   })
 
   test("no home of its own when the home or the session's directory is missing, or the home is the root or holds /tmp", () => {

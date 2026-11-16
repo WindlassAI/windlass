@@ -116,6 +116,7 @@ async function runShell(
 
   const spawned = spawn(wrapped ?? { argv: [options.shell, "-c", input.command], env: process.env, cwd: context.cwd })
   if (spawned instanceof Error) {
+    void wrapped?.ended?.()
     await buffer.close()
     await unlink(spillPath).catch(() => {})
     return {
@@ -127,6 +128,7 @@ async function runShell(
     }
   }
   const child = spawned
+  wrapped?.started?.(child.pid)
   const group = createGroup(child.pid, options.graceMs)
   const guard = guardGroup(child.pid)
 
@@ -156,6 +158,8 @@ async function runShell(
   // Whatever is left of the group (background jobs, a grandchild that ignored SIGTERM) is stopped now.
   await group.terminate()
   guard.release()
+  // The call is over when nothing of the command's sandbox is left: the next command is then planned beside none.
+  await wrapped?.ended?.()
   const drained = await Promise.race([pumps.then(() => true), Bun.sleep(DRAIN_MS).then(() => false)])
   if (!drained) await Promise.all(readers.map((reader) => reader.cancel().catch(() => {})))
   await buffer.close()
@@ -199,11 +203,13 @@ async function startBackground(
   const buffer = createOutputBuffer(sink, options.spillLimit, { ...context, progress: () => {} })
   const spawned = spawn(wrapped ?? { argv: [options.shell, "-c", input.command], env: process.env, cwd: context.cwd })
   if (spawned instanceof Error) {
+    void wrapped?.ended?.()
     await buffer.close()
     await unlink(logPath).catch(() => {})
     return refused(`Could not start the command: ${spawned.message}`)
   }
   const child = spawned
+  wrapped?.started?.(child.pid)
   const group = createGroup(child.pid, options.graceMs)
   const guard = guardGroup(child.pid)
   const startedAt = performance.now()
@@ -233,6 +239,7 @@ async function startBackground(
     if (timer !== null) clearTimeout(timer)
     await group.terminate()
     guard.release()
+    await wrapped?.ended?.()
     const drained = await Promise.race([pumps.then(() => true), Bun.sleep(DRAIN_MS).then(() => false)])
     if (!drained) await Promise.all(readers.map((reader) => reader.cancel().catch(() => {})))
     await buffer.close()
@@ -264,12 +271,16 @@ async function startBackground(
   }
 }
 
-/** What to spawn for a command that runs in the sandbox, or why it cannot. */
+/**
+ * What to spawn for a command that runs in the sandbox, or why it cannot.
+ * `started` and `ended`, where the plan has them, are the sandbox's to be
+ * told which process was spawned and that it has exited (`SandboxPlan`).
+ */
 function sandboxed(command: string, context: ToolContext, options: { shell: string; sandbox: CommandSandbox | null }) {
   if (options.sandbox === null) return { refused: "it must run in the sandbox, and this build has none" }
   const plan = options.sandbox.plan({ sessionId: context.sessionId, cwd: context.cwd, run: context.sandbox!, command, shellPath: options.shell })
   if (plan.kind !== "ready") return { refused: `it must run in the sandbox, which is unavailable: ${plan.reason}` }
-  return { argv: plan.argv, env: plan.env, cwd: plan.cwd }
+  return { argv: plan.argv, env: plan.env, cwd: plan.cwd, started: plan.started, ended: plan.ended }
 }
 
 function spawn(plan: { readonly argv: readonly string[]; readonly env: Readonly<Record<string, string | undefined>>; readonly cwd: string }) {

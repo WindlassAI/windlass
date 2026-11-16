@@ -197,6 +197,19 @@ describe.skipIf(skipReason !== null)("what the sandbox stops, and what the harde
     expect(workspacePolicy({ cwd: workspace, tempRoot: "/var/tmp/t", run: NOTHING, home, env: {} }).home).toBeUndefined()
   })
 
+  test("the policy: a command that may write the directory the session's home is kept in gets no home of the session's, and that directory is hidden from it", () => {
+    const home = join(base, "policy-home")
+    const kept = join(base, "policy-kept", "session.home")
+    mkdirSync(join(kept, "home"), { recursive: true })
+    const policy = (cwd: string, run: SandboxRun = NOTHING) => workspacePolicy({ cwd, tempRoot: "/var/tmp/t", homeRoot: kept, run, home, env: {} })
+    expect(policy(workspace).home?.root).toBe(kept)
+    expect(policy(workspace).hiddenPaths).not.toContain(kept)
+    for (const reaching of [policy(join(base, "policy-kept")), policy(base), policy(workspace, { network: false, writableRoots: [join(kept, "home")] })]) {
+      expect(reaching.home).toBeUndefined()
+      expect(reaching.hiddenPaths).toContain(kept)
+    }
+  })
+
   test("the policy: what is writable, what is read-only, and that the network is off", () => {
     const policy = workspacePolicy({ cwd: workspace, tempRoot: "/var/tmp/t", run: NOTHING, home: "/home/someone", env: {} })
     expect(policy.writableRoots).toEqual([workspace])
@@ -303,6 +316,18 @@ describe.skipIf(skipReason !== null)("the session's home: what tools write under
     expect(existsSync(join(ownHome(first), "home", ".second"))).toBe(false)
     expect(readFileSync(join(ownHome(second), "home", ".second"), "utf8")).toBe("second\n")
     expect(host(workspace, "git status --short").output).toBe("")
+  })
+
+  test("a working directory that holds the directory the session's home is kept in: its commands get the user's home, and cannot reach the session's", async () => {
+    const own = ownHome(first)
+    const before = readdirSync(own).sort()
+    const swap = await run(join(base, "session-temp"), `ls ${own} 2>&1; mv ${own}/home ${own}/was-home 2>&1; ln -s ${home} ${own}/home 2>&1; echo x > ~/.written-by-a-command 2>&1; echo tried`)
+    expect(swap.output).toContain("tried")
+    expect(swap.output.match(/Permission denied/g)?.length).toBe(3)
+    expect(swap.output).toContain("Read-only file system")
+    expect(readdirSync(own).sort()).toEqual(before)
+    expect(await run(workspace, "echo x > ~/.written-by-a-command && cat ~/.tool/log")).toMatchObject({ ok: true })
+    expect(existsSync(join(home, ".written-by-a-command"))).toBe(false)
   })
 
   test("with the home as the working directory there is no home of the session's: the files are the user's", async () => {

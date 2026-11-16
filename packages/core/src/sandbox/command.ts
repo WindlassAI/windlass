@@ -18,7 +18,9 @@
  *   command. Nothing outside the sandbox reads it, so what a command leaves
  *   there cannot run later with the user's rights. Not when the home is, or
  *   lies in, a directory the command may write anyway: working there is the
- *   user's choice, and the files are the user's.
+ *   user's choice, and the files are the user's. And not for a command that
+ *   may write the directory the session's home is kept in: it would reach
+ *   the home under a second name, so that directory is hidden from it.
  * - The repository's git directory writable when it is not inside the working
  *   directory (a session in a subdirectory of a repository, a linked
  *   worktree): `git add` and `git commit` write there.
@@ -37,11 +39,12 @@
  * from the lockfile, `tsc` and local git commits: they read the user's Bun
  * cache and git configuration, which the default policy leaves readable.
  */
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync } from "node:fs"
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import { brand } from "../brand.ts"
 import type { SandboxRun, TempDirectory } from "../tool/tool.ts"
+import { type HomeMounts, homeMounts } from "./bwrap.ts"
 import { type SandboxDetection, detectSandbox } from "./detect.ts"
 import { type SandboxPlan, type SandboxUnavailable, sandboxCommand } from "./index.ts"
 import { type SandboxPolicy, defaultPolicy } from "./policy.ts"
@@ -101,6 +104,8 @@ export function createCommandSandbox(options: CommandSandboxOptions = {}): Comma
   const home = options.home ?? homedir()
   const bwrap = detection.available && detection.backend === "bwrap"
   const temps = new Map<string, string>()
+  /** What the running commands of each session have mounted in its home: the next command of the session is planned beside them. */
+  const homes = new Map<string, HomeMounts>()
   let base: string | null = null
 
   const sessionDirectory = (sessionId: string) => {
@@ -131,7 +136,9 @@ export function createCommandSandbox(options: CommandSandboxOptions = {}): Comma
     temp,
     policy,
     plan: (input) => {
-      const plan = sandboxCommand(policy(input), { shell: input.command, cwd: input.cwd, ...(input.shellPath === undefined ? {} : { shellPath: input.shellPath }) }, { env, detection })
+      const mounts = homes.get(input.sessionId) ?? homeMounts()
+      homes.set(input.sessionId, mounts)
+      const plan = sandboxCommand(policy(input), { shell: input.command, cwd: input.cwd, ...(input.shellPath === undefined ? {} : { shellPath: input.shellPath }) }, { env, detection, homeMounts: mounts })
       if (plan.kind !== "ready" || !input.run.network) return plan
       // A download needs a cache it can write. The user's own stays read-only: what is in it runs outside the sandbox later.
       return { ...plan, env: { ...plan.env, BUN_INSTALL_CACHE_DIR: join(plan.env.TMPDIR ?? "/tmp", ".bun-install-cache") } }
@@ -173,9 +180,14 @@ export function workspacePolicy(input: {
   const writableRoots = [...new Set([...base.writableRoots, ...input.run.writableRoots, ...outside])]
   // A home the command may write as it is stays the user's: the working directory is the home, or holds it.
   const homePath = base.home?.path
+  // A command that may write where the session's home is kept would have it under a second name, where it could
+  // rename the directories bound into the home: it gets no home of the session's, and that directory is hidden from it.
+  const kept = input.homeRoot === undefined || !existsSync(input.homeRoot) ? null : real(input.homeRoot)
+  const reached = kept !== null && writableRoots.some((root) => within(real(root), kept) || within(kept, real(root)))
   return {
     ...base,
-    home: homePath !== undefined && writableRoots.some((root) => within(real(root), real(homePath))) ? undefined : base.home,
+    home: reached || (homePath !== undefined && writableRoots.some((root) => within(real(root), real(homePath)))) ? undefined : base.home,
+    ...(reached ? { hiddenPaths: [...base.hiddenPaths, kept] } : {}),
     writableRoots,
     readOnlyPaths: [...(git === null ? [] : gitProtected(git)), join(input.cwd, `.${brand.directory}`)],
   }
