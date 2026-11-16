@@ -3,14 +3,14 @@
  * shell tool will: detached, with the planned argv, env and cwd.
  */
 import { afterAll, afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
-import { existsSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs"
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { networkInterfaces } from "node:os"
 import { join } from "node:path"
 import { ACCESS_TOKEN_FILE_ENV } from "../../src/auth/handed-in.ts"
 import { brand } from "../../src/brand.ts"
-import { type SandboxPolicy, defaultPolicy, sandboxCommand } from "../../src/sandbox/index.ts"
+import { type SandboxPolicy, defaultPolicy, homeMounts, sandboxCommand } from "../../src/sandbox/index.ts"
 import { descendants, isRunning, plan, removeTempDirs, run, skipReason, spawnPlan, tempDir, waitUntil } from "./helpers.ts"
-import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+import { E2E_TIMEOUT_MS, waitFor } from "../../src/testing/wait.ts"
 
 // End-to-end: real processes start here, so each test has a limit sized for a slow runner.
 setDefaultTimeout(E2E_TIMEOUT_MS)
@@ -62,6 +62,50 @@ function homeFixture() {
   const policy: SandboxPolicy = { ...defaultPolicy({ workspace: f.workspace, home: f.home, env: {}, homeRoot: own }) }
   const sh = (shell: string) => run(plan(policy, shell, f.workspace, { HOME: f.home, PATH: process.env.PATH }))
   return { ...f, own, policy, sh }
+}
+
+/**
+ * The home fixture as one session runs its commands: each is planned with the
+ * mounts the running ones have in the home and followed to its end, as
+ * `createCommandSandbox` and the shell tool do. `start` returns once the
+ * command says it runs (it makes `started/<label>` in the workspace first).
+ */
+function homeSession() {
+  const f = homeFixture()
+  const mounts = homeMounts()
+  mkdirSync(join(f.workspace, "started"))
+  const begin = (shell: string, policy: SandboxPolicy = f.policy) => {
+    const planned = sandboxCommand(policy, { shell, shellPath: "/bin/bash", cwd: f.workspace }, { env: { HOME: f.home, PATH: process.env.PATH }, homeMounts: mounts })
+    if (planned.kind !== "ready") throw new Error(planned.reason)
+    const child = spawnPlan(planned)
+    planned.started?.(child.pid)
+    const done = Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]).then(async ([stdout, stderr, code]) => {
+      await planned.ended?.()
+      return { stdout, stderr, code }
+    })
+    return { child, done }
+  }
+  const start = async (label: string, shell: string, policy?: SandboxPolicy) => {
+    const command = begin(`touch started/${label}\n${shell}`, policy)
+    await waitFor(() => existsSync(join(f.workspace, "started", label)))
+    return command
+  }
+  const stop = async (command: ReturnType<typeof begin>) => {
+    process.kill(-command.child.pid, "SIGTERM")
+    return command.done
+  }
+  return { ...f, mounts, start, stop, sh: (shell: string, policy?: SandboxPolicy) => begin(shell, policy).done }
+}
+
+/**
+ * A command that waits for something to be put at one of `names` in its home
+ * and at once puts a link to `target/<name>` in its place: what a hostile
+ * command in the background does to a mount point that is made for the next
+ * command. `/oldroot` is where bwrap keeps the host while it sets a sandbox
+ * up, so a link through it names a path of the host.
+ */
+function swapping(names: readonly string[], target: string) {
+  return `while :; do for name in ${names.join(" ")}; do p=~/$name; if [ -e "$p" ] && [ ! -L "$p" ]; then rm -rf "$p" 2>/dev/null; ln -s "/oldroot${target}/$name" "$p" 2>/dev/null; fi; done; done`
 }
 
 describe.skipIf(skipReason !== null)(title, () => {
@@ -160,6 +204,96 @@ describe.skipIf(skipReason !== null)(title, () => {
       const median = samples.sort((a, b) => a - b)[10] ?? 0
       console.log(`[sandbox overhead] true with a home of 100 entries: ${median.toFixed(2)} ms planned and run (median of 20)`)
       expect(median).toBeLessThan(1000)
+    })
+
+    test("an entry that appears in the user's home while a command runs is not mounted for the next one, so the running one has no mount point to turn into a link; once none runs it is shown", async () => {
+      const f = homeSession()
+      const victim = join(f.root, "victim")
+      mkdirSync(victim)
+      const hostile = await f.start("hostile", swapping(["new-file", "new-directory", ".new-secret"], victim))
+      for (let round = 0; round < 3; round++) {
+        writeFileSync(join(f.home, "new-file"), "the user's new file\n")
+        mkdirSync(join(f.home, "new-directory"), { recursive: true })
+        writeFileSync(join(f.home, ".new-secret"), "A-NEW-SECRET\n")
+        // The credential store is one the policy hides, and a directory under the new entry is one the user allowed writes to.
+        const policy = { ...f.policy, hiddenPaths: [...f.policy.hiddenPaths, join(f.home, ".new-secret")], writableRoots: [...f.policy.writableRoots, join(f.home, "new-directory")] }
+        const next = await f.sh("cat ~/new-file ~/.new-secret; ls -d ~/new-directory; echo ran", policy)
+        expect(next.stdout).toBe("ran\n")
+        expect(next.stderr.match(/No such file or directory/g)?.length).toBe(3)
+        expect(readdirSync(victim)).toEqual([])
+        for (const name of ["new-file", "new-directory", ".new-secret"]) rmSync(join(f.home, name), { recursive: true })
+      }
+      await f.stop(hostile)
+      expect(f.mounts).toEqual({ running: 0, held: null })
+      // With no command of the session running, what the user has now is shown, and nothing is left to race with.
+      writeFileSync(join(f.home, "new-file"), "the user's new file\n")
+      expect((await f.sh("cat ~/new-file")).stdout).toBe("the user's new file\n")
+      expect(readdirSync(victim)).toEqual([])
+    })
+
+    test("an entry that leaves the user's home while commands run stays a mount in the next one, so it cannot be replaced before it comes back; one that changes kind is shown empty", async () => {
+      const f = homeSession()
+      const victim = join(f.root, "victim")
+      mkdirSync(victim)
+      const first = await f.start("first", "sleep 300 & wait")
+      rmSync(join(f.home, "notes.txt"))
+      rmSync(join(f.home, ".gitconfig"))
+      mkdirSync(join(f.home, ".gitconfig"))
+      // Planned after the entries left: it has an empty file mounted where each was, and tries to put a link there.
+      const hostile = await f.start("hostile", `echo x > ~/notes.txt; cat ~/.gitconfig; echo "[$(cat ~/notes.txt)]" > shown-to-the-hostile\n${swapping(["notes.txt", ".gitconfig"], victim)}`)
+      await waitFor(() => existsSync(join(f.workspace, "shown-to-the-hostile")))
+      expect(readFileSync(join(f.workspace, "shown-to-the-hostile"), "utf8")).toBe("[]\n")
+      writeFileSync(join(f.home, "notes.txt"), "back again\n")
+      const next = await f.sh("cat ~/notes.txt; cat ~/.gitconfig; echo ran")
+      expect(next).toMatchObject({ stdout: "back again\nran\n", stderr: "", code: 0 })
+      expect(readdirSync(victim)).toEqual([])
+      // The mount points are as they were made: a running command had each as a mount, and nothing outside changed them.
+      expect(lstatSync(join(f.own, "home", "notes.txt")).isFile()).toBe(true)
+      expect(lstatSync(join(f.own, "home", ".gitconfig")).isFile()).toBe(true)
+      await Promise.all([f.stop(first), f.stop(hostile)])
+      expect(f.mounts).toEqual({ running: 0, held: null })
+      // Now the directory the user has at that name is shown as one.
+      expect((await f.sh("ls -d ~/.gitconfig/ && cat ~/notes.txt")).stdout).toBe(`${join(f.home, ".gitconfig")}/\nback again\n`)
+    })
+
+    test("a command counts as running until nothing of its sandbox is left: what it left behind when it exited, and when it had to be killed, also a process that left its process group", async () => {
+      const f = homeSession()
+      const marker = `3${process.pid}`
+      // A command that exits at once and leaves three processes behind that left its group and ignore SIGTERM: bwrap exits with it, they do not.
+      const leaving = await f.sh(`for n in 1 2 3; do setsid bash -c 'trap "" TERM HUP; exec sleep ${marker}' & done; exit 0`)
+      expect(leaving.code).toBe(0)
+      const stubborn = await f.start("stubborn", `trap '' TERM\nsetsid sleep ${marker} &\nsleep 0.3; touch started/settled\nwait`)
+      await waitFor(() => existsSync(join(f.workspace, "started", "settled")))
+      const commandLine = (pid: string) => {
+        try {
+          return readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").join(" ").trim()
+        } catch {
+          return ""
+        }
+      }
+      const sleepers = () => readdirSync("/proc").filter((entry) => /^\d+$/.test(entry) && commandLine(entry) === `sleep ${marker}`)
+      // The first command was over only when its three were dead: the one that runs now has the only one.
+      expect(sleepers().length).toBe(1)
+      expect(f.mounts.running).toBe(1)
+      process.kill(-stubborn.child.pid, "SIGKILL")
+      await stubborn.done
+      await waitFor(() => f.mounts.running === 0)
+      expect(sleepers()).toEqual([])
+      expect(f.mounts.held).toBeNull()
+    })
+
+    test("a link the command leaves in its home under a name the user's home gets later does not send a mount elsewhere: a directory allowed for writing below it is not mounted", async () => {
+      const f = homeSession()
+      const victim = join(f.root, "victim")
+      mkdirSync(victim)
+      expect((await f.sh(`ln -s /oldroot${victim} ~/later && echo planted`)).stdout).toBe("planted\n")
+      mkdirSync(join(f.home, "later", "sub"), { recursive: true })
+      const policy = { ...f.policy, writableRoots: [...f.policy.writableRoots, join(f.home, "later", "sub")] }
+      const next = await f.sh("echo x > ~/later/sub/file; echo ran", policy)
+      expect(next.stdout).toBe("ran\n")
+      expect(next.stderr).toContain("No such file or directory")
+      expect(readdirSync(victim)).toEqual([])
+      expect(readdirSync(join(f.home, "later", "sub"))).toEqual([])
     })
 
     test("a directory the user allowed writes to is the user's own, also under the home", async () => {

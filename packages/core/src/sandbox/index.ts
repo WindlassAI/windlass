@@ -4,7 +4,7 @@
  * machine cannot sandbox. It spawns nothing itself; see README.md for how the
  * shell tool is expected to use it.
  */
-import { bwrapArgv } from "./bwrap.ts"
+import { type HomeMounts, bwrapArgv, homeCommand } from "./bwrap.ts"
 import { type SandboxBackend, type SandboxDetection, detectSandbox } from "./detect.ts"
 import { type SandboxPolicy, assertValidPolicy, filterEnv } from "./policy.ts"
 import { seatbeltArgv } from "./seatbelt.ts"
@@ -23,6 +23,7 @@ export {
   sharedHomeDirectories,
 } from "./policy.ts"
 export { seatbeltProfile } from "./seatbelt.ts"
+export { type HomeLayer, type HomeMounts, HOME_BINDS, homeMounts, homeView } from "./bwrap.ts"
 export { type CommandInput, type CommandSandbox, type CommandSandboxOptions, type ConfinedInput, type GitLayout, confinedPolicy, createCommandSandbox, gitLayout, workspacePolicy } from "./command.ts"
 
 export type SandboxCommand =
@@ -43,6 +44,17 @@ export type SandboxPlan = {
    * env). SIGKILL to the group always kills everything.
    */
   readonly gracefulTermination: boolean
+  /**
+   * Set for a command planned with `homeMounts` that got the home. The
+   * caller says which process it spawned for the plan (`started`, right
+   * after spawning it) and when that process has exited (`ended`); for a
+   * plan it spawns nothing for, `ended` alone. The command counts as running
+   * until then and until nothing of its sandbox is left, and the home keeps
+   * the mounts it has. `ended` resolves when the command is over, or after a
+   * moment when its sandbox is not empty yet (`homeCommand` in `bwrap.ts`).
+   */
+  readonly started?: (pid: number) => void
+  readonly ended?: () => Promise<void>
 }
 
 export type SandboxUnavailable = {
@@ -60,6 +72,8 @@ export interface SandboxCommandOptions {
   readonly detection?: SandboxDetection
   /** Linux: the mode-000 file bound over hidden files. Default: one per user under the temp directory. */
   readonly maskFile?: string
+  /** Linux: what the commands that run with `policy.home` have mounted in it, for a caller that runs several at a time (`HomeMounts` in `bwrap.ts`). */
+  readonly homeMounts?: HomeMounts
 }
 
 export function sandboxCommand(policy: SandboxPolicy, command: SandboxCommand, options: SandboxCommandOptions = {}): SandboxPlan | SandboxUnavailable {
@@ -69,16 +83,22 @@ export function sandboxCommand(policy: SandboxPolicy, command: SandboxCommand, o
 
   const argv = "argv" in command ? [...command.argv] : [command.shellPath ?? Bun.which("bash") ?? "/bin/sh", "-c", command.shell]
   const env = filterEnv(options.env ?? process.env, policy.env)
-  if (detection.backend === "bwrap")
+  if (detection.backend === "bwrap") {
+    const mounts = options.homeMounts
+    const running = mounts?.running ?? 0
+    const wrapped = bwrapArgv(policy, argv, command.cwd, { bwrapPath: detection.bwrapPath, envPath: detection.envPath, maskFile: options.maskFile, ...(mounts === undefined ? {} : { homeMounts: mounts }) })
     return {
       kind: "ready",
       backend: "bwrap",
-      argv: bwrapArgv(policy, argv, command.cwd, { bwrapPath: detection.bwrapPath, envPath: detection.envPath, maskFile: options.maskFile }),
+      argv: wrapped,
       // Inside, /tmp is the private tmpfs or the temp root; a host TMPDIR would point at a read-only or missing path.
       env: { ...env, TMPDIR: "/tmp" },
       cwd: command.cwd,
       gracefulTermination: detection.envPath !== null,
+      // The command got the home: it is followed until its sandbox is empty.
+      ...(mounts !== undefined && mounts.running > running ? homeCommand(mounts) : {}),
     }
+  }
   return {
     kind: "ready",
     backend: "seatbelt",
