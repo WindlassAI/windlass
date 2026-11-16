@@ -442,7 +442,8 @@ is a new version with a decoder for the old one.
   content of a `write` of the same file, is written as the secret it stands for (`tools/redacted.ts`).
 - The sandbox wraps a command; it spawns nothing. `createCommandSandbox` (`sandbox/command.ts`) is what the shell
   tool and the check runner use: the workspace writable, the session's temp directory as the command's `/tmp`
-  (Linux) or `TMPDIR` (macOS), the repository's git directory writable when it lies outside the workspace (a
+  (Linux) or `TMPDIR` (macOS), on Linux the session's home at the home directory's path with the user's entries
+  read-only in it, the repository's git directory writable when it lies outside the workspace (a
   subdirectory of a repository, a linked worktree), `hooks` and `config` of that git directory and the harness's
   project directory read-only, and with the network granted a Bun install cache inside the temp directory. The
   shell tool is told how to run through `ToolContext.sandbox` and refuses when it cannot sandbox.
@@ -1562,7 +1563,9 @@ auth.json                         the sign-in
 Outside the data directory, because sandboxed commands must reach it and the data directory is hidden from them:
 `<os temp>/<brand.directory>-<uid>/<session id>/` is the session's temp directory (mode 0700), with `.spill/`
 inside it for the session's tool output kept in full. With the approval layer off, and for a session on a machine
-without a sandbox, that output is in `spill/` of the data directory as before.
+without a sandbox, that output is in `spill/` of the data directory as before. `<session id>.home` beside the temp
+directory is the session's home: what its sandboxed commands write under the home directory on Linux
+(`sandbox/command.ts`).
 
 **Why one file per session.** The store's guarantees are per database: one writer, dense `seq`, the reducer inside
 the append transaction, rebuild-from-log equals the live rows. A session is the natural unit of all four, and one

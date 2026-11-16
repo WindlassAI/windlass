@@ -4,7 +4,7 @@
  * backend-neutral; `bwrap.ts` and `seatbelt.ts` translate it.
  */
 import { homedir } from "node:os"
-import { isAbsolute, join } from "node:path"
+import { isAbsolute, join, relative, resolve } from "node:path"
 import { handedInTokenFile } from "../auth/handed-in.ts"
 import { brand } from "../brand.ts"
 
@@ -35,6 +35,12 @@ export interface SandboxPolicy {
    * gets no writable temp directory.
    */
   readonly tempRoot?: string
+  /**
+   * The command's own home directory, in place of the user's. Linux only:
+   * `sandbox-exec` cannot show a command another directory at a path, so on
+   * macOS the home stays the user's, read-only like the rest.
+   */
+  readonly home?: SandboxHome
   /** Whether the rest of the filesystem is readable (never writable). Default true. */
   readonly readRest: boolean
   /** With `readRest: false`, extra absolute paths that stay readable (system directories always are). */
@@ -52,9 +58,32 @@ export interface SandboxPolicy {
   readonly env: EnvPolicy
 }
 
+/**
+ * A home the command may write without the user's home changing. The command
+ * sees `root` at `path`, and in it every entry of the user's home under its
+ * own name, read-only: what the user has there is read as before, and what
+ * the command adds is written to `root`.
+ */
+export interface SandboxHome {
+  /** The user's home directory. */
+  readonly path: string
+  /** A host directory that takes what the command writes under its home. */
+  readonly root: string
+  /**
+   * Directories of the home, relative to it, in which programs make entries
+   * of their own beside the user's (`.config`, `.cache`). They are `root`'s
+   * too, with the user's entries read-only one level down. Any other
+   * directory of the user's is read-only as a whole, so nothing can be added
+   * inside it.
+   */
+  readonly shared: readonly string[]
+}
+
 export interface DefaultPolicyOptions {
   readonly workspace: string
   readonly tempRoot?: string
+  /** The host directory for the command's own home (`SandboxHome.root`). Without it the home is the user's, read-only. */
+  readonly homeRoot?: string
   readonly network?: NetworkPolicy
   readonly home?: string
   /** Used for `XDG_*` lookups. Default `process.env`. */
@@ -65,9 +94,11 @@ export interface DefaultPolicyOptions {
 
 /** Workspace writable, everything else read-only, credentials hidden, network off, credential variables stripped. */
 export function defaultPolicy(options: DefaultPolicyOptions): SandboxPolicy {
+  const home = options.home ?? homedir()
   return {
     writableRoots: [options.workspace],
     tempRoot: options.tempRoot,
+    home: options.homeRoot === undefined ? undefined : { path: home, root: options.homeRoot, shared: sharedHomeDirectories(home, options.env ?? process.env) },
     readRest: true,
     hiddenPaths: defaultHiddenPaths(options),
     network: options.network ?? { mode: "off" },
@@ -75,8 +106,24 @@ export function defaultPolicy(options: DefaultPolicyOptions): SandboxPolicy {
   }
 }
 
+/**
+ * The directories of a home in which programs make entries beside the
+ * user's: the XDG base directories, where they are by default and where the
+ * environment puts them when that is inside the home, with the directories
+ * on the way to them (`.local`). Relative to `home`.
+ */
+export function sharedHomeDirectories(home: string, env: Readonly<Record<string, string | undefined>> = {}): string[] {
+  const named = [env.XDG_CACHE_HOME, env.XDG_CONFIG_HOME, env.XDG_DATA_HOME, env.XDG_STATE_HOME].flatMap((path) => {
+    if (path === undefined || !isAbsolute(path)) return []
+    const inside = relative(resolve(home), resolve(path))
+    return inside === "" || inside === ".." || inside.startsWith("../") || isAbsolute(inside) ? [] : [inside]
+  })
+  const withParents = [".cache", ".config", ".local/share", ".local/state", ...named].flatMap((path) => path.split("/").map((_, index, parts) => parts.slice(0, index + 1).join("/")))
+  return [...new Set(withParents)]
+}
+
 /** Credential stores, the harness's own data and config, the file a sign-in is handed in through, and sockets that would let a command act outside the sandbox. */
-export function defaultHiddenPaths(options: Omit<DefaultPolicyOptions, "workspace" | "tempRoot" | "network"> = {}): string[] {
+export function defaultHiddenPaths(options: Omit<DefaultPolicyOptions, "workspace" | "tempRoot" | "homeRoot" | "network"> = {}): string[] {
   const home = options.home ?? homedir()
   const env = options.env ?? process.env
   const platform = options.platform ?? process.platform
@@ -210,9 +257,18 @@ export function filterEnv(env: Readonly<Record<string, string | undefined>>, pol
   )
 }
 
-/** Throws on a policy no backend can apply correctly (relative paths). */
+/** Throws on a policy no backend can apply correctly (relative paths, a shared home directory that is not inside the home). */
 export function assertValidPolicy(policy: SandboxPolicy) {
-  const paths = [...policy.writableRoots, ...policy.hiddenPaths, ...(policy.readableRoots ?? []), ...(policy.readOnlyPaths ?? []), ...(policy.tempRoot ? [policy.tempRoot] : [])]
-  const relative = paths.filter((path) => !isAbsolute(path))
-  if (relative.length > 0) throw new TypeError(`Sandbox policy paths must be absolute: ${relative.join(", ")}`)
+  const paths = [
+    ...policy.writableRoots,
+    ...policy.hiddenPaths,
+    ...(policy.readableRoots ?? []),
+    ...(policy.readOnlyPaths ?? []),
+    ...(policy.tempRoot ? [policy.tempRoot] : []),
+    ...(policy.home ? [policy.home.path, policy.home.root] : []),
+  ]
+  const notAbsolute = paths.filter((path) => !isAbsolute(path))
+  if (notAbsolute.length > 0) throw new TypeError(`Sandbox policy paths must be absolute: ${notAbsolute.join(", ")}`)
+  const outside = (policy.home?.shared ?? []).filter((path) => path === "" || isAbsolute(path) || path.split("/").some((part) => part === "" || part === "." || part === ".."))
+  if (outside.length > 0) throw new TypeError(`Shared home directories must be relative paths inside the home: ${outside.join(", ")}`)
 }

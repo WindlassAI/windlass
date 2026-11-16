@@ -14,11 +14,13 @@ export {
   type DefaultPolicyOptions,
   type EnvPolicy,
   type NetworkPolicy,
+  type SandboxHome,
   type SandboxPolicy,
   defaultHiddenPaths,
   defaultPolicy,
   filterEnv,
   isCredentialName,
+  sharedHomeDirectories,
 } from "./policy.ts"
 export { seatbeltProfile } from "./seatbelt.ts"
 export { type CommandInput, type CommandSandbox, type CommandSandboxOptions, type ConfinedInput, type GitLayout, confinedPolicy, createCommandSandbox, gitLayout, workspacePolicy } from "./command.ts"

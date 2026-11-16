@@ -168,7 +168,8 @@ their size in `argumentsBytes`.
 ## Where hooks run
 
 In the sandbox, like the agent's own commands: the working directory is writable, the rest of the file system is
-read-only (`touch: cannot touch '/var/tmp/x': Read-only file system`), and there is no network. With
+read-only (`touch: cannot touch '/var/tmp/x': Read-only file system`) except the session's temp directory and, on
+Linux, its home ([safety.md](safety.md)), and there is no network. With
 `--approval full` nothing is sandboxed, hooks included. Your own hook with `"sandbox": false` always runs
 outside it.
 

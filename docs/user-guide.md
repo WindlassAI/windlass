@@ -227,8 +227,10 @@ Before every tool call the program decides whether it runs, runs in a sandbox, a
 | `auto` (default) | run | run | run in the sandbox; more access asks |
 | `full` | run | run | run with your full permissions, nothing asks |
 
-- The sandbox (bubblewrap on Linux) lets a command write only in the project and a session temp directory, hides
-  credential stores, and has no network. A command that needs more is run only after you approve it.
+- The sandbox (bubblewrap on Linux) lets a command write only in the project, a session temp directory and, on
+  Linux, a session home that stands in for yours so that tools can keep their caches and settings
+  ([safety.md](safety.md), "The session's home"). It hides credential stores and has no network. A command that
+  needs more is run only after you approve it.
 - Choose with `--approval <mode>`, or `/approval ask|auto|full` while working. A project's own configuration can make
   the policy stricter, never looser.
 - When nobody can answer (a one-shot run, `--json`, a pipe), a call that would ask is refused and the agent is told
@@ -530,7 +532,9 @@ directory because sandboxed commands must run there, and the data directory is h
 
 Each session also has a temp directory, `/tmp/windlass-<uid>/<session id>/` (under `$TMPDIR` instead of `/tmp`
 when that is set), which sandboxed commands can write to (they see it as `/tmp` on Linux) and which holds the full
-output of long commands.
+output of long commands. On Linux `<session id>.home` beside it holds what the session's sandboxed commands wrote
+under the home directory (a package manager's cache can make it large). Windlass removes neither: delete them
+when the session's commands no longer need what they left there.
 
 ### Deleting everything
 
@@ -550,7 +554,8 @@ work was not merged keeps its `windlass/subagent-<id>` branch.
 |---|---|
 | `XDG_DATA_HOME` | where the data directory is (default `~/.local/share`) |
 | `XDG_CONFIG_HOME` | where your configuration and `AGENTS.md` are (default `~/.config`) |
-| `TMPDIR` | where session temp directories are made (default `/tmp`) |
+| `XDG_CACHE_HOME`, `XDG_STATE_HOME` | read, with the two above, to find the directories of your home in which a sandboxed command may make entries of its own ([safety.md](safety.md), "The session's home") |
+| `TMPDIR` | where session temp directories and session homes are made (default `/tmp`) |
 | `XDG_RUNTIME_DIR` | read to hide your session bus from sandboxed commands |
 | `PATH` | where `bwrap`, `env` and `git` are found; commands the agent runs get it too |
 | `NO_COLOR` | set to anything: no colour |

@@ -2755,7 +2755,7 @@ The record of retired images is what every later request is built from, so the r
 
 #### 79. Auto mode: an edit runs and a command runs in the sandbox
 
-The default. An edit inside the workspace runs as it is and a command runs in the sandbox (no network, writes only in the workspace and the temp directory), and nobody is asked. `tool.started` records what each ran under: the mode, the path facts the decision was made from, and for the command that it was sandboxed and with what. Each call is decided and started the moment its arguments are in, while the response streams; a command is decided and started only once every edit written before it has its result, because a command could change the file an edit was decided about.
+The default. An edit inside the workspace runs as it is and a command runs in the sandbox (no network, writes only in the workspace, the temp directory and on Linux the session's own home), and nobody is asked. `tool.started` records what each ran under: the mode, the path facts the decision was made from, and for the command that it was sandboxed and with what. Each call is decided and started the moment its arguments are in, while the response streams; a command is decided and started only once every edit written before it has its result, because a command could change the file an edit was decided about.
 
 *Provider:* asks for a write and a command in one response, then answers.
 

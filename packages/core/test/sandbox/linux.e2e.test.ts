@@ -3,7 +3,7 @@
  * shell tool will: detached, with the planned argv, env and cwd.
  */
 import { afterAll, afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
-import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs"
 import { networkInterfaces } from "node:os"
 import { join } from "node:path"
 import { ACCESS_TOKEN_FILE_ENV } from "../../src/auth/handed-in.ts"
@@ -37,7 +37,140 @@ function fixture(overrides: Partial<SandboxPolicy> = {}) {
   return { root, workspace, outside, home, policy }
 }
 
+/** Every path under `dir` with what it is and, for a file or a link, what it holds: two of these are equal when nothing was added, removed or changed. */
+function contents(dir: string): string[] {
+  return (readdirSync(dir, { recursive: true, withFileTypes: true }) as import("node:fs").Dirent[])
+    .map((entry) => {
+      const path = join(entry.parentPath, entry.name)
+      return `${path.slice(dir.length)} ${entry.isDirectory() ? "directory" : entry.isSymbolicLink() ? "link" : JSON.stringify(readFileSync(path, "utf8"))}`
+    })
+    .sort()
+}
+
+/** The fixture with a home of the command's own: the user's home also has settings and a cache, and `own` takes what a command writes under it. */
+function homeFixture() {
+  const f = fixture()
+  const own = join(f.root, "session.home")
+  mkdirSync(own)
+  mkdirSync(join(f.home, ".config", "git"), { recursive: true })
+  mkdirSync(join(f.home, ".cache", "pip"), { recursive: true })
+  writeFileSync(join(f.home, ".gitconfig"), "[user]\n\tname = The User\n")
+  writeFileSync(join(f.home, ".config", "git", "ignore"), "*.swp\n")
+  writeFileSync(join(f.home, ".cache", "pip", "selfcheck.json"), "{}\n")
+  writeFileSync(join(f.home, ".local", "share", "data.txt"), "user data\n")
+  symlinkSync("notes.txt", join(f.home, "notes-link"))
+  const policy: SandboxPolicy = { ...defaultPolicy({ workspace: f.workspace, home: f.home, env: {}, homeRoot: own }) }
+  const sh = (shell: string) => run(plan(policy, shell, f.workspace, { HOME: f.home, PATH: process.env.PATH }))
+  return { ...f, own, policy, sh }
+}
+
 describe.skipIf(skipReason !== null)(title, () => {
+  describe("a home of the command's own", () => {
+    test("a tool makes its cache, settings and state under the home; they are there for the next command, in the session's directory, and the user's home is unchanged", async () => {
+      const f = homeFixture()
+      const before = contents(f.home)
+      const made = await f.sh(
+        "mkdir -p ~/.cache/tool ~/.config/tool ~/.local/state/tool ~/.local/share/tool ~/.tool && for dir in .cache .config .local/state .local/share; do echo $dir > ~/$dir/tool/file; done && echo top > ~/.tool/file && echo rc > ~/.toolrc && echo made",
+      )
+      expect(made).toMatchObject({ stdout: "made\n", stderr: "", code: 0 })
+      const next = await f.sh("cat ~/.cache/tool/file ~/.config/tool/file ~/.local/state/tool/file ~/.local/share/tool/file ~/.tool/file ~/.toolrc")
+      expect(next.stdout).toBe(".cache\n.config\n.local/state\n.local/share\ntop\nrc\n")
+      expect(readFileSync(join(f.own, "shared", ".config", "tool", "file"), "utf8")).toBe(".config\n")
+      expect(readFileSync(join(f.own, "shared", encodeURIComponent(".local/state"), "tool", "file"), "utf8")).toBe(".local/state\n")
+      expect(readFileSync(join(f.own, "home", ".toolrc"), "utf8")).toBe("rc\n")
+      expect(contents(f.home)).toEqual(before)
+    })
+
+    test("what the user has in the home is read as before, links included, and none of it can be changed, removed or added to", async () => {
+      const f = homeFixture()
+      const before = contents(f.home)
+      const read = await f.sh("cat ~/.gitconfig ~/.config/git/ignore ~/.cache/pip/selfcheck.json ~/.local/share/data.txt ~/notes-link && ls -A ~ | sort | tr '\\n' ' '")
+      expect(read.stdout).toBe("[user]\n\tname = The User\n*.swp\n{}\nuser data\nordinary file\n.cache .config .gitconfig .local .netrc .ssh notes-link notes.txt ")
+      expect(read.code).toBe(0)
+      const changed = await f.sh(
+        "echo x >> ~/.gitconfig; echo x > ~/.config/git/ignore; echo x > ~/.config/git/new; echo x > ~/.cache/pip/new; rm ~/notes.txt; rm -rf ~/.config/git; mv ~/.gitconfig ~/moved; echo x > ~/notes-link; echo done",
+      )
+      expect(changed.stdout).toBe("done\n")
+      expect(changed.stderr.match(/Read-only file system|Device or resource busy/g)?.length).toBe(8)
+      expect(contents(f.home)).toEqual(before)
+      expect((await f.sh("cat ~/.gitconfig ~/notes.txt")).stdout).toBe("[user]\n\tname = The User\nordinary file\n")
+    })
+
+    test("credential stores and the harness's data stay unreadable, and one the command makes for itself is not the user's", async () => {
+      const f = homeFixture()
+      const result = await f.sh(`cat ~/.ssh/id_ed25519; ls ~/.ssh; cat ~/.netrc; cat ~/.local/share/${brand.directory}/auth.json; echo x > ~/.netrc; mkdir ~/.aws && echo made-up > ~/.aws/credentials && cat ~/.aws/credentials`)
+      expect(result.stdout).toBe("made-up\n")
+      expect(result.stderr.match(/Permission denied|Read-only file system/g)).toEqual(["Permission denied", "Permission denied", "Permission denied", "Permission denied", "Read-only file system"])
+      for (const secret of ["SSH-PRIVATE-KEY-MATERIAL", "NETRC-PASSWORD", "HARNESS-AUTH-TOKEN"]) expect(result.stdout + result.stderr).not.toContain(secret)
+      expect(readFileSync(join(f.home, ".netrc"), "utf8")).toContain("NETRC-PASSWORD")
+      expect(existsSync(join(f.home, ".aws"))).toBe(false)
+      // The stand-ins under the masks hold nothing of the user's.
+      expect(readFileSync(join(f.own, "home", ".netrc"), "utf8")).toBe("")
+      expect(readdirSync(join(f.own, "home", ".ssh"))).toEqual([])
+    })
+
+    test("a shared directory cannot be renamed, removed or replaced by a link, so nothing made for the next command lands where a command pointed", async () => {
+      const f = homeFixture()
+      const victim = join(f.root, "victim")
+      mkdirSync(victim)
+      const swap = await f.sh(`mv ~/.config ~/moved; rmdir ~/.local/state; ln -sfn ${victim} ~/.cache; mv ~/.local ~/moved-too; echo tried`)
+      expect(swap.stdout).toBe("tried\n")
+      expect(swap.stderr.match(/Device or resource busy/g)?.length).toBe(3)
+      // `ln -sfn` on a directory that cannot be replaced makes the link inside it, in the session's own cache.
+      expect((await f.sh("cat ~/.config/git/ignore && ls -A ~/.cache")).stdout).toBe("*.swp\npip\nvictim\n")
+      expect(readdirSync(victim)).toEqual([])
+    })
+
+    test("an entry the user adds to the home during the session is seen by the next command, read-only", async () => {
+      const f = homeFixture()
+      expect((await f.sh("ls ~/.config")).stdout).toBe("git\n")
+      mkdirSync(join(f.home, ".config", "later"))
+      writeFileSync(join(f.home, ".config", "later", "settings"), "added later\n")
+      const result = await f.sh("cat ~/.config/later/settings; echo x > ~/.config/later/settings")
+      expect(result.stdout).toBe("added later\n")
+      expect(result.stderr).toContain("Read-only file system")
+    })
+
+    test("a workspace inside the home is written as before, and the rest of the home is the command's own", async () => {
+      const f = homeFixture()
+      const workspace = join(f.home, "work", "project")
+      mkdirSync(workspace, { recursive: true })
+      const policy = defaultPolicy({ workspace, home: f.home, env: {}, homeRoot: f.own })
+      const result = await run(plan(policy, "echo in-workspace > file.txt && echo beside > ../beside.txt; echo own > ~/own.txt && pwd -P", workspace, { HOME: f.home, PATH: process.env.PATH }))
+      expect(result.stdout).toBe(`${workspace}\n`)
+      expect(result.stderr).toContain("Read-only file system")
+      expect(readFileSync(join(workspace, "file.txt"), "utf8")).toBe("in-workspace\n")
+      expect(existsSync(join(f.home, "work", "beside.txt"))).toBe(false)
+      expect(existsSync(join(f.home, "own.txt"))).toBe(false)
+      expect(readFileSync(join(f.own, "home", "own.txt"), "utf8")).toBe("own\n")
+    })
+
+    test("overhead: median of 20 runs of `true` with a home of 100 entries", async () => {
+      const f = homeFixture()
+      for (let index = 0; index < 100; index++) writeFileSync(join(f.home, `.entry-${index}`), "")
+      const samples: number[] = []
+      for (let i = 0; i < 20; i++) {
+        const start = performance.now()
+        const sandboxed = sandboxCommand(f.policy, { argv: ["/usr/bin/true"], cwd: f.workspace })
+        if (sandboxed.kind !== "ready") throw new Error(sandboxed.reason)
+        const child = Bun.spawn(sandboxed.argv, { env: sandboxed.env, cwd: f.workspace, detached: true, stdin: "ignore", stdout: "ignore", stderr: "ignore" })
+        expect(await child.exited).toBe(0)
+        samples.push(performance.now() - start)
+      }
+      const median = samples.sort((a, b) => a - b)[10] ?? 0
+      console.log(`[sandbox overhead] true with a home of 100 entries: ${median.toFixed(2)} ms planned and run (median of 20)`)
+      expect(median).toBeLessThan(1000)
+    })
+
+    test("a directory the user allowed writes to is the user's own, also under the home", async () => {
+      const f = homeFixture()
+      const policy = { ...f.policy, writableRoots: [...f.policy.writableRoots, join(f.home, ".cache", "pip")] }
+      const result = await run(plan(policy, "echo wheel > ~/.cache/pip/wheel && echo wrote", f.workspace, { HOME: f.home, PATH: process.env.PATH }))
+      expect(result.stdout).toBe("wrote\n")
+      expect(readFileSync(join(f.home, ".cache", "pip", "wheel"), "utf8")).toBe("wheel\n")
+    })
+  })
+
   describe("filesystem", () => {
     test("a write inside the workspace succeeds", async () => {
       const f = fixture()

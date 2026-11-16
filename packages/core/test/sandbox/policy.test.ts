@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { resolve } from "node:path"
 import { ACCESS_TOKEN_FILE_ENV } from "../../src/auth/handed-in.ts"
 import { brand } from "../../src/brand.ts"
-import { defaultHiddenPaths, defaultPolicy, filterEnv, isCredentialName, sandboxCommand } from "../../src/sandbox/index.ts"
+import { defaultHiddenPaths, defaultPolicy, filterEnv, isCredentialName, sandboxCommand, sharedHomeDirectories } from "../../src/sandbox/index.ts"
 
 describe("defaultPolicy", () => {
   test("workspace writable, rest readable, network off, credentials stripped", () => {
@@ -51,6 +51,23 @@ describe("defaultPolicy", () => {
   })
 })
 
+describe("a home of the command's own", () => {
+  test("only with a directory to take its writes; the shared directories are the XDG ones and what leads to them", () => {
+    expect(defaultPolicy({ workspace: "/work", home: "/h", env: {} }).home).toBeUndefined()
+    expect(defaultPolicy({ workspace: "/work", home: "/h", env: {}, homeRoot: "/session/home" }).home).toEqual({
+      path: "/h",
+      root: "/session/home",
+      shared: [".cache", ".config", ".local", ".local/share", ".local/state"],
+    })
+  })
+
+  test("an XDG directory the environment puts elsewhere in the home is shared too; one outside the home is not the home's", () => {
+    const env = { XDG_CACHE_HOME: "/h/.var/cache", XDG_CONFIG_HOME: "/h/.config", XDG_DATA_HOME: "/data", XDG_STATE_HOME: "relative/state" }
+    expect(sharedHomeDirectories("/h", env)).toEqual([".cache", ".config", ".local", ".local/share", ".local/state", ".var", ".var/cache"])
+    expect(sharedHomeDirectories("/h", { XDG_CACHE_HOME: "/h", XDG_CONFIG_HOME: "/h/../other/.config" })).toEqual(sharedHomeDirectories("/h"))
+  })
+})
+
 describe("environment", () => {
   test("credential heuristic", () => {
     const stripped = [
@@ -91,6 +108,13 @@ describe("environment", () => {
 describe("sandboxCommand", () => {
   test("relative paths in a policy are rejected", () => {
     expect(() => sandboxCommand({ ...defaultPolicy({ workspace: "work" }), hiddenPaths: [] }, { argv: ["true"], cwd: "/" })).toThrow("must be absolute: work")
+  })
+
+  test("a home whose directory is relative, or with a shared directory that is not inside it, is rejected", () => {
+    const policy = defaultPolicy({ workspace: "/w", home: "/h", env: {}, homeRoot: "session/home" })
+    expect(() => sandboxCommand({ ...policy, hiddenPaths: [] }, { argv: ["true"], cwd: "/" })).toThrow("must be absolute: session/home")
+    for (const shared of ["/etc", "../other", ".config/../..", ""])
+      expect(() => sandboxCommand({ ...policy, hiddenPaths: [], home: { path: "/h", root: "/session/home", shared: [shared] } }, { argv: ["true"], cwd: "/" }), shared).toThrow("inside the home")
   })
 
   test("an unavailable backend is returned as a typed result, not thrown", () => {
