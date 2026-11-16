@@ -10,6 +10,15 @@
  *   on macOS. It outlives the command, so a file one command leaves there is
  *   there for the next, and it is the session's own (mode 0700, one per
  *   session), so nothing else on the machine is in it.
+ * - On Linux, a home of the session's own (`<temp base>/<session>.home`): the
+ *   command sees it at the home directory's path with the user's entries
+ *   read-only in it, so a tool that keeps a cache, settings or state under
+ *   the home (`~/.npm`, `~/.cache/uv`, `~/.config/astro`) can write them, and
+ *   the user's home is never changed. Like the temp directory it outlives the
+ *   command. Nothing outside the sandbox reads it, so what a command leaves
+ *   there cannot run later with the user's rights. Not when the home is, or
+ *   lies in, a directory the command may write anyway: working there is the
+ *   user's choice, and the files are the user's.
  * - The repository's git directory writable when it is not inside the working
  *   directory (a session in a subdirectory of a repository, a linked
  *   worktree): `git add` and `git commit` write there.
@@ -28,7 +37,7 @@
  * from the lockfile, `tsc` and local git commits: they read the user's Bun
  * cache and git configuration, which the default policy leaves readable.
  */
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, statSync } from "node:fs"
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import { brand } from "../brand.ts"
@@ -90,21 +99,32 @@ export function createCommandSandbox(options: CommandSandboxOptions = {}): Comma
   const detection = options.detection ?? detectSandbox()
   const env = options.env ?? process.env
   const home = options.home ?? homedir()
+  const bwrap = detection.available && detection.backend === "bwrap"
   const temps = new Map<string, string>()
   let base: string | null = null
 
+  const sessionDirectory = (sessionId: string) => {
+    base ??= privateDirectory(options.tempBase ?? join(tmpdir(), `${brand.directory}-${process.getuid?.() ?? 0}`))
+    return join(base, sessionId.replace(/[^A-Za-z0-9_.-]/g, "_"))
+  }
   const temp = (sessionId: string): TempDirectory => {
     let dir = temps.get(sessionId)
     if (dir === undefined) {
-      base ??= privateDirectory(options.tempBase ?? join(tmpdir(), `${brand.directory}-${process.getuid?.() ?? 0}`))
-      dir = join(base, sessionId.replace(/[^A-Za-z0-9_.-]/g, "_"))
+      dir = sessionDirectory(sessionId)
       mkdirSync(dir, { recursive: true, mode: 0o700 })
       temps.set(sessionId, dir)
     }
     // Under bubblewrap the directory is mounted at /tmp; sandbox-exec leaves paths as they are.
-    return { dir, alias: detection.available && detection.backend === "bwrap" ? "/tmp" : null }
+    return { dir, alias: bwrap ? "/tmp" : null }
   }
-  const policy = (input: Pick<CommandInput, "sessionId" | "cwd" | "run">) => workspacePolicy({ cwd: input.cwd, tempRoot: temp(input.sessionId).dir, run: input.run, home, env })
+  /** The session's home, beside its temp directory and not inside it: no command sees it under a second name. */
+  const homeRoot = (sessionId: string) => {
+    const dir = `${sessionDirectory(sessionId)}.home`
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
+    return dir
+  }
+  const policy = (input: Pick<CommandInput, "sessionId" | "cwd" | "run">) =>
+    workspacePolicy({ cwd: input.cwd, tempRoot: temp(input.sessionId).dir, ...(bwrap ? { homeRoot: homeRoot(input.sessionId) } : {}), run: input.run, home, env })
 
   return {
     state: detection.available ? { available: true } : { available: false, reason: detection.reason, remedy: detection.remedy },
@@ -118,7 +138,7 @@ export function createCommandSandbox(options: CommandSandboxOptions = {}): Comma
     },
     confined: (input) => {
       // Under bubblewrap the root is mounted at /tmp; sandbox-exec leaves paths as they are.
-      const seen = detection.available && detection.backend === "bwrap" ? "/tmp" : input.root
+      const seen = bwrap ? "/tmp" : input.root
       return sandboxCommand(confinedPolicy({ ...input, home }), { argv: input.argv(seen), cwd: input.cwd === input.root ? seen : input.cwd }, { env: input.env, detection })
     },
   }
@@ -130,10 +150,12 @@ export function confinedPolicy(input: Pick<ConfinedInput, "cwd" | "root" | "env"
   return { ...base, writableRoots: [], env: { mode: "allow", names: Object.keys(input.env) } }
 }
 
-/** The policy of a command in `cwd`: the default one, with the session's temp directory, the access the decision granted, and the git hardening. */
+/** The policy of a command in `cwd`: the default one, with the session's temp directory and home, the access the decision granted, and the git hardening. */
 export function workspacePolicy(input: {
   readonly cwd: string
   readonly tempRoot: string
+  /** The session's home (`SandboxHome.root`). Without it the command's home is the user's, read-only. */
+  readonly homeRoot?: string
   readonly run: SandboxRun
   readonly home?: string
   readonly env?: Readonly<Record<string, string | undefined>>
@@ -141,15 +163,20 @@ export function workspacePolicy(input: {
   const base = defaultPolicy({
     workspace: input.cwd,
     tempRoot: input.tempRoot,
+    ...(input.homeRoot === undefined ? {} : { homeRoot: input.homeRoot }),
     network: { mode: input.run.network ? "on" : "off" },
     ...(input.home === undefined ? {} : { home: input.home }),
     ...(input.env === undefined ? {} : { env: input.env }),
   })
   const git = gitLayout(input.cwd)
   const outside = git === null ? [] : [...new Set([git.gitDir, git.commonDir])].filter((path) => !within(input.cwd, path))
+  const writableRoots = [...new Set([...base.writableRoots, ...input.run.writableRoots, ...outside])]
+  // A home the command may write as it is stays the user's: the working directory is the home, or holds it.
+  const homePath = base.home?.path
   return {
     ...base,
-    writableRoots: [...new Set([...base.writableRoots, ...input.run.writableRoots, ...outside])],
+    home: homePath !== undefined && writableRoots.some((root) => within(real(root), real(homePath))) ? undefined : base.home,
+    writableRoots,
     readOnlyPaths: [...(git === null ? [] : gitProtected(git)), join(input.cwd, `.${brand.directory}`)],
   }
 }
@@ -207,7 +234,15 @@ function privateDirectory(path: string): string {
 }
 
 function within(root: string, path: string) {
-  return path === root || path.startsWith(`${root}/`)
+  return path === root || path.startsWith(root === "/" ? "/" : `${root}/`)
+}
+
+function real(path: string) {
+  try {
+    return realpathSync(path)
+  } catch {
+    return path
+  }
 }
 
 function statOrNull(path: string) {

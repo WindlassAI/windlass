@@ -13,6 +13,10 @@
  * the hidden-path denials come last. sandbox-exec applies the profile and
  * execs the command in place: the process tree, process group and signals are
  * the same as without the sandbox.
+ *
+ * `policy.home` is not applied: a profile allows and denies paths and cannot
+ * show another directory at the home's path, so the home stays the user's,
+ * read-only like the rest.
  */
 import { realpathSync } from "node:fs"
 import type { SandboxPolicy } from "./policy.ts"

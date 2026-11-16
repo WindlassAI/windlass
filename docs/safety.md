@@ -60,8 +60,10 @@ choose a looser mode. The output says what was refused and why.
 In `ask` and `auto` every command runs in a sandbox (bubblewrap on Linux, `sandbox-exec` on macOS). Inside it a
 command:
 
-- can write only inside the working directory and a temp directory that belongs to the session (`/tmp` on Linux,
-  `$TMPDIR` on macOS). It stays between commands, and the file tools see the same files there;
+- can write only inside the working directory and in two directories that belong to the session and are not yours:
+  a temp directory (`/tmp` on Linux, `$TMPDIR` on macOS), which stays between commands and where the file tools see
+  the same files, and on Linux a home directory ("The session's home", below). Nothing of yours outside the working
+  directory is written;
 - cannot read credential stores: SSH and GPG keys, cloud and AI-tool credentials, `~/.netrc`, `~/.npmrc`, browser
   profiles, the harness's own data and configuration, and the file an access token is handed in through
   (`WINDLASS_ACCESS_TOKEN_FILE`), wherever that file is;
@@ -83,6 +85,57 @@ sandbox whatever access you grant: no answer to a question opens these files, be
 later outside the sandbox with your rights. The result tells the agent so. It passes a commit identity on the
 command line instead (`git -c user.name=... -c user.email=... commit`), and for the rest it tells you the command
 to run yourself.
+
+## The session's home (Linux)
+
+Many tools write under the home directory without being told to: a package manager keeps its cache there
+(`~/.npm`, `~/.cache/uv`, `~/.cache/pip`), a build tool its settings (`~/.config/astro`). With a read-only home
+they fail or go without. So a sandboxed command does not see your home directory itself. It sees a directory of the
+session's in its place, at the same path:
+
+- Everything you have in your home is in it under its own name, read-only: `~/.gitconfig`, a tool's settings, the
+  toolchains installed there. A command reads them as before and cannot change, remove or replace any of them.
+  Credential stores are hidden as before.
+- What a command makes beside them is written to the session's directory,
+  `/tmp/windlass-<uid>/<session id>.home` (under `$TMPDIR` instead of `/tmp` when that is set), and never to your
+  home. Like the temp directory it stays between the commands of the session, and another session does not have it.
+- `~/.config`, `~/.cache`, `~/.local/share` and `~/.local/state` work the same way one level down, and so do the
+  directories `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `XDG_DATA_HOME` and `XDG_STATE_HOME` name when they are inside
+  your home: your entries in them are read-only, and a tool can make its own beside them. A command finds these
+  directories also when you have none of them.
+
+Measured on Ubuntu 24.04 with network access approved, in a home that had none of these directories yet:
+`npm ci`, `uv venv` and `uv pip install`, `pip install` in a venv with its cache, and `astro build` run. Before, the
+first two failed, pip went without its cache and Astro failed on its settings directory.
+
+What follows from it:
+
+- **A directory you already have stays yours, read-only as a whole.** A tool whose cache is already in your home
+  (`~/.npm` after any `npm` command outside the sandbox, `~/.cache/uv`) reads it and cannot add to it, so it fails
+  as it did before. The agent can ask for write access to that directory (`sandbox: { "write": ["~/.npm"] }`), and
+  what it then writes is in your real one.
+- **What a command leaves there is not in your home.** A package installed "globally", a toolchain a tool
+  downloaded for itself, a setting it saved: the session's later commands have them, you and other sessions do not.
+  The file tools read and edit your real home, not the session's.
+- **Nothing outside the sandbox reads it.** A `~/.gitconfig` with an alias or a shell profile that a command wrote
+  there is seen by the session's sandboxed commands only, and never runs with your rights.
+- **Its files are not changes to the project.** They are outside the working directory, so `/undo` and the list of
+  changed files after a turn do not include them.
+- **It is not made when the working directory is your home directory or contains it.** The home is then writable
+  as the working directory is, and the files are yours.
+- **A command that runs outside the sandbox** (in `full`, or one you allowed to) sees and writes your real home.
+- **pnpm still puts its store inside the project** (`node_modules/.pnpm-store`, or `.pnpm-store` at the top of the
+  working directory for a package in a subdirectory). It keeps the store where it can hard-link into the project,
+  and inside the sandbox nothing outside the working directory can. Told where the store is (`storeDir` in its
+  configuration file, or with pnpm 12 `pnpm_config_store_dir=$HOME/.local/share/pnpm/store` in the environment),
+  it copies from there instead, and the store is in the session's home.
+- **A home with very many entries stays read-only.** Each of your entries is a mount made when a command starts,
+  and the time grows with the square of their number: about 50 ms for 130 entries. At most 200 are shown this way.
+  The entries of the home itself come first, then those of the four directories above; one of those whose entries
+  no longer fit stays yours, read-only as a whole, and a home with more than 200 entries of its own gets no
+  session home at all.
+- **macOS: not there.** `sandbox-exec` cannot show a command another directory in place of your home, so the home
+  stays read-only as a whole, and a tool that writes there fails until you allow the directory.
 
 ## What the sandbox does not stop
 

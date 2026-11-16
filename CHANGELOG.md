@@ -18,6 +18,16 @@ All notable changes to Windlass are recorded here. The format follows
   refreshing the sign-in first when the saved token has less left: run it on a timer to keep such a file fresh,
   instead of having to ask in the last five minutes of each token.
 
+- **A home of the session's own for sandboxed commands (Linux).** Tools that write under the home directory without
+  being told to failed in the sandbox or went without: `npm ci` could not write `~/.npm`, `uv` could not make its
+  cache in `~/.cache/uv`, pip ran without its cache, `astro build` failed on `~/.config/astro`. A sandboxed command
+  now sees a directory of the session's in place of your home, at the same path, with everything you have there
+  read-only in it. What it makes beside your entries is written to `/tmp/windlass-<uid>/<session id>.home`, stays
+  between the session's commands, and is never in your home. Credential stores stay hidden, and the network rule is
+  unchanged. A directory you already have stays read-only as a whole, so a tool whose cache already exists in your
+  home still needs the write access it needed before; pnpm still puts its store inside the project; macOS is
+  unchanged. `docs/safety.md`, "The session's home", has the rest.
+
 ### Changed
 
 - A sign-in failure says which one it was by a code, where a program reads it: the `code` of the failed step's

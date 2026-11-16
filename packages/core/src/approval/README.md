@@ -19,7 +19,7 @@ Decides, for each tool call, whether it runs, runs in the sandbox, asks the user
 | MCP tool (any declared effect) | asks | asks | runs |
 | **After untrusted content:** network and MCP tools, command network, unsandboxed commands | ask; earlier approvals for them stop applying | same | commands run sandboxed; the rest ask |
 
-"Sandboxed" means: writes only inside the workspace and a temp directory, no network, credential stores hidden, credential variables stripped (see `../sandbox/README.md`). Without a sandbox, `auto` does not quietly become `full`: each command asks, and the question says why the sandbox is missing.
+"Sandboxed" means: writes only inside the workspace, a temp directory and, on Linux, a home of the session's own that stands in for the user's; no network, credential stores hidden, credential variables stripped (see `../sandbox/README.md`). Without a sandbox, `auto` does not quietly become `full`: each command asks, and the question says why the sandbox is missing.
 
 When no one is present (a script, an eval, a scheduled run), "asks" becomes a refusal the model sees (`unattended: "deny"`) or a refusal that also ends the run (`"stop"`). Nothing ever waits, and no setting turns an ask into a run; for that, pick a looser mode.
 
