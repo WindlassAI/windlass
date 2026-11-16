@@ -60,10 +60,10 @@ choose a looser mode. The output says what was refused and why.
 In `ask` and `auto` every command runs in a sandbox (bubblewrap on Linux, `sandbox-exec` on macOS). Inside it a
 command:
 
-- can write only inside the working directory and in two directories that belong to the session and are not yours:
-  a temp directory (`/tmp` on Linux, `$TMPDIR` on macOS), which stays between commands and where the file tools see
-  the same files, and on Linux a home directory ("The session's home", below). Nothing of yours outside the working
-  directory is written;
+- can write only inside the working directory and a temp directory that belongs to the session (`/tmp` on Linux,
+  `$TMPDIR` on macOS). It stays between commands, and the file tools see the same files there. With the session's
+  home turned on (below) it can also make files under the home directory, in a directory that is the session's
+  and not yours;
 - cannot read credential stores: SSH and GPG keys, cloud and AI-tool credentials, `~/.netrc`, `~/.npmrc`, browser
   profiles, the harness's own data and configuration, and the file an access token is handed in through
   (`WINDLASS_ACCESS_TOKEN_FILE`), wherever that file is;
@@ -89,9 +89,26 @@ to run yourself.
 ## The session's home (Linux)
 
 Many tools write under the home directory without being told to: a package manager keeps its cache there
-(`~/.npm`, `~/.cache/uv`, `~/.cache/pip`), a build tool its settings (`~/.config/astro`). With a read-only home
-they fail or go without. So a sandboxed command does not see your home directory itself. It sees a directory of the
-session's in its place, at the same path:
+(`~/.npm`, `~/.cache/uv`, `~/.cache/pip`), a build tool its settings (`~/.config/astro`). In the sandbox the home
+is read-only, so they fail or go without, until the agent asks for write access to the directory and you allow it.
+
+You can give sandboxed commands a home of the session's own instead. It is off unless you turn it on:
+
+- for yourself, in your own configuration file, `~/.config/windlass/config.json`:
+
+  ```json
+  { "sandbox": { "home": "session" } }
+  ```
+
+- a program that starts `windlass acp` for you turns it on for a session when it opens it, with
+  `"sandboxHome": "session"` in `_meta["windlass"]` of `session/new`, and again in `session/load` and
+  `session/resume` ([acp.md](acp.md)). It needs no file in your home. This is for an agent that runs in a throwaway
+  container or virtual machine, where the home is empty and nothing in it is yours to keep.
+- a project's own `.windlass/config.json` cannot turn it on. `"home": "session"` there is not followed, and you are
+  told once; `"home": "user"` there turns it off for that project.
+
+With it on, a sandboxed command does not see your home directory itself. It sees a directory of the session's in
+its place, at the same path:
 
 - Everything you have in your home is in it under its own name, read-only: `~/.gitconfig`, a tool's settings, the
   toolchains installed there. A command reads them as before and cannot change, remove or replace any of them.
@@ -105,15 +122,26 @@ session's in its place, at the same path:
   directories also when you have none of them.
 
 Measured on Ubuntu 24.04 with network access approved, in a home that had none of these directories yet:
-`npm ci`, `uv venv` and `uv pip install`, `pip install` in a venv with its cache, and `astro build` run. Before, the
-first two failed, pip went without its cache and Astro failed on its settings directory.
+`npm ci`, `uv venv` and `uv pip install`, `pip install` in a venv with its cache, and `astro build` run. Without the
+session's home the first two failed, pip went without its cache and Astro failed on its settings directory.
+
+Why it is not on by default:
+
+- **In a home that is already full it changes little.** A directory you already have stays yours, read-only as a
+  whole. A tool whose cache is already in your home (`~/.npm` after any `npm` command outside the sandbox,
+  `~/.cache/uv`) reads it and cannot add to it, so it fails as it does without the session's home. The agent can
+  ask for write access to that directory (`sandbox: { "write": ["~/.npm"] }`), and what it then writes is in your
+  real one.
+- **A write that failed now succeeds, and is not yours.** Without the session's home, `pip install --user sometool`
+  fails in the sandbox, the agent asks for write access, and the tool is then installed for you. With it, the
+  command succeeds at once, the session's later commands have the tool, and you do not: it is gone when the
+  session is. The agent is told this when the session's home is on, and that it must ask for write access to your
+  real directory for anything you are meant to keep.
+- **Every command starts slower**, by a time that grows with your home: each of your entries is a mount made when
+  a command starts, about 50 ms for 130 entries.
 
 What follows from it:
 
-- **A directory you already have stays yours, read-only as a whole.** A tool whose cache is already in your home
-  (`~/.npm` after any `npm` command outside the sandbox, `~/.cache/uv`) reads it and cannot add to it, so it fails
-  as it did before. The agent can ask for write access to that directory (`sandbox: { "write": ["~/.npm"] }`), and
-  what it then writes is in your real one.
 - **What a command leaves there is not in your home.** A package installed "globally", a toolchain a tool
   downloaded for itself, a setting it saved: the session's later commands have them, you and other sessions do not.
   The file tools read and edit your real home, not the session's.
@@ -122,20 +150,30 @@ What follows from it:
 - **Its files are not changes to the project.** They are outside the working directory, so `/undo` and the list of
   changed files after a turn do not include them.
 - **It is not made when the working directory is your home directory or contains it.** The home is then writable
-  as the working directory is, and the files are yours.
+  as the working directory is, and the files are yours. Nor for a command that may write the directory the
+  session's homes are kept in (a working directory of `/tmp`): it gets your home, read-only, and cannot see the
+  session's.
 - **A command that runs outside the sandbox** (in `full`, or one you allowed to) sees and writes your real home.
 - **pnpm still puts its store inside the project** (`node_modules/.pnpm-store`, or `.pnpm-store` at the top of the
   working directory for a package in a subdirectory). It keeps the store where it can hard-link into the project,
   and inside the sandbox nothing outside the working directory can. Told where the store is (`storeDir` in its
   configuration file, or with pnpm 12 `pnpm_config_store_dir=$HOME/.local/share/pnpm/store` in the environment),
   it copies from there instead, and the store is in the session's home.
-- **A home with very many entries stays read-only.** Each of your entries is a mount made when a command starts,
-  and the time grows with the square of their number: about 50 ms for 130 entries. At most 200 are shown this way.
-  The entries of the home itself come first, then those of the four directories above; one of those whose entries
-  no longer fit stays yours, read-only as a whole, and a home with more than 200 entries of its own gets no
-  session home at all.
+- **A home with very many entries is not shown whole, and you are told.** At most 200 of your entries are shown
+  this way. The entries of the home itself come first, then those of the four directories above; one of those
+  whose entries no longer fit stays yours, read-only as a whole, and a home with more than 200 entries of its own
+  gets no session home at all. When that happens Windlass says so once, when the session's first turn starts in a
+  process: which directories were left as they are, or that the session's home is not used, with the number of
+  entries and the limit.
+- **While a command of the session is still running, the session's home does not follow your home.** A command in
+  the background has a part in every directory of the session's home, so the next command is given exactly what
+  the running one has: a file or directory that appears in your home meanwhile is not in the session's home, and
+  one you remove is an empty file or directory there. When no command of the session is running, the next one
+  sees your home as it is. This is what keeps a command in the background from sending a later command's mounts
+  somewhere else; `packages/core/src/sandbox/README.md` has how, the attacks it was tested with, and what remains.
 - **macOS: not there.** `sandbox-exec` cannot show a command another directory in place of your home, so the home
-  stays read-only as a whole, and a tool that writes there fails until you allow the directory.
+  stays read-only as a whole, and a tool that writes there fails until you allow the directory. With the setting
+  on you are told so once.
 
 ## What the sandbox does not stop
 

@@ -18,15 +18,31 @@ All notable changes to Windlass are recorded here. The format follows
   refreshing the sign-in first when the saved token has less left: run it on a timer to keep such a file fresh,
   instead of having to ask in the last five minutes of each token.
 
-- **A home of the session's own for sandboxed commands (Linux).** Tools that write under the home directory without
-  being told to failed in the sandbox or went without: `npm ci` could not write `~/.npm`, `uv` could not make its
-  cache in `~/.cache/uv`, pip ran without its cache, `astro build` failed on `~/.config/astro`. A sandboxed command
-  now sees a directory of the session's in place of your home, at the same path, with everything you have there
+- **A home of the session's own for sandboxed commands (Linux), as a setting that is off by default.** Tools that
+  write under the home directory without being told to fail in the sandbox or go without: `npm ci` cannot write
+  `~/.npm`, `uv` cannot make its cache in `~/.cache/uv`, pip runs without its cache, `astro build` fails on
+  `~/.config/astro`. With `"sandbox": { "home": "session" }` in your own configuration file, a sandboxed command
+  sees a directory of the session's in place of your home, at the same path, with everything you have there
   read-only in it. What it makes beside your entries is written to `/tmp/windlass-<uid>/<session id>.home`, stays
-  between the session's commands, and is never in your home. Credential stores stay hidden, and the network rule is
-  unchanged. A directory you already have stays read-only as a whole, so a tool whose cache already exists in your
-  home still needs the write access it needed before; pnpm still puts its store inside the project; macOS is
-  unchanged. `docs/safety.md`, "The session's home", has the rest.
+  between the session's commands, and is never in your home. A program that starts `windlass acp` for you turns it
+  on for a session with `"sandboxHome": "session"` in `_meta["windlass"]` of `session/new`, `session/load` and
+  `session/resume`, with no file in your home; a project's own configuration can only turn it off. Credential
+  stores stay hidden, and the network rule is unchanged.
+  - It is off by default because of what it costs: a directory you already have stays read-only as a whole, so on
+    a machine with a full home most tools still need the write access they needed before; a write under the home
+    that used to fail, after which the agent asked for the directory and the change was yours, succeeds and is
+    gone with the session (`pip install --user`); and every command starts slower by a time that grows with your
+    home. With it off, a sandboxed command is run exactly as before, and the agent is told nothing about a home.
+  - With it on, the agent is told in a message of the session, and the note under a failed command names the
+    home. The shell tool's own description is the same for every session.
+  - While a command of the session is still running (one in the background), the next command is given the same
+    home as the running one: what appears in your home meanwhile is shown once no command of the session runs.
+    This closes a race in which a command in the background could turn the place of a new entry into a link and
+    have the next command's mount made where the link pointed.
+  - A home with more than 200 entries gets no session home, and a directory such as `~/.config` whose entries no
+    longer fit stays read-only as a whole. You are told once, with what was left as it was and why.
+  - pnpm still puts its store inside the project; macOS has no session home. `docs/safety.md`, "The session's
+    home", has the rest.
 
 ### Changed
 
