@@ -38,9 +38,22 @@
  * happens to be; and when it cannot run a required check at all (commands are
  * sandboxed here and there is no sandbox), record it as one that could not
  * start instead of ending the turn as done with nothing checked.
+ *
+ * And it must know which required checks stand on the state it selects
+ * checks against (`stands`). Checks are selected by what changed since a
+ * verified state, and a check that covers nothing that changed is not run:
+ * its result on that state is taken to hold. That is true of a required
+ * check only if it was a required check, with the command it has now, when
+ * that state was recorded. A client may name other checks when it opens the
+ * session again, and the user's file may change. So every record that moves
+ * the verified state on (a run that passed, an ending that needed no check)
+ * names the required checks that stand on the new state, and the loop keeps
+ * to this: a required check that does not stand is run at the end of a turn
+ * that changed a file, whatever the file, and stands from the run it passes
+ * in; and an ending that needed no check names only those that stand.
  */
 import { type CheckConfig, type Config, type ConfigFile, DEFAULT_VERIFY, type VerifyMode, checkList, resolveChecks } from "../config/schema.ts"
-import { type Infer, oneOf } from "../validate.ts"
+import { type Infer, array, nonEmptyString, object, oneOf } from "../validate.ts"
 
 /**
  * Who named a check: the user's own configuration file (`user`), the client
@@ -118,4 +131,33 @@ export function planChecks(input: {
  */
 export function sessionChecks(value: unknown, path: string): CheckConfig[] {
   return resolveChecks(checkList(value, path))
+}
+
+/**
+ * A required check of a session, as a record names it: its `name`, and `definition`, a digest (SHA-256, hex) of
+ * what it runs: the command, the timeout, its patterns and the directory they are relative to. Two records name
+ * the same check when both are the same.
+ */
+export const requiredCheckRef = object({ name: nonEmptyString, definition: nonEmptyString })
+export type RequiredCheckRef = Infer<typeof requiredCheckRef>
+export const requiredCheckRefs = array(requiredCheckRef)
+
+/** How a record names the required check `check` (`requiredCheckRef`). What a fingerprint holds of a check apart from the files (`fingerprint.ts`). */
+export function requiredCheckRefOf(check: CheckConfig & CheckStanding): RequiredCheckRef {
+  const material = JSON.stringify(["v1", check.command, check.timeoutSeconds, check.when, check.under ?? ""])
+  return { name: check.name, definition: new Bun.CryptoHasher("sha256").update(material).digest("hex") }
+}
+
+/**
+ * The required checks that stand on a verified state: `null` for the state a session starts from, which every
+ * check stands on (nothing of the agent's is in it), a list where a record says which, and `undefined` where the
+ * state was recorded without saying, which none stands on (no check was required then, or the record was written
+ * before this was kept).
+ */
+export type Standing = readonly RequiredCheckRef[] | null | undefined
+
+/** Whether `check` stands on a verified state with `standing`. */
+export function stands(standing: Standing, check: RequiredCheckRef): boolean {
+  if (standing === null) return true
+  return standing !== undefined && standing.some((other) => other.name === check.name && other.definition === check.definition)
 }

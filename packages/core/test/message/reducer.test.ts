@@ -1687,3 +1687,81 @@ describe("reducer properties", () => {
     expect([...rows.inbox.values()].sort(bySeq)).toEqual([...source.state!.inbox])
   })
 })
+
+describe("the verified state", () => {
+  const a = { name: "test", definition: "d".repeat(64) }
+  const b = { name: "types", definition: "e".repeat(64) }
+  const check = (name: string, status: "passed" | "failed", required: boolean) => ({ name, command: name, status, exitCode: status === "passed" ? 0 : 1, signal: null, durationMs: 1, files: [], fingerprint: "f", reusedFromSeq: null, outputPath: null, outputBytes: 0, outputLines: 0, required })
+  const snapshot = (id: string, point: "delivery" | "checks_start" | "checks_end" = "checks_start") => event("snapshot.taken", { id: id as never, point, messageId: null })
+  const answered = (id: string) => [stepStarted(id), textEnded(id, "Done."), stepEnded(id)]
+  const run = (number: number, checks: ReturnType<typeof check>[], requiredChecks?: (typeof a)[]) => [
+    event("checks.started", { run: number, checks: checks.map((item) => item.name) }),
+    event("checks.finished", { run: number, evidence: { run: number, afterSeq: 1, changedFiles: [], checks, ...(requiredChecks === undefined ? {} : { requiredChecks }) } }),
+  ]
+  const ended = (id: string, verification: Extract<NewEvent, { type: "execution.succeeded" }>["data"]["verification"]) => event("execution.succeeded", { executionId: x(id), verification })
+  const turn = (log: Log, n: number) => log.apply(enqueue(`u${n}`), executionStarted(`exe_${n}`), deliver(`u${n}`), ...answered(`a${n}`))
+  const verified = (log: Log) => log.state!.session.verification.verified
+
+  test("starts at the session's first snapshot, as it always was recorded: nothing is said of a run or of required checks", () => {
+    const log = running()
+    log.apply(snapshot("s0", "delivery"))
+    expect(verified(log)).toEqual({ seq: log.seq, snapshot: "s0" as never })
+    // A later snapshot does not move it.
+    log.apply(snapshot("s1"))
+    expect(verified(log)).toEqual({ seq: log.seq - 1, snapshot: "s0" as never })
+  })
+
+  test("a run that passed moves it there, names itself, and the required checks the run names stand; a run that did not leaves it", () => {
+    const log = running()
+    log.apply(snapshot("s0", "delivery"), ...answered("a1"), ...run(1, [check("test", "failed", true)], [a, b]))
+    expect(verified(log)).toEqual({ seq: 6, snapshot: "s0" as never })
+    log.apply(snapshot("s1"), ...run(2, [check("test", "passed", true)], [a, b]))
+    const at = log.seq
+    // `types` covered nothing that changed and was not run: the run names it, and it stands.
+    expect(verified(log)).toEqual({ seq: at, snapshot: "s1" as never, run: { seq: at, run: 2 }, requiredChecks: [a, b] })
+  })
+
+  test("an ending that needed no check moves it too, with the run and the required checks the ending names", () => {
+    const log = running()
+    log.apply(snapshot("s0", "delivery"), ...answered("a1"), snapshot("s1"), ...run(1, [check("test", "passed", true)], [a, b]))
+    const passed = log.seq
+    log.apply(ended("exe_1", { status: "passed", evidence: log.state!.session.verification.latest!.evidence }))
+    // The next turn's ending names only `test`: the client opened the session without `types`, which stands no longer.
+    turn(log, 2)
+    log.apply(snapshot("s2"), ended("exe_2", { status: "not_needed", reason: "not_covered", since: { seq: passed, run: { seq: passed, run: 1 } }, requiredChecks: [a] }))
+    expect(verified(log)).toEqual({ seq: log.seq, snapshot: "s2" as never, run: { seq: passed, run: 1 }, requiredChecks: [a] })
+    // An ending that names none leaves none standing, and keeps the run.
+    turn(log, 3)
+    log.apply(ended("exe_3", { status: "not_needed", reason: "turn_unchanged", since: { seq: log.seq, run: { seq: passed, run: 1 } } }))
+    expect(verified(log)).toEqual({ seq: log.seq, snapshot: "s2" as never, run: { seq: passed, run: 1 } })
+  })
+
+  test("an ending on the state the session started from says that no run has passed, and from then on the state says so", () => {
+    const log = running()
+    log.apply(snapshot("s0", "delivery"), ...answered("a1"), ended("exe_1", { status: "not_needed", reason: "turn_unchanged", since: { seq: 6, run: null }, requiredChecks: [a] }))
+    expect(verified(log)).toEqual({ seq: log.seq, snapshot: "s0" as never, run: null, requiredChecks: [a] })
+  })
+
+  test("an ending that left something unverified does not move it, and neither does one without checks", () => {
+    const log = running()
+    log.apply(snapshot("s0", "delivery"), ...answered("a1"), snapshot("s1"))
+    const before = verified(log)
+    log.apply(ended("exe_1", { status: "not_needed", unverified: true, reason: "turn_unchanged", requiredChecks: [a] }))
+    expect(verified(log)).toEqual(before)
+    turn(log, 2)
+    log.apply(ended("exe_2", { status: "not_configured" }))
+    expect(verified(log)).toEqual(before)
+  })
+
+  test("records of a build that kept neither fold to the state that build stored: nothing is said of a run it did not name, and no required check stands", () => {
+    const log = running()
+    log.apply(snapshot("s0", "delivery"), ...answered("a1"), snapshot("s1"), ended("exe_1", { status: "not_needed" }))
+    expect(verified(log)).toEqual({ seq: log.seq, snapshot: "s1" as never })
+    // Such a state decodes as it is.
+    expect(sessionState(JSON.parse(JSON.stringify(log.state!.session)), "").verification.verified).toEqual({ seq: log.seq, snapshot: "s1" as never })
+    // A run recorded without required checks names itself, as every run does now.
+    turn(log, 2)
+    log.apply(...run(1, [check("test", "passed", false)]))
+    expect(verified(log)).toEqual({ seq: log.seq, snapshot: "s1" as never, run: { seq: log.seq, run: 1 } })
+  })
+})

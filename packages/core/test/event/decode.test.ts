@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import { text } from "../../src/content.ts"
-import { EventDecodeError, type EventRow, decodeEvent, encodeEventData, isEventType, validateEvent } from "../../src/event/decode.ts"
+import { brand } from "../../src/brand.ts"
+import { EventDecodeError, type EventRow, decodeEvent, encodeEventData, isEventType, unreadableSession, validateEvent } from "../../src/event/decode.ts"
+import { DecodeError } from "../../src/validate.ts"
 import { EVENT_TYPES, type EventType, type NewEvent, durableEvents, event } from "../../src/event/durable.ts"
 import type { CallId, ExecutionId, MessageId, SessionId } from "../../src/id.ts"
 import { makeProviderError } from "../../src/provider/error.ts"
@@ -343,6 +345,56 @@ describe("decodeEvent", () => {
   test("rejects an empty identifier inside data", () => {
     const bad = row(stored, { data: JSON.stringify({ ...stored.data, messageId: "" }) })
     expect(() => decodeEvent(bad)).toThrow("data.messageId")
+  })
+
+  test("the evidence of a run of checks may carry keys of a later build: they are kept, and the event is the bytes it was", () => {
+    const later = { ...evidence, host: { cores: 2 }, checks: [{ ...evidence.checks[0], retries: 1, outputTail: { text: "1 fail\n", truncated: false, encoding: "utf-8" } }] }
+    for (const written of [
+      event("checks.finished", { run: 1, evidence: later as never }),
+      event("execution.succeeded", { executionId, verification: { status: "passed", evidence: later as never } }),
+      event("turn.ended", { verification: { status: "unresolved", reason: "max_rounds", failing: ["test"], acknowledgement: null, evidence: later as never } }),
+    ]) {
+      const data = JSON.stringify(written.data)
+      const read = decodeEvent(row(written, { data }))
+      expect(read.data).toEqual(written.data as never)
+      expect(encodeEventData(read)).toBe(encodeEventData(written))
+      expect(encodeEventData(read)).toContain('"retries":1')
+    }
+  })
+
+  test("nothing else may: a key, a status or a reason this build does not know is refused where the state is decided from it", () => {
+    const refused = (written: { type: string; data: unknown }, at: string) => {
+      const bad = row(examples["checks.finished"], { type: written.type, data: JSON.stringify(written.data) })
+      expect(reasonOf(bad)).toBe("invalid_data")
+      expect(() => decodeEvent(bad)).toThrow(at)
+    }
+    refused({ type: "checks.finished", data: { run: 1, evidence, attempt: 2 } }, "data.attempt")
+    refused({ type: "execution.succeeded", data: { executionId, verification: { status: "not_needed", because: "x" } } }, "data.verification.because")
+    refused({ type: "execution.succeeded", data: { executionId, verification: { status: "not_needed", reason: "skipped" } } }, "data.verification.reason")
+    refused({ type: "execution.succeeded", data: { executionId, verification: { status: "skipped" } } }, "data.verification.status")
+    refused({ type: "turn.ended", data: { verification: { status: "unresolved", reason: "gave_up", failing: ["test"], acknowledgement: null, evidence } } }, "data.verification.reason")
+    refused({ type: "checks.finished", data: { run: 1, evidence: { ...evidence, checks: [{ ...evidence.checks[0], status: "flaky" }] } } }, "data.evidence.checks[0].status")
+  })
+
+  test("a record this build does not read is said as that, with its place and what to do, and nothing else is", () => {
+    const refused = (bad: EventRow) => {
+      try {
+        decodeEvent(bad)
+      } catch (error) {
+        return unreadableSession(error)
+      }
+      return null
+    }
+    const laterKey = refused(row(examples["turn.ended"], { data: JSON.stringify({ verification: { status: "not_needed", confidence: "high" } }) }))
+    expect(laterKey).toBe(
+      `that session holds a record this version of ${brand.name} does not read (event turn.ended: data.verification.confidence: expected no such key, got "high"). A later version wrote it, or the file is damaged: open the session with the version that wrote it, or a later one.`,
+    )
+    expect(refused(row(stored, { type: "text.revised" }))).toContain("unknown event type text.revised")
+    expect(refused(row(stored, { v: 2 }))).toContain("event text.ended has version 2; this build reads version 1")
+    // A stored state with a key of a later build is refused by the validator itself.
+    expect(unreadableSession(new DecodeError("session ses_1 state.verification.verified.epoch", "no such key", 3))).toContain("session ses_1 state.verification.verified.epoch: expected no such key, got 3")
+    expect(unreadableSession(new Error("disk full"))).toBeNull()
+    expect(unreadableSession(null)).toBeNull()
   })
 
   test("validateEvent returns a value detached from its input", () => {

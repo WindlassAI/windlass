@@ -367,6 +367,8 @@ export interface ErrorData {
     | "unknown_effort"
     | "auth_required"
     | "schema_mismatch"
+    /** The session holds a record this build does not read, as when a later version has worked in it; `message` names the record and says what to do. */
+    | "unreadable_session"
     | "execution_failed"
     /** A failed turn that was ended because a call needed approval and nobody was present (`unattended: "stop"`). */
     | "approval_required"
@@ -395,7 +397,7 @@ export interface ErrorData {
 export interface TurnNotification {
   readonly sessionId: string
   readonly executionId: string
-  /** `unresolved`: done, but the project's checks still fail. */
+  /** `unresolved`: done, but checks still fail, or could not be started. */
   readonly outcome: "succeeded" | "unresolved" | "failed" | "interrupted"
   /** The `session/prompt` stop reason, or `"error"` for a failure. */
   readonly stopReason: string

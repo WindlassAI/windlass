@@ -59,6 +59,22 @@ describe("turn endings", () => {
     expect(frame).toContain("done · its checks are left to its parent's turn · 1 step")
     expect(frame).toContain("no closing answer: The model returned an empty response twice after its work")
   })
+
+  test("a turn that put its files back as they were needs no check and says which state that is; checks that were never started are not called failing", async () => {
+    const { session } = await open(190, 44)
+    session.emit(started(), ...step("a1"), succeeded({ status: "not_needed", reason: "state_unchanged", since: { seq: 12, run: { seq: 12, run: 1 } } }))
+    await mounted!.settle()
+    const back = flat(await mounted!.frame())
+    expect(back).toContain("done · nothing to check · 1 step")
+    expect(back).toContain("The files are as they were when the checks last passed, so the checks were not run again.")
+    const check = { name: "test", command: "sh test.sh", status: "could_not_start" as const, exitCode: null, signal: null, durationMs: 0, files: [], fingerprint: "f", reusedFromSeq: null, outputPath: null, outputBytes: 0, outputLines: 0, origin: "session" as const, required: true, outputTail: { text: "", truncated: false }, startError: "the sandbox is unavailable" }
+    session.emit(started("exe_2"), ...step("a2"), succeeded({ status: "unresolved", reason: "not_started", failing: ["test"], acknowledgement: null, evidence: { run: 1, afterSeq: 5, changedFiles: ["a.txt"], checks: [check] } }, "exe_2"))
+    await mounted!.settle()
+    const frame = flat(await mounted!.frame())
+    expect(frame).toContain("unresolved · checks that could not be started: test")
+    expect(frame).toContain("not started, so nothing was verified and the agent was not sent back: no change to the code starts a check. test: the sandbox is")
+    expect(frame).not.toContain("failing checks: test")
+  })
 })
 
 describe("moving between turns", () => {

@@ -2,6 +2,7 @@
  * The storage boundary for events. Events go into SQLite as JSON text and come
  * back as untyped rows; these functions are the only way across.
  */
+import { brand } from "../brand.ts"
 import { canonicalJson } from "../request/canonical.ts"
 import { sessionId } from "../id.ts"
 import { DecodeError, integer } from "../validate.ts"
@@ -76,6 +77,17 @@ export function decodeEvent(row: EventRow): StoredEvent {
       throw new EventDecodeError("invalid_data", `event ${row.type}: ${error.message}`, { cause: error })
     throw error
   }
+}
+
+/**
+ * What to tell someone whose session cannot be opened because a record in it is not one this build reads: an
+ * event of a type or version it does not know, or a key or a value it does not know in an event or in the stored
+ * state. Decoding is strict, so a build refuses such a session whole instead of opening it and misreading it,
+ * and the usual cause is that a later version has worked in the session. `null` for any other error.
+ */
+export function unreadableSession(error: unknown): string | null {
+  if (!(error instanceof EventDecodeError) && !(error instanceof DecodeError)) return null
+  return `that session holds a record this version of ${brand.name} does not read (${error.message}). A later version wrote it, or the file is damaged: open the session with the version that wrote it, or a later one.`
 }
 
 export function isEventType(type: string): type is EventType {

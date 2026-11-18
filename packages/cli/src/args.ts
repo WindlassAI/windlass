@@ -299,7 +299,8 @@ Exit codes:
   1    failed
   2    usage error: an unknown option, a wrong value, an unknown model or session ID
   3    done, but the project's checks still fail and were left unresolved (the model
-       reported that it cannot fix them, ran out of rounds, or checks only report).
+       reported that it cannot fix them, ran out of rounds, or checks only report),
+       or could not be started.
        With --json the turn's last event is execution.succeeded, and its
        data.verification.status is "unresolved" (with the reason and the failing checks)
   4    stopped: a tool call needed your approval and nobody was there to give it

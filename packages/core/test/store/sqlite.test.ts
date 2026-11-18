@@ -19,6 +19,7 @@ import {
   created,
   deliver,
   enqueue,
+  exchange,
   executionStarted,
   forked,
   started,
@@ -323,6 +324,32 @@ describe("persistence", () => {
       event("execution.failed", { executionId: "exe_1" as never, message: "crashed" }),
     )
     expect(expectStoreConsistent(second)).toBe(ids.length)
+    second.close()
+  }, FILE_TIMEOUT)
+
+  test("a session whose runs of checks a later build recorded more about opens: the keys this build does not know are in the events and the state as they were written, and work goes on", () => {
+    const path = temporaryPath()
+    const first = open(path)
+    const d = new Driver(first, sid("later"))
+    const check = { name: "test", command: "bun test", status: "failed" as const, exitCode: 1, signal: null, durationMs: 5, files: ["a.ts"], fingerprint: "f1", reusedFromSeq: null, outputPath: null, outputBytes: 7, outputLines: 1, origin: "session" as const, required: true }
+    // What a later build might add: to a check, to the end of its output, and to the run.
+    const evidence = { run: 1, afterSeq: 8, changedFiles: ["a.ts"], checks: [{ ...check, outputTail: { text: "1 fail\n", truncated: false, encoding: "utf-8" }, retries: 2 }], runner: { version: 3, shards: [1, 2] } }
+    d.add(created(), baselineSet(), enqueue("u1", "Change a.ts."), executionStarted("exe_1"), deliver("u1"), stepStarted("a1"), textEnded("a1", "Done."), stepEnded("a1"))
+    d.add(event("checks.started", { run: 1, checks: ["test"] }))
+    d.add(event("checks.finished", { run: 1, evidence: evidence as never }), event("execution.succeeded", { executionId: "exe_1" as never, verification: { status: "unresolved", reason: "report_mode", failing: ["test"], acknowledgement: null, evidence: evidence as never } }))
+    const before = { events: first.readEvents(d.id), projection: first.getProjection(d.id) }
+    const row = () => (first.database.query("SELECT state FROM session WHERE id = ?").get(d.id) as { state: string }).state
+    expect(JSON.parse(row()).verification.latest.evidence).toEqual(evidence)
+    expectRebuildEqualsLive(first, d.id)
+    first.close()
+
+    const second = open(path)
+    expect({ events: second.readEvents(d.id), projection: second.getProjection(d.id) }).toEqual(before)
+    expect(second.getProjection(d.id)!.session.verification.latest!.evidence).toEqual(evidence as never)
+    // The next turn folds onto the state read back, and the rows stay what the log says.
+    exchange(new Driver(second, d.id), "2", "And now?", "Nothing more.")
+    expect(JSON.parse((second.database.query("SELECT state FROM session WHERE id = ?").get(d.id) as { state: string }).state).verification.latest.evidence).toEqual(evidence)
+    expectRebuildEqualsLive(second, d.id)
     second.close()
   }, FILE_TIMEOUT)
 

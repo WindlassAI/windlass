@@ -587,13 +587,15 @@ export function recapLines(events: readonly { readonly seq: number; readonly typ
     const inside = events.filter((item) => item.seq >= turn.messageSeq && item.seq <= end)
     const said = inside.findLast((item) => item.type === "text.ended")
     const ending = turn.endSeq === null ? null : events.find((item) => item.seq === turn.endSeq)
-    const data = (ending?.data ?? {}) as { verification?: { status?: string }; message?: string; reason?: string }
+    const data = (ending?.data ?? {}) as { verification?: { status?: string; reason?: string }; message?: string; reason?: string }
     const how =
       ending === undefined || ending === null
         ? "not finished: it resumes with your next message"
         : ending.type === "execution.succeeded" || ending.type === "turn.ended"
           ? data.verification?.status === "unresolved"
-            ? "stopped with failing checks"
+            ? data.verification.reason === "not_started"
+              ? "stopped with checks that could not be started"
+              : "stopped with failing checks"
             : "done"
           : ending.type === "execution.failed"
             ? `failed: ${clip(data.message ?? "", 100)}`

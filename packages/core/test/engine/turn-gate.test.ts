@@ -59,7 +59,7 @@ describe("a turn that changed nothing runs no check", () => {
       h.session.send("What does a.ts do?")
       await h.settled()
       expect(h.checks.ran).toEqual(["test"])
-      expect(endings(h)[1]).toEqual({ status: "not_needed", unverified: true })
+      expect(endings(h)[1]).toEqual({ status: "not_needed", unverified: true, reason: "turn_unchanged", since: expect.any(Object) })
       // Nothing was verified, so what later checks are selected against did not move.
       expect(h.session.projection().session.verification.verified).toEqual(verified)
 
@@ -79,7 +79,7 @@ describe("a turn that changed nothing runs no check", () => {
       h.session.send("Hi again.")
       await h.settled()
       expect(h.checks.ran).toEqual([])
-      expect(endings(h)).toEqual([{ status: "not_needed" }, { status: "not_needed" }])
+      expect(endings(h)).toEqual([{ status: "not_needed", reason: "turn_unchanged", since: expect.any(Object) }, { status: "not_needed", reason: "turn_unchanged", since: expect.any(Object) }])
       // With nothing to check, what is there now is what later checks are selected against.
       expect(h.session.projection().session.verification.verified?.snapshot).toBe(h.session.projection().session.workspace.snapshot!.id)
     }))
@@ -94,7 +94,7 @@ describe("a turn that changed nothing runs no check", () => {
       h.session.send("What is in a.ts now?")
       await h.settled()
       expect(h.checks.ran).toEqual(["test"])
-      expect(endings(h).at(-1)).toEqual({ status: "not_needed", unverified: true })
+      expect(endings(h).at(-1)).toEqual({ status: "not_needed", unverified: true, reason: "turn_unchanged", since: expect.any(Object) })
       // New work is checked against the state that last passed: a.ts, which went back, and b.ts.
       h.session.send("Change b.ts.")
       await h.settled()
@@ -107,7 +107,7 @@ describe("a turn that changed nothing runs no check", () => {
       h.create().send("Try 2 in a.ts.")
       await h.settled()
       expect(h.checks.ran).toEqual([])
-      expect(endings(h)).toEqual([{ status: "not_needed" }])
+      expect(endings(h)).toEqual([{ status: "not_needed", reason: "turn_unchanged", since: expect.any(Object) }])
     }))
 })
 
@@ -166,7 +166,7 @@ describe("whose turn a change belongs to", () => {
         h.provider.enqueue(call("shell", { command: "codegen", background: true }), say("Generating."), say("Generated."))
         h.create().send("Generate the code in the background.")
         await h.settled()
-        expect(endings(h)).toEqual([{ status: "not_needed" }])
+        expect(endings(h)).toEqual([{ status: "not_needed", reason: "turn_unchanged", since: expect.any(Object) }])
         const before = h.log().length
         // The command writes a file and exits while the session is idle: its message starts a turn.
         h.workspace!.files.set("generated.ts", "export const x = 1\n")
@@ -193,7 +193,7 @@ describe("without snapshots", () => {
         h.session.send("Why?")
         await h.settled()
         expect(h.checks.ran).toEqual(["test", "docs"])
-        expect(endings(h)[1]).toEqual({ status: "not_needed" })
+        expect(endings(h)[1]).toEqual({ status: "not_needed", reason: "turn_unchanged", since: expect.any(Object) })
         h.session.send("Change b.ts.")
         await h.settled()
         expect(h.checks.ran).toEqual(["test", "docs", "test", "docs"])
@@ -219,7 +219,7 @@ describe("a compaction the user asks for", () => {
         expect(h.log().find((item) => item.type === "compaction.started")!.data).toMatchObject({ trigger: "manual", mode: "normal" })
         // Nothing of this execution's to verify, and no check ran for it.
         expect(h.checks.ran).toEqual(["test"])
-        expect(endings(h).at(-1)).toEqual({ status: "not_needed" })
+        expect(endings(h).at(-1)).toEqual({ status: "not_needed", reason: "turn_unchanged", since: expect.any(Object) })
         // A second request right away finds nothing left to take out (a checkpoint and what followed it), and writes nothing.
         const again = h.log().length
         expect(await h.session.compact()).toEqual({ kind: "nothing", message: "There is nothing to compact: what is in the model's view is what the next request needs (the latest input, or a checkpoint and what followed it)." })

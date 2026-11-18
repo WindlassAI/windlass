@@ -26,7 +26,7 @@ import { shellTool } from "../tools/shell.ts"
 import { boolean, integer, nullable, object, safeDecode, string, type Infer } from "../validate.ts"
 import type { CheckStatus } from "./status.ts"
 
-export { type CheckStatus, checkStatus, isFailure } from "./status.ts"
+export { type CheckStatus, checkStatus, isFailure, neverStarted } from "./status.ts"
 
 export interface CheckOutput {
   /** Everything the command printed, stdout and stderr interleaved as they arrived. */

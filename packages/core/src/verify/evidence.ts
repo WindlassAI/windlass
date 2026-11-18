@@ -1,13 +1,21 @@
 /**
  * What one run of checks showed, as a record the step loop can attach to a
  * durable event (for example the turn's completion) so that "done" can be shown
- * to rest on something. Declared with the project's strict validators, like
- * every stored type: no optional keys, absent values are `null`.
+ * to rest on something.
+ *
+ * The evidence is a report of what a run found, and the one stored shape a
+ * later build may add keys to (`extensible`): a key this build does not know
+ * is kept as it is and written back unchanged, so a session whose runs a
+ * later build recorded more about still opens here. That holds for the
+ * evidence of a run, each check in it and the end of a check's output, and
+ * for nothing else in the log. A key is added to them only when it adds to
+ * what the others say: what a reader must act on to keep the session's state
+ * right (a new status, anything the gate decides from) is not added this way.
  */
 import type { CheckConfig } from "../config/schema.ts"
 import { type OutputLimits, cutTail } from "../tool/cap.ts"
-import { type Infer, array, boolean, integer, nonEmptyString, nullable, object, optional, string } from "../validate.ts"
-import { type CheckStanding, checkOrigin } from "./required.ts"
+import { type Infer, array, boolean, extensible, integer, nonEmptyString, nullable, object, optional, string } from "../validate.ts"
+import { type CheckStanding, type RequiredCheckRef, checkOrigin, requiredCheckRefs } from "./required.ts"
 import { filesFor } from "./select.ts"
 import type { CheckOutput, CheckResult } from "./run.ts"
 import { checkStatus, isFailure } from "./status.ts"
@@ -42,7 +50,7 @@ export function outputTailOf(output: CheckOutput, limits: OutputLimits = OUTPUT_
  * like the output itself. `truncated` says that the output has more before
  * it: all of it is in the file the check's `outputPath` names.
  */
-export const outputTail = object({ text: string, truncated: boolean })
+export const outputTail = extensible({ text: string, truncated: boolean })
 export type OutputTail = Infer<typeof outputTail>
 
 /**
@@ -57,7 +65,7 @@ export type OutputTail = Infer<typeof outputTail>
  * existed has none of them; `origin` is also absent where the engine was
  * handed a configuration without the files it came from.
  */
-export const checkEvidence = object({
+export const checkEvidence = extensible({
   name: nonEmptyString,
   command: string,
   status: checkStatus,
@@ -97,7 +105,26 @@ export const checkEvidence = object({
 })
 export type CheckEvidence = Infer<typeof checkEvidence>
 
-export const verificationEvidence = object({
+/**
+ * The verified state that changes are measured from, as a record names it. `seq` is where in the log that state
+ * was recorded: the session's first snapshot, a run of checks that passed (its `checks.finished`), or an ending
+ * that needed no check. `run` is the run of checks that last passed on the way to it, by the `seq` of its
+ * `checks.finished` and its number in its turn: nothing the checks cover changed between that run and the state.
+ * `run` is `null` when no run has passed up to it: the state is then what the session started from, give or take
+ * files no check covers, and no check has verified it. `run` is absent where the state was recorded before runs
+ * were kept with it.
+ */
+export const verifiedState = object({ seq: integer(1), run: optional(nullable(object({ seq: integer(1), run: integer(1) }))) })
+export type VerifiedState = Infer<typeof verifiedState>
+
+/**
+ * The evidence of one run of checks. `changedFiles` is every file that differs from the verified state `since`
+ * names; `checks` is the checks that ran or whose earlier pass was carried over. `requiredChecks` is the
+ * session's required checks when the run was made, in their order, run or not: a required check that is not in
+ * `checks` covers none of `changedFiles` and stands on the state `since` names. `since` and `requiredChecks`
+ * are absent in a record written before they were kept; `requiredChecks` also when the session has none.
+ */
+export const verificationEvidence = extensible({
   /** 1 for the first run of checks in the turn, then 2, ... */
   run: integer(1),
   /** The `seq` of the latest durable event of the session when the checks started. */
@@ -105,6 +132,10 @@ export const verificationEvidence = object({
   /** Every file changed since the last fully passing verification, sorted. */
   changedFiles: array(string),
   checks: array(checkEvidence),
+  /** The verified state `changedFiles` is measured from. Absent in a record written before it was kept, and where no state was verified yet. */
+  since: optional(verifiedState),
+  /** The session's required checks when the run was made, run or not (`required.ts`). Absent when it has none, and in a record written before they were kept. */
+  requiredChecks: optional(requiredCheckRefs),
 })
 export type VerificationEvidence = Infer<typeof verificationEvidence>
 
@@ -123,6 +154,10 @@ export function buildEvidence(input: {
    * redacted as it arrives where the runner was handed the redaction; this covers a value known only since.
    */
   readonly redact?: (text: string) => string
+  /** The verified state `changedFiles` is measured from, when there is one. */
+  readonly since?: VerifiedState
+  /** The session's required checks, run or not. */
+  readonly requiredChecks?: readonly RequiredCheckRef[]
 }): VerificationEvidence {
   const redact = input.redact ?? ((text: string) => text)
   const standing = (check: (CheckConfig & CheckStanding) | undefined) => ({
@@ -176,6 +211,8 @@ export function buildEvidence(input: {
         .concat(carried)
         // The configuration's order, whether a check ran or was carried over.
         .sort((a, b) => (order.get(a.name) ?? Number.MAX_SAFE_INTEGER) - (order.get(b.name) ?? Number.MAX_SAFE_INTEGER)),
+      ...(input.since === undefined ? {} : { since: input.since }),
+      ...(input.requiredChecks === undefined || input.requiredChecks.length === 0 ? {} : { requiredChecks: input.requiredChecks }),
     },
     "evidence",
   )

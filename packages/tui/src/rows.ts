@@ -10,7 +10,7 @@
  * capped; a second expansion shows it in full up to `FULL_OUTPUT_LINES`.
  */
 import { SUBAGENT_NOTE } from "@windlass/core"
-import { LEFT_TO_PARENT, TASK_MARK, TASK_TOOL, UNVERIFIED_HINT, detailLines, diagnosticsSummary, diffStat, hookCallLines, hookRefusal, objectionTexts, unsatisfiedText, errorSummary, fileList, formatBytes, formatDuration, requestsText, successSummary, tasksOf, tasksProgress, unresolvedReason, usageText } from "./cli.ts"
+import { LEFT_TO_PARENT, TASK_MARK, TASK_TOOL, UNVERIFIED_HINT, detailLines, diagnosticsSummary, diffStat, hookCallLines, hookRefusal, objectionTexts, unsatisfiedText, errorSummary, fileList, formatBytes, formatDuration, requestsText, stateUnchangedNote, successSummary, tasksOf, tasksProgress, unresolvedReason, unresolvedWhat, usageText } from "./cli.ts"
 import { truncate, wrapLine, wrapText, plural, sanitize, width as textWidth } from "./layout.ts"
 import { markdown } from "./markdown.ts"
 import type { DiffFile } from "@windlass/acp/extensions"
@@ -517,17 +517,23 @@ function outcomeLines(row: OutcomeRow, columns: number, nested = false): Span[][
   switch (row.outcome) {
     case "succeeded": {
       const status = row.verification?.status
+      const unchanged = row.verification === null || row.verification === undefined ? null : stateUnchangedNote(row.verification)
       // Stop hooks still objected after the agent was sent back as often as a turn allows: its own kind of ending.
       if (row.unsatisfied !== null) {
         const basis = status === "passed" ? "checks passed" : status === "not_needed" ? "nothing to check" : status === "left_to_parent" ? LEFT_TO_PARENT : "no checks configured"
         wrapped([span("⚠ ", "warn"), span(unsatisfiedText(row.unsatisfied), "warn", { bold: true }), span(` · ${basis}`, "dim"), span(after, "dim")])
         said()
         if (row.verification?.status === "not_needed" && row.verification.unverified === true) wrapped([span(`  ${UNVERIFIED_HINT}`, "warn")], "    ")
+        if (unchanged !== null) wrapped([span(`  ${unchanged}`, "dim")], "    ")
       } else if (status === "passed") wrapped([span("✓ ", "ok"), span("done", "ok", { bold: true }), span(" · checks passed", "ok"), span(after, "dim")])
       else if (row.verification?.status === "not_needed" && row.verification.unverified === true) {
         // Files the checks cover changed outside this turn: not checked now, and when they will be.
         wrapped([span("○ ", "ok"), span("done", "ok", { bold: true }), span(" · nothing to check", "dim"), span(after, "dim")])
         wrapped([span(`  ${UNVERIFIED_HINT}`, "warn")], "    ")
+      } else if (unchanged !== null) {
+        // The turn changed files and they are back as they were in a verified state: said, since a failed run may be right above.
+        wrapped([span("○ ", "ok"), span("done", "ok", { bold: true }), span(" · nothing to check", "dim"), span(after, "dim")])
+        wrapped([span(`  ${unchanged}`, "dim")], "    ")
       } else if (status === "not_needed") wrapped([span("○ ", "ok"), span("done", "ok", { bold: true }), span(" · checks not needed: nothing they cover changed", "dim"), span(after, "dim")])
       else if (status === "left_to_parent") wrapped([span("○ ", "ok"), span("done", "ok", { bold: true }), span(` · ${LEFT_TO_PARENT}`, "dim"), span(after, "dim")])
       else wrapped([span("○ ", "ok"), span("done", "ok", { bold: true }), span(" · no checks configured", "dim"), span(after, "dim")])
@@ -536,7 +542,7 @@ function outcomeLines(row: OutcomeRow, columns: number, nested = false): Span[][
     case "unresolved": {
       const verification = row.verification
       const failing = verification?.status === "unresolved" ? verification.failing.join(", ") : ""
-      wrapped([span("✗ ", "error"), span("unresolved", "error", { bold: true }), span(` · failing checks: ${failing}`, "error"), span(after, "dim")])
+      wrapped([span("✗ ", "error"), span("unresolved", "error", { bold: true }), span(` · ${verification?.status === "unresolved" ? unresolvedWhat(verification) : "failing checks"}: ${failing}`, "error"), span(after, "dim")])
       if (verification?.status === "unresolved") wrapped([span(`  ${unresolvedReason(verification)}`, "warn")], "    ")
       if (row.unsatisfied !== null) {
         wrapped([span(`  ⚠ it also ${unsatisfiedText(row.unsatisfied)}`, "warn")], "    ")

@@ -16,7 +16,7 @@ import { restoreCounts } from "./commands.ts"
 import { commandSent } from "./slash.ts"
 import type { DiffFile } from "@windlass/acp/extensions"
 import { type SteerInfo, type TurnEvent, type TurnInfo, TurnTracker, changedByRevert, startedByText } from "@windlass/acp/turns"
-import { callArgument, programLines, mcpArguments, checkLines, checksSummary, detailLines, errorSummary, fileList, successSummary, unresolvedReason } from "./tools.ts"
+import { callArgument, programLines, mcpArguments, checkLines, checksSummary, detailLines, errorSummary, fileList, stateUnchangedNote, successSummary, unresolvedReason, unresolvedWhat } from "./tools.ts"
 import { type Segment, type Tone, displayWidth, flatten, formatBytes, formatDuration, hardWrap, paint, plural, renderLine, seg, truncate, wrap, wrapKeeping, wrapWhole } from "./text.ts"
 
 export interface Sink {
@@ -714,13 +714,19 @@ export class PrettyRenderer implements Sink {
         this.stopRuns = []
         if (verification.status === "passed") this.line("info", [seg(`${SYMBOL.ok} `, "green"), seg("checks passed", "green"), next])
         if (verification.status === "unresolved") {
-          this.line("info", [seg(`${SYMBOL.fail} `, "red"), seg("failing checks left unresolved", ["red", "bold"]), seg(`: ${verification.failing.join(", ")}`, "red"), next])
+          this.line("info", [seg(`${SYMBOL.fail} `, "red"), seg(`${unresolvedWhat(verification)} left unresolved`, ["red", "bold"]), seg(`: ${verification.failing.join(", ")}`, "red"), next])
           for (const line of wrap(unresolvedReason(verification), this.width - 2)) this.line("info", [seg(`  ${line}`, "yellow")])
         }
         // Nothing was checked although files the checks cover changed outside the turn: said, with what becomes of them.
         if (verification.status === "not_needed" && verification.unverified === true) {
           this.line("info", [seg(`${SYMBOL.note} nothing to check`, "dim"), next])
           for (const line of wrap(UNVERIFIED_HINT, this.width - 2)) this.line("info", [seg(`  ${line}`, "yellow")])
+        }
+        // Nothing was checked although the turn changed files: they are back as they were in a verified state.
+        const unchanged = stateUnchangedNote(verification)
+        if (unchanged !== null) {
+          this.line("info", [seg(`${SYMBOL.note} nothing to check`, "dim"), next])
+          for (const line of wrap(unchanged, this.width - 2)) this.line("info", [seg(`  ${line}`, "dim")])
         }
         return
       }
@@ -1172,6 +1178,9 @@ export class PrettyRenderer implements Sink {
       case "passed":
         return done("checks passed")
       case "not_needed": {
+        // The turn changed files and they are back as they were in a verified state: said, since a failed run may be right above.
+        const unchanged = stateUnchangedNote(verification)
+        if (unchanged !== null) return done("nothing to check", wrap(unchanged, this.width - 2).map((line) => [seg(`  ${line}`, "dim")]))
         if (verification.unverified !== true) return done("nothing to check")
         // Files the checks cover changed outside this turn: not checked now, and the user is told when they will be.
         const hint = wrap(UNVERIFIED_HINT, this.width - 2).map((line) => [seg(`  ${line}`, "yellow")])
@@ -1182,7 +1191,7 @@ export class PrettyRenderer implements Sink {
       case "left_to_parent":
         return done(LEFT_TO_PARENT)
       case "unresolved": {
-        const head = [seg(`${SYMBOL.fail} `, "red"), seg("stopped with failing checks", ["red", "bold"]), seg(`: ${verification.failing.join(", ")}`, "red"), seg(suffix(parts), "dim")]
+        const head = [seg(`${SYMBOL.fail} `, "red"), seg(`stopped with ${unresolvedWhat(verification)}`, ["red", "bold"]), seg(`: ${verification.failing.join(", ")}`, "red"), seg(suffix(parts), "dim")]
         // The reason is never cut: it is why "done" is not what this turn ended as.
         const why = wrap(unresolvedReason(verification), this.width - 2).map((line) => [seg(`  ${line}`, "yellow")])
         const also = unsatisfied === null ? [] : [[seg(`  ${SYMBOL.unknown} it also ${unsatisfiedText(unsatisfied)}`, "yellow")], ...objected]
@@ -1754,7 +1763,7 @@ export class QuietSink implements Sink {
         // The answer alone would read as "done"; that the checks still fail goes where failures go.
         const verification = event.data.verification
         if (verification.status === "unresolved")
-          this.writeError(`${brand.binary}: stopped with failing checks: ${verification.failing.join(", ")} (${unresolvedReason(verification)})\n`)
+          this.writeError(`${brand.binary}: stopped with ${unresolvedWhat(verification)}: ${verification.failing.join(", ")} (${unresolvedReason(verification)})\n`)
         return
       }
       case "step.failed":
@@ -1778,7 +1787,7 @@ export class QuietSink implements Sink {
       case "turn.ended": {
         const verification = event.data.verification
         if (verification.status === "unresolved")
-          this.writeError(`${brand.binary}: failing checks left unresolved before the queued message: ${verification.failing.join(", ")} (${unresolvedReason(verification)})\n`)
+          this.writeError(`${brand.binary}: ${unresolvedWhat(verification)} left unresolved before the queued message: ${verification.failing.join(", ")} (${unresolvedReason(verification)})\n`)
         return
       }
       case "diagnostic":

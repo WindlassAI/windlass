@@ -17,11 +17,16 @@
  * - What the harness did to the workspace is recorded as snapshot IDs, never
  *   as file lists: the snapshot store answers "what changed" from two IDs.
  *
- * Nothing has been released and no stored session exists yet, so every event
- * is at version 1 and its shape was still changed in place. From the first
- * release on, changing an event's data shape means bumping its `v`, keeping a
- * decoder for the old version, and converting old to new in `decodeEvent`.
- * Adding a value to an enum or adding a new event type needs no version bump.
+ * Every event is at version 1. Sessions written by a release exist, and a
+ * build reads all of them: a field added to a shape since is an optional key,
+ * and a change that an existing record could not satisfy means bumping the
+ * event's `v`, keeping a decoder for the old version, and converting old to
+ * new in `decodeEvent`. Adding a value to an enum or adding a new event type
+ * needs no version bump. The other direction is not promised: decoding is
+ * strict, so an earlier build refuses a session a later one wrote a new key,
+ * enum value or event type into (the changelog says which releases). Only the
+ * evidence of a run of checks may gain keys that an earlier build keeps
+ * without knowing them (`verify/evidence.ts`).
  */
 import { agentRefusal } from "../agents/restrictions.ts"
 import { agentRecord } from "../agents/use.ts"
@@ -35,7 +40,8 @@ import { providerError } from "../provider/error.ts"
 import { usage } from "../provider/usage.ts"
 import { toolEffect, toolSpec, truncation } from "../tool/tool.ts"
 import { acknowledgement } from "../verify/acknowledge.ts"
-import { verificationEvidence } from "../verify/evidence.ts"
+import { verificationEvidence, verifiedState } from "../verify/evidence.ts"
+import { requiredCheckRefs } from "../verify/required.ts"
 import {
   type Infer,
   type Validator,
@@ -301,21 +307,52 @@ export const KEPT_LIMIT = 200
  *   this turn (the user edited by hand, a turn was undone, an earlier turn
  *   ended with its checks failing): they are still to be checked, and are,
  *   with everything else, at the end of the next turn that changes a file.
+ *   `reason` says which it was, also for a turn in which checks ran and did
+ *   not pass before the workspace came back to a state that needs none:
+ *   - `turn_unchanged`: this turn changed no file;
+ *   - `state_unchanged`: the turn changed files, and the workspace is now
+ *     what it was in the verified state;
+ *   - `not_covered`: files differ from the verified state, and no check
+ *     covers any of them.
+ *   `since` names that verified state, and `since.run` the run of checks
+ *   that last passed on the way to it, or `null` when none has: the state
+ *   is then as the session found the workspace, give or take files no check
+ *   covers, and no check has verified it. `requiredChecks` is the session's
+ *   required checks that stand on the state the ending leaves
+ *   (`verify/required.ts`), absent when there is none. With
+ *   `state_unchanged` and `not_covered` that is every required check of the
+ *   session: one that does not stand is run at the end of a turn that
+ *   changed a file, so such a turn does not end this way. With
+ *   `turn_unchanged` a required check named since the state was verified is
+ *   not among them, and runs with the next turn that changes a file.
+ *   `reason`, `since` and `requiredChecks` are absent in a record written
+ *   before they were kept.
  * - `passed`: every check that applied passed; `evidence` is that run.
- * - `unresolved`: checks still fail and the execution ended anyway. `reason`
+ * - `unresolved`: checks did not pass and the execution ended anyway. `reason`
  *   says why it was allowed to: the model reported with the acknowledgement
  *   tool that it cannot fix them (`acknowledgement` is what it said), the
- *   model had been sent back `maxRounds` times, or the mode is `report`, which
- *   never sends the model back.
+ *   model had been sent back `maxRounds` times, the mode is `report`, which
+ *   never sends the model back, or (`not_started`) every check that did not
+ *   pass was never started: the harness could not start its command at all
+ *   (`startError` in its evidence says why), which says nothing about the
+ *   code and which no change to the code mends, so the model was not sent
+ *   back for it. `failing` names every check that did not pass, started or
+ *   not; each one's evidence says which it was.
  */
 export const verificationOutcome = variant("status", {
   not_configured: object({ status: literal("not_configured") }),
   left_to_parent: object({ status: literal("left_to_parent") }),
-  not_needed: object({ status: literal("not_needed"), unverified: optional(literal(true)) }),
+  not_needed: object({
+    status: literal("not_needed"),
+    unverified: optional(literal(true)),
+    reason: optional(oneOf(["turn_unchanged", "state_unchanged", "not_covered"])),
+    since: optional(verifiedState),
+    requiredChecks: optional(requiredCheckRefs),
+  }),
   passed: object({ status: literal("passed"), evidence: verificationEvidence }),
   unresolved: object({
     status: literal("unresolved"),
-    reason: oneOf(["acknowledged", "max_rounds", "report_mode"]),
+    reason: oneOf(["acknowledged", "max_rounds", "report_mode", "not_started"]),
     failing: array(nonEmptyString),
     acknowledgement: nullable(acknowledgement),
     evidence: verificationEvidence,
