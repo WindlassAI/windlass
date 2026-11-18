@@ -73,7 +73,7 @@ import { type TaintState, deriveTaint, describeTaint } from "../approval/taint.t
 import { approvedNote, declinedMessage } from "../approval/texts.ts"
 import { brand } from "../brand.ts"
 import { type LoadedConfig, loadConfig, loadConfigSync } from "../config/load.ts"
-import type { CheckConfig } from "../config/schema.ts"
+import { type CheckConfig, resolveConfig } from "../config/schema.ts"
 import { text } from "../content.ts"
 import { buildCheckpoint } from "../context/checkpoint.ts"
 import { IMAGE_RETIREMENT, retireImages, retirementSaves } from "../context/images.ts"
@@ -142,7 +142,8 @@ import { type VerificationEvidence, buildEvidence } from "../verify/evidence.ts"
 import { fingerprintCheck, reusablePass } from "../verify/fingerprint.ts"
 import { type GateInput, decideGate } from "../verify/gate.ts"
 import { renderReport } from "../verify/report.ts"
-import { type CheckResult, type RunCheckOptions, runChecks } from "../verify/run.ts"
+import { type CheckPlan, type SessionCheck, planChecks } from "../verify/required.ts"
+import { type CheckResult, type RunCheckOptions, couldNotStart, runChecks } from "../verify/run.ts"
 import { selectChecks } from "../verify/select.ts"
 import { type ApprovalSetup, type Approvals, type FactContext, addProjectGrants, aliased, callFacts, pathKey, projectApprovalHome, effectivePolicy, environmentSecrets, finishOutput, readProjectGrants, realWorkspace, redactor, resolveApprovals, runRecord } from "./approval.ts"
 import { type AgentListing, type AgentPlaces, type AgentsSetup, agentIndexAppended, agentPlaces, describeAgentProblem, findAgents, heldToParent } from "./agents.ts"
@@ -1066,6 +1067,18 @@ export interface EngineSession {
    * stored: a client says it again when it opens the session.
    */
   readonly setCommandEnv: (names: CommandEnv | null) => void
+  /**
+   * The required checks the client that opened this session named for it,
+   * for the user (`verify/required.ts`): they run when a turn changed what
+   * they cover, and gate it, whatever the project's file says about `checks`
+   * and `verify`. They add to `requiredChecks` of the user's file; a name in
+   * both is the client's. `null`: the client names none, and the user's file
+   * decides. Applies from the next turn: a turn in progress keeps the checks
+   * it started under. Not handed to subagents, whose turns are not verified:
+   * their work is checked with this session's turn. Not stored: a client says
+   * it again when it opens the session.
+   */
+  readonly setRequiredChecks: (checks: readonly CheckConfig[] | null) => void
   /** How calls are decided right now; `null` when the approval layer is off. */
   readonly approval: () => ApprovalState | null
   /**
@@ -2054,6 +2067,10 @@ class LiveSession implements EngineSession {
   private home = { on: false, used: false }
   /** The environment variables a client named for this session's commands; `null`: the user's file decides. */
   private envChoice: CommandEnv | null = null
+  /** The required checks a client named for this session; `null`: the user's file decides. */
+  private requiredChoice: readonly CheckConfig[] | null = null
+  /** `requiredChoice` as it was when the execution in progress (or the latest one) started: what its gate decides from. */
+  private requiredNow: readonly CheckConfig[] | null = null
   /** The question that waits for an answer. One at a time. */
   private question: PendingQuestion | null = null
   /** The questions asked so far, as a chain: each waits for the one before it. */
@@ -2387,6 +2404,10 @@ class LiveSession implements EngineSession {
     this.envChoice = names
     for (const child of this.children) child.setCommandEnv(names)
     this.applyCommandEnv()
+  }
+
+  setRequiredChecks = (checks: readonly CheckConfig[] | null): void => {
+    this.requiredChoice = checks
   }
 
   approval = (): ApprovalState | null => {
@@ -2985,6 +3006,8 @@ class LiveSession implements EngineSession {
       this.write([event("execution.failed", { executionId: run.executionId, message: refused })])
       return false
     }
+    // What the client named is read here too: a turn keeps the required checks it started under.
+    this.requiredNow = this.requiredChoice
     if (load === null) {
       this.config = null
       this.configRead = true
@@ -3008,6 +3031,7 @@ class LiveSession implements EngineSession {
     this.config = loaded
     this.configRead = true
     this.announcePolicy()
+    this.announceChecks(loaded)
     // The servers this configuration names are started now, in the background: nothing waits for one here.
     this.attachMcp()
     // Its hooks apply from this turn's first call, and its language servers start at the first file they serve.
@@ -5222,6 +5246,58 @@ class LiveSession implements EngineSession {
   }
 
   /**
+   * The checks of the execution in progress: the required ones (the user's
+   * file's and the client's, as they were when it started) and the
+   * configuration's own (`verify/required.ts`).
+   */
+  private checkPlan(loaded: SessionConfig): CheckPlan {
+    return planChecks({ config: loaded.config, files: loaded.files ?? null, session: this.requiredNow })
+  }
+
+  /**
+   * The configuration the execution in progress is verified under: the one
+   * it read, or, where the engine reads none and a client named required
+   * checks, one that holds nothing else, with the session's working
+   * directory as the project's. A replay has neither until it works in a
+   * copy of its own.
+   */
+  private verified(): SessionConfig | null {
+    if (this.config !== null) return this.config
+    if (this.director !== null || this.requiredNow === null || this.requiredNow.length === 0) return null
+    return { config: resolveConfig({}), projectDir: this.projection().session.cwd }
+  }
+
+  /** Tells the user, once, what the project's file said about checks that is not followed. A subagent's turn runs none, so it says nothing. */
+  private announceChecks(loaded: SessionConfig): void {
+    if (this.projection().session.lineage?.kind === "spawn") return
+    const plan = this.checkPlan(loaded)
+    if (plan.ignored !== null)
+      this.notice(
+        "approval_ignored",
+        `The project's configuration names required checks and was not followed: ${plan.ignored}. Only your own configuration file, or the program that opens the session for you, names checks that a project cannot change.`,
+      )
+    // Said of the project's checks only: a check of the user's own under a required check's name is the user's to know.
+    if (plan.shadowed.length > 0 && loaded.files?.project?.checks !== undefined)
+      this.notice(
+        "approval_ignored",
+        `The project's configuration names ${plan.shadowed.length === 1 ? "a check" : "checks"} with the name of a required check and was not followed: ${plan.shadowed.join(", ")}. Under that name the required check runs.`,
+      )
+  }
+
+  /**
+   * The session's working directory as seen from the project directory:
+   * the prefix its paths have among paths relative to the project directory
+   * (`""`, or `packages/a/`), and whether the two are one directory. A
+   * required check runs in the working directory and its `when` patterns are
+   * relative to it: where a project file is does not decide where it runs.
+   */
+  private async workingDirectoryInProject(projectDir: string): Promise<{ readonly dir: string; readonly under: string; readonly same: boolean }> {
+    const dir = this.projection().session.cwd
+    const inside = relative(await realpath(projectDir).catch(() => projectDir), await realpath(dir).catch(() => dir))
+    return { dir, under: inside === "" || inside.startsWith("..") ? "" : `${inside.split(sep).join("/")}/`, same: inside === "" }
+  }
+
+  /**
    * How the project's checks run. They are commands from a configuration
    * file the repository controls, and the harness runs them without anyone
    * asking for them, so they get what a command of the model gets without a
@@ -5230,6 +5306,10 @@ class LiveSession implements EngineSession {
    * `auto`; `full` once the session is tainted). Where those would have to
    * ask because there is no sandbox, the checks are not run at all, and the
    * user is told. Only `full` runs them unsandboxed.
+   *
+   * A required check runs the same way: its command is the user's, and what
+   * the command runs is still the repository's. Where it cannot run, it is
+   * not passed over: the gate records it as one that could not start.
    */
   private checkRunner(): { readonly blocked: string } | { readonly sandbox: NonNullable<RunCheckOptions["sandbox"]> | undefined } {
     const approvals = this.core.approvals
@@ -5561,10 +5641,12 @@ class LiveSession implements EngineSession {
     const baseline = projection.baseline
     const lineage = projection.session.lineage
     const depth = lineage?.kind === "spawn" ? lineage.depth : 0
+    const verified = this.verified()
     const offered =
       baseline === null
         ? // A subagent's turn is not verified (its parent's is), so it has nothing to acknowledge.
-          this.config !== null && this.config.config.verify.mode !== "off" && depth === 0
+          // A required check is gated whatever the mode says, so the model can say it cannot fix one.
+          verified !== null && (verified.config.verify.mode !== "off" || this.checkPlan(verified).required !== null) && depth === 0
         : baseline.tools.some((tool) => tool.name === ACKNOWLEDGE_TOOL_NAME)
     const spawn = this.core.spawn
     // The tools of spawned work, like the acknowledgement tool, are in the list or not from the first baseline on. A
@@ -6417,22 +6499,33 @@ class LiveSession implements EngineSession {
     // A subagent's turn is not verified: its parent's turn is, once the subagent's work is in. (Several subagents
     // each running the project's whole check suite in one workspace would mostly report each other's half-done work.)
     const child = this.projection().session.lineage?.kind === "spawn"
-    const loaded = child ? null : this.config
+    const loaded = child ? null : this.verified()
     const interrupted = (): StepResult => {
       this.finishInterrupt(run)
       return "done"
     }
-    const runner = loaded === null || loaded.config.verify.mode === "off" || loaded.config.checks.length === 0 ? null : this.checkRunner()
-    if (runner !== null && "blocked" in runner)
+    const plan = loaded === null ? null : this.checkPlan(loaded)
+    const runner = plan === null || plan.checks.length === 0 ? null : this.checkRunner()
+    const blocked = runner !== null && "blocked" in runner ? runner.blocked : null
+    // Where commands are sandboxed and there is no sandbox, the configuration's checks are not run. A required
+    // check is not run either, and is not passed over: it stays in the turn's checks, and its run is recorded as
+    // one that could not start, so the turn does not end as done with nothing checked.
+    const applicable = plan === null ? [] : blocked === null ? plan.checks : plan.checks.filter((item) => item.required)
+    if (blocked !== null)
       this.notice(
         "checks_not_run",
-        `The project's checks were not run: they are commands from the project's configuration, they run only in the sandbox in this mode, and the sandbox is unavailable (${runner.blocked}). Mode full runs them without it.`,
+        applicable.length === 0
+          ? `The project's checks were not run: they are commands from the project's configuration, they run only in the sandbox in this mode, and the sandbox is unavailable (${blocked}). Mode full runs them without it.`
+          : `The checks were not run: they run only in the sandbox in this mode, and the sandbox is unavailable (${blocked}). Mode full runs them without it. The required checks (${applicable.map((item) => item.name).join(", ")}) are recorded as not started, so a turn that changed what they cover does not end as done.`,
       )
-    if (loaded === null || runner === null || "blocked" in runner) {
+    if (loaded === null || plan === null || applicable.length === 0) {
       await this.announceChanges()
       // A subagent's ending says who verifies its work; any other session's, that nothing was there to verify it with.
       return signal.aborted ? interrupted() : this.finish(run, child ? { status: "left_to_parent" } : { status: "not_configured" })
     }
+    // A required check's patterns are relative to the session's working directory, wherever the project's file is.
+    const place = plan.required === null ? null : await this.workingDirectoryInProject(loaded.projectDir)
+    const checks = place === null ? applicable : applicable.map((item) => (item.required ? { ...item, under: place.under } : item))
 
     // The workspace as it is now: what the checks run against.
     const current = await this.snapshot("checks_start")
@@ -6445,7 +6538,7 @@ class LiveSession implements EngineSession {
     const changed = await this.changedSinceVerified(state, current, loaded.projectDir)
     if (signal.aborted) return interrupted()
     // Without a snapshot diff nobody knows which files changed, so every check applies.
-    const selected = changed.files === null ? (changed.any ? loaded.config.checks : []) : selectChecks(loaded.config.checks, changed.files)
+    const selected = changed.files === null ? (changed.any ? checks : []) : selectChecks(checks, changed.files)
     // Checks run for a turn that changed files, and only for one. Which ones then is decided from everything that
     // is unverified, the turn's own changes or not: a check that runs cannot tell whose change it reads.
     // A turn whose checks already ran is such a turn whatever the workspace looks like now: when the model was
@@ -6458,8 +6551,9 @@ class LiveSession implements EngineSession {
       return this.finish(run, selected.length === 0 ? { status: "not_needed" } : { status: "not_needed", unverified: true })
     }
     const input: GateInput = {
-      mode: loaded.config.verify.mode,
-      maxRounds: loaded.config.verify.maxRounds,
+      mode: plan.mode,
+      maxRounds: plan.maxRounds,
+      ...(plan.required === null ? {} : { required: plan.required }),
       selected: selected.map((check) => check.name),
       latest: latest?.evidence.checks ?? [],
       changedSinceLatest:
@@ -6470,12 +6564,12 @@ class LiveSession implements EngineSession {
     const decision = decideGate(input)
     switch (decision.kind) {
       case "run_checks":
-        return this.check(run, { loaded, checks: selected, files: changed.files ?? [], filesKnown: changed.files !== null, number: (latest?.run ?? 0) + 1, input })
+        return this.check(run, { loaded, checks: selected, place, files: changed.files ?? [], filesKnown: changed.files !== null, number: (latest?.run ?? 0) + 1, input })
       case "report_and_continue": {
         // The model stopped again without changing a file and without saying it cannot fix them: the same report again.
         const previous = reportsThisTurn(state).at(-1)
         if (previous === undefined)
-          return this.check(run, { loaded, checks: selected, files: changed.files ?? [], filesKnown: changed.files !== null, number: (latest?.run ?? 0) + 1, input })
+          return this.check(run, { loaded, checks: selected, place, files: changed.files ?? [], filesKnown: changed.files !== null, number: (latest?.run ?? 0) + 1, input })
         this.write([event("synthetic.appended", { messageId: this.core.ids.message(), origin: HARNESS_ORIGIN.checkReport, content: previous.content })])
         return "continue"
       }
@@ -6572,8 +6666,10 @@ class LiveSession implements EngineSession {
     run: Run,
     work: {
       readonly loaded: SessionConfig
-      /** Every check that applies, in the configuration's order. */
-      readonly checks: readonly CheckConfig[]
+      /** Every check that applies, in the plan's order: the required ones, then the configuration's. */
+      readonly checks: readonly SessionCheck[]
+      /** Where the required checks run (`workingDirectoryInProject`); `null` when the session has none. */
+      readonly place: { readonly dir: string; readonly same: boolean } | null
       readonly files: readonly string[]
       /** Whether `files` comes from a snapshot diff. Without one nobody knows which files changed, and nothing is carried over. */
       readonly filesKnown: boolean
@@ -6614,22 +6710,37 @@ class LiveSession implements EngineSession {
     const [started] = this.write([event("checks.started", { run: number, checks: checks.map((item) => item.name) })])
     this.probe("checks.started")
 
-    const running = this.core
-      .runChecks(checks, {
-        cwd: loaded.projectDir,
-        // Per session: a check's output is written under a working name first, and two sessions may run the same check at once.
-        spillDir: confined === undefined ? join(this.core.spillDir, "checks", this.id) : join(this.tempContext().temp?.dir ?? this.core.spillDir, SPILL_IN_TEMP, "checks"),
-        signal,
-        ...(confined === undefined ? {} : { sandbox: confined }),
-        ...(plain === undefined ? {} : { env: plain }),
-        progress: (name, value) => this.ephemeral({ type: "checks.progress", sessionId: this.id, run: number, check: name, text: value }),
-        // A check's output is tool output: what is shown while it runs and what is kept in full are redacted too.
-        ...(this.core.approvals === null ? {} : { redact: redactor(this.core.approvals.secrets), unfinishedSecret: (value: string) => unfinishedSecret(value, this.core.approvals!.secrets) }),
-      })
-      .then(
-        (results) => ({ results }),
-        (error: unknown) => ({ error }),
-      )
+    const options = (cwd: string): RunCheckOptions => ({
+      cwd,
+      // Per session: a check's output is written under a working name first, and two sessions may run the same check at once.
+      spillDir: confined === undefined ? join(this.core.spillDir, "checks", this.id) : join(this.tempContext().temp?.dir ?? this.core.spillDir, SPILL_IN_TEMP, "checks"),
+      signal,
+      ...(confined === undefined ? {} : { sandbox: confined }),
+      ...(plain === undefined ? {} : { env: plain }),
+      progress: (name, value) => this.ephemeral({ type: "checks.progress", sessionId: this.id, run: number, check: name, text: value }),
+      // A check's output is tool output: what is shown while it runs and what is kept in full are redacted too.
+      ...(this.core.approvals === null ? {} : { redact: redactor(this.core.approvals.secrets), unfinishedSecret: (value: string) => unfinishedSecret(value, this.core.approvals!.secrets) }),
+    })
+    // The configuration's checks run in the project directory. The required ones run in the session's working
+    // directory, first; where that is the project directory, all of them are one run.
+    const apart = work.place !== null && !work.place.same
+    const runs = apart
+      ? [
+          { cwd: work.place.dir, checks: checks.filter((item) => item.required) },
+          { cwd: loaded.projectDir, checks: checks.filter((item) => !item.required) },
+        ].filter((entry) => entry.checks.length > 0)
+      : [{ cwd: loaded.projectDir, checks }]
+    const running = (async (): Promise<CheckResult[]> => {
+      // Only required checks get here where nothing can be run (`gate`): each is recorded as it is, not started.
+      if ("blocked" in runner)
+        return checks.map((item) => couldNotStart(item, `the checks run only in the sandbox in this mode, and the sandbox is unavailable (${runner.blocked})`))
+      const results: CheckResult[] = []
+      for (const entry of runs) results.push(...(await this.core.runChecks(entry.checks, options(entry.cwd))))
+      return results
+    })().then(
+      (results) => ({ results }),
+      (error: unknown) => ({ error }),
+    )
     await untilAborted(running, signal)
     if (signal.aborted) {
       // Cooperative, as with tools: the command saw the abort. Give it time to stop before the run is closed as interrupted.
@@ -6646,7 +6757,10 @@ class LiveSession implements EngineSession {
     if (signal.aborted) return interrupted()
 
     const results = outcome.results
-    const evidence = buildEvidence({ run: number, afterSeq: started!.seq, changedFiles: files, checks: work.checks, results, fingerprints, reused })
+    // A check's output is tool output: what the evidence carries of it and what the model is shown are redacted like any other.
+    const secrets = this.core.approvals?.secrets
+    const shown = (value: string) => (secrets === undefined ? value : redact(aliased(value, this.tempContext().temp), secrets).text)
+    const evidence = buildEvidence({ run: number, afterSeq: started!.seq, changedFiles: files, checks: work.checks, results, fingerprints, reused, redact: shown })
     const finished = event("checks.finished", { run: number, evidence })
     const after = this.projection()
     const input: GateInput = { ...work.input, latest: evidence.checks, changedSinceLatest: false, reportsSent: reportsThisTurn(after).length, acknowledgement: acknowledgementThisTurn(after) }
@@ -6657,9 +6771,8 @@ class LiveSession implements EngineSession {
       await this.announceChanges()
       if (signal.aborted) return interrupted()
     }
-    // A check's output is tool output: what the model is shown of it is redacted like any other.
-    const secrets = this.core.approvals?.secrets
-    const report = () => note(this.core.ids.message(), HARNESS_ORIGIN.checkReport, secrets === undefined ? renderReport(results) : redact(aliased(renderReport(results), this.tempContext().temp), secrets).text)
+    const required = new Set(work.checks.filter((item) => item.required).map((item) => item.name))
+    const report = () => note(this.core.ids.message(), HARNESS_ORIGIN.checkReport, shown(renderReport(required.size === 0 ? results : results.map((result) => ({ ...result, required: required.has(result.name) })))))
     switch (decision.kind) {
       case "finish":
         return this.finish(run, { status: "passed", evidence }, [finished])

@@ -39,6 +39,8 @@ export {
 } from "./approval/index.ts"
 export { type CommandSandbox, type CommandSandboxOptions, createCommandSandbox, workspacePolicy } from "./sandbox/command.ts"
 export { type CommandEnv, type SandboxConfigSection, type SandboxHomeChoice, MAX_ENV_NAMES, envNames, sandboxHomeChoices } from "./sandbox/config.ts"
+export type { CheckConfig } from "./config/schema.ts"
+export { type CheckOrigin, sessionChecks } from "./verify/required.ts"
 export { type ReplayReport, renderReport as renderReplayReport, renderReportJson as renderReplayReportJson } from "./replay/report.ts"
 export type { Divergence, DivergenceKind, MatchStats } from "./replay/match.ts"
 export { type BuildStamp, buildStamp, platformString, userAgent, versionLine, versionString } from "./version.ts"

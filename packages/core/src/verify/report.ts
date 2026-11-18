@@ -1,7 +1,8 @@
 /**
  * The text the model is shown for a set of check results. Pure and
  * deterministic: it depends only on the results' names, commands, statuses and
- * output bytes (never the duration). Passing and interrupted checks come first,
+ * output bytes (never the duration), and on which failing checks are required
+ * ones, which it says in a closing line. Passing and interrupted checks come first,
  * one line each, then the failures; each group keeps the order given.
  *
  * The whole report fits the tool output limits, so nothing downstream caps it
@@ -14,8 +15,8 @@ import { ACKNOWLEDGE_TOOL_NAME } from "./acknowledge.ts"
 import { type CheckOutput, type CheckResult, isFailure } from "./run.ts"
 import { OUTPUT_LIMITS, type OutputLimits, countLines, fitsLimits, renderCapped } from "../tool/cap.ts"
 
-/** The part of a result the report reads. */
-export type ReportedCheck = Pick<CheckResult, "name" | "command" | "timeoutSeconds" | "status" | "exitCode" | "signal" | "interruptedBy" | "startError" | "output">
+/** The part of a result the report reads, and whether the check is a required one of the session (`required.ts`). */
+export type ReportedCheck = Pick<CheckResult, "name" | "command" | "timeoutSeconds" | "status" | "exitCode" | "signal" | "interruptedBy" | "startError" | "output"> & { readonly required?: boolean }
 
 /** Kept below the limits for the marker; the same values as the tool output cap. */
 const MARKER_BYTES = 512
@@ -71,6 +72,9 @@ function render(results: readonly ReportedCheck[], failing: readonly ReportedChe
       "",
       `Fix the code so that ${failing.length === 1 ? "this check passes" : "these checks pass"}, or, if you cannot, call ${ACKNOWLEDGE_TOOL_NAME} with the name of each failing check and the reason.`,
     )
+  // Said only of a required check that fails, so a report without one is the text it always was.
+  const required = failing.filter((result) => result.required === true).map((result) => result.name)
+  if (required.length > 0) lines.push(`This session requires ${required.join(", ")}: no file of the project replaces a required check or switches it off.`)
   return `${lines.join("\n")}\n`
 }
 

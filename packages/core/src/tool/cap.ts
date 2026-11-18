@@ -137,7 +137,7 @@ function cutHead(bytes: Uint8Array, maxBytes: number, maxLines: number): number 
 }
 
 /** Start of the tail: the first line start within both budgets, or a character boundary inside a last line that is too long. */
-function cutTail(bytes: Uint8Array, atLineStart: boolean, maxBytes: number, maxLines: number): number {
+export function cutTail(bytes: Uint8Array, atLineStart: boolean, maxBytes: number, maxLines: number): number {
   const minStart = Math.max(0, bytes.length - maxBytes)
   const endsWithNewline = bytes.length > 0 && bytes[bytes.length - 1] === NEWLINE
   let start = -1

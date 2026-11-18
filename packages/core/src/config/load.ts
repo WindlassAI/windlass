@@ -49,8 +49,8 @@ export interface LoadedConfig extends ConfigLocations {
    * wake-ups (`wake`), a project's hooks are added to the user's and each
    * waits for the user's approval (`hooks`), a language server a project's
    * file names waits for it too (`lsp`), and some keys are read from the
-   * user's own file only (`skills.paths`, `memory.inRepository`). `null`:
-   * the file does not exist.
+   * user's own file only (`skills.paths`, `memory.inRepository`,
+   * `requiredChecks`). `null`: the file does not exist.
    */
   readonly files: { readonly user: ConfigFile | null; readonly project: ConfigFile | null }
 }

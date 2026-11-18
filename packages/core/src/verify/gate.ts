@@ -13,6 +13,12 @@
  *   every run follows a change, and every change after the first run follows a report,
  *   so a turn runs checks at most `maxRounds + 1` times.
  * - `acknowledgement`: see `acknowledge.ts`.
+ * - `required`: the required checks of the session (`required.ts`), when it has any. `mode` and `maxRounds` are
+ *   the merged configuration's, a project's file included, and say what is done with the configuration's own
+ *   checks; a required check is gated whatever they say. So the loop leaves the configuration's checks out of
+ *   `selected` when `mode` is `off`, and with a required check the gate goes on where it would have stopped:
+ *   a failing required check sends the model back also in mode `report`, and as often as `required.maxRounds`
+ *   says, not as `maxRounds` does.
  *
  * Results that were interrupted say nothing about the code, so `latest` with an
  * interrupted result is treated as if the checks had not run.
@@ -29,6 +35,8 @@ export interface GateInput {
   readonly changedSinceLatest: boolean
   readonly reportsSent: number
   readonly acknowledgement: Acknowledgement | null
+  /** Absent: the session has no required check, and the decision is the one `mode` and `maxRounds` give. */
+  readonly required?: { readonly names: readonly string[]; readonly maxRounds: number }
 }
 
 export type GateDecision =
@@ -49,14 +57,17 @@ export type GateDecision =
 export type UnresolvedReason = "acknowledged" | "max_rounds" | "report_mode"
 
 export function decideGate(input: GateInput): GateDecision {
-  if (input.mode === "off") return { kind: "finish" }
+  const required = input.required?.names ?? []
+  if (input.mode === "off" && required.length === 0) return { kind: "finish" }
   const current = input.latest.length > 0 && !input.changedSinceLatest && !input.latest.some((result) => result.status === "interrupted")
   if (!current) return input.selected.length === 0 ? { kind: "finish" } : { kind: "run_checks", checks: input.selected }
-  const failing = input.latest.filter((result) => isFailure(result.status)).map((result) => result.name)
+  // With `off` only required checks ran; a result of any other says nothing the mode lets the gate act on.
+  const failing = input.latest.filter((result) => isFailure(result.status) && (input.mode !== "off" || required.includes(result.name))).map((result) => result.name)
   if (failing.length === 0) return { kind: "finish" }
-  if (input.mode === "report") return { kind: "finish_unresolved", reason: "report_mode", failing }
+  const requiredFails = failing.some((name) => required.includes(name))
+  if (!requiredFails && input.mode !== "gate") return { kind: "finish_unresolved", reason: "report_mode", failing }
   if (acknowledges(input.acknowledgement, failing)) return { kind: "finish_unresolved", reason: "acknowledged", failing }
-  if (input.reportsSent >= input.maxRounds) return { kind: "finish_unresolved", reason: "max_rounds", failing }
+  if (input.reportsSent >= (requiredFails ? input.required!.maxRounds : input.maxRounds)) return { kind: "finish_unresolved", reason: "max_rounds", failing }
   return { kind: "report_and_continue", failing }
 }
 

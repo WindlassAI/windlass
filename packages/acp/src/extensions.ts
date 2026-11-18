@@ -149,6 +149,20 @@ export interface ClientMeta {
   readonly updates?: boolean
 }
 
+/** A check as a client writes it in `OpenMeta.requiredChecks`: what an entry of `requiredChecks` is in a configuration file. */
+export interface OpenCheck {
+  /** Letters, digits, `_`, `.` and `-`, starting with a letter or digit; once in the list. */
+  readonly name: string
+  /** Run with `bash -c` in the session's working directory. */
+  readonly command: string
+  /** 1 to 3600; default 120. */
+  readonly timeoutSeconds?: number
+  /** Glob patterns of changed files, relative to the session's working directory, that make the check run. Absent: any change. */
+  readonly when?: readonly string[] | null
+  /** `always`: the evidence carries the end of the output also when the check passed. Default `failure`: only when it did not. */
+  readonly outputTail?: "failure" | "always"
+}
+
 /** `_meta[<ns>]` on `session/new`, `session/load` and `session/resume`. */
 export interface OpenMeta {
   /** The model to start with (new) or switch to (load, resume); checked against the account's models first. */
@@ -188,6 +202,15 @@ export interface OpenMeta {
    * withheld is withheld. Absent: that file alone says.
    */
   readonly passEnv?: readonly string[] | null
+  /**
+   * Checks that run when a turn of the session changed what they cover, and gate it, whatever the project's file
+   * says: its `checks` are run besides them and cannot replace them, and its `verify` (`mode: "off"`, `maxRounds`)
+   * does not apply to them. They are the user's choice for this session and add to `requiredChecks` of the user's
+   * configuration file; a name in both is this list's. Each run's evidence says of every check whose it is
+   * (`origin`: `session` for these) and whether it is required. Absent: that file alone says. Applies from the
+   * next turn.
+   */
+  readonly requiredChecks?: readonly OpenCheck[] | null
   /**
    * Whether a person is there to answer `session/request_permission`. Default
    * `true`: an ACP client can answer. A client that runs unattended (a

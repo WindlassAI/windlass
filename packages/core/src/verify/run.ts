@@ -242,6 +242,11 @@ function statusOf(display: Infer<typeof finishedDisplay>): CheckStatus {
   return "failed"
 }
 
+/** The result of a check that was not started, with the reason: for a caller that cannot run it at all. */
+export function couldNotStart(check: CheckConfig, reason: string): CheckResult {
+  return { ...notStarted(check), startError: reason }
+}
+
 function notStarted(check: CheckConfig): CheckResult {
   const empty = new Uint8Array(0)
   return {
