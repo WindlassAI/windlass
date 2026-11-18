@@ -59,7 +59,7 @@ every command the agent started is stopped, and the session resumes later where 
 | --- | --- |
 | `initialize` | Protocol version 1. Capabilities: `loadSession`, embedded text context in prompts, `sessionCapabilities` `list`, `resume`, `close`, `delete`. One auth method, "Sign in with ChatGPT". |
 | `authenticate` | Checks the saved sign-in, or the access token handed in through `WINDLASS_ACCESS_TOKEN_FILE`; succeeds if it is usable, otherwise answers auth-required with how to sign in, or that a new token must be handed in. There is no in-client browser flow. |
-| `session/new` | A session in the client's `cwd` (an absolute directory). The response carries the config options below. `_meta["windlass"] = { model, effort }` starts it with those settings, checked against the account's models first (an unknown model is refused with `-32602` and the list of valid ones, an effort the model does not take with the ones it accepts). `agent` in the same object is the agent it starts as, by name (`"none"`: no agent; absent: the default of the user's configuration); a name that is no agent is refused with `-32602` and a sentence that suggests the near ones, and no session is created. `approval` (`ask`, `auto`, `full`), `unattended` (`deny`, `stop`), `attended` (default `true`) and `children` (default: as `attended`) in the same object say how tool calls are approved (see "Approval" below), `sandboxHome` (`user`, `session`) what sandboxed commands find at the home directory's path (see "The session's home" below), and `withholdEnv` and `passEnv` (lists of environment variable names) what of the server's environment the session's commands get (see "A command's environment" below); they are read on `session/load` and `session/resume` too. |
+| `session/new` | A session in the client's `cwd` (an absolute directory). The response carries the config options below. `_meta["windlass"] = { model, effort }` starts it with those settings, checked against the account's models first (an unknown model is refused with `-32602` and the list of valid ones, an effort the model does not take with the ones it accepts). `agent` in the same object is the agent it starts as, by name (`"none"`: no agent; absent: the default of the user's configuration); a name that is no agent is refused with `-32602` and a sentence that suggests the near ones, and no session is created. `approval` (`ask`, `auto`, `full`), `unattended` (`deny`, `stop`), `attended` (default `true`) and `children` (default: as `attended`) in the same object say how tool calls are approved (see "Approval" below), `sandboxHome` (`user`, `session`) what sandboxed commands find at the home directory's path (see "The session's home" below), `withholdEnv` and `passEnv` (lists of environment variable names) what of the server's environment the session's commands get (see "A command's environment" below), and `requiredChecks` (a list of checks) which checks run and gate the session's turns whatever the project's file says (see "Required checks" below); they are read on `session/load` and `session/resume` too. |
 | `session/load` | Replays the whole stored conversation as `session/update`s (user messages, reasoning, text, tool calls with their final status), then reports the title (`session_info_update`), the context use (`usage_update`), and the session's state (the `_windlass/state` notification below), then answers. The `cwd` must be the session's own. |
 | `session/resume` | The same without the replay. On load and resume, `_meta["windlass"] = { model, effort }` switches the session to them (checked first, recorded as `settings.changed`), `agent` switches it to that agent (recorded as `agent.switched`; a refusal leaves the session closed), and `archived: true` opens an archived session too. |
 | `session/list` | Sessions (not deleted), newest first, filtered by `cwd`, 100 per page. Each has `_meta["windlass"] = { model, effort, archived?, forkedFrom?, forkedThroughSeq? }` (a fork names the session it was forked from and the last event it inherited). With `_meta["windlass"] = { archived: true }` archived sessions are listed too. The `title` is the session's own, or else derived from its first prompt (below). Each page is read from the engine: `nextCursor` is a place in the order (when a session was last updated, then its ID), so the server keeps nothing between two pages, a session that arrives meanwhile is in no later page, and none is listed twice; a new listing has it at the front. A cursor the server did not give is refused with `-32602`. |
@@ -102,7 +102,7 @@ How a turn ended goes beyond the stop reason: the verification gate decides whet
 carry `outcome` (`succeeded`, `unresolved`: done but the project's checks still fail, `failed`, `interrupted`), the
 gate's `verification` (`passed` with the evidence; `not_needed`, with `unverified: true` when files the checks cover
 changed outside the turn and are still to be checked; `not_configured`; `left_to_parent` for a subagent, whose checks
-are its parent's turn's; or `unresolved` with the reason and the failing checks), and the files the turn changed. On `session/load` every earlier turn's ending is replayed
+are its parent's turn's; or `unresolved` with the reason and the failing checks), and the files the turn changed. The evidence says of each check whose it is and whether it is required, and carries the last lines of a failing check's output ("Required checks" below has the shape). On `session/load` every earlier turn's ending is replayed
 as a `_windlass/turn` notification marked `replay: true`, after that turn's updates (and, for a client that
 takes the harness's events, after that turn's events), with the files it changed worked out from its snapshots.
 
@@ -166,7 +166,7 @@ Before every tool call the harness decides whether it runs, runs in the sandbox,
   `_windlass/taint` `{ tainted: false }`.
 - **Notices.** `_windlass/notice` `{ sessionId, kind, message }` says once what the user should know about how
   tools run here: `sandbox_unavailable` (why, and what would fix it), `approval_ignored` (a project setting that
-  would have loosened the policy, asked for the session's home, or named environment variables for commands), `checks_not_run`, `session_home` (the session's
+  would have loosened the policy, asked for the session's home, named environment variables for commands, named required checks, or named a check with a required check's name), `checks_not_run` (there is no sandbox to run the checks in; with a required check, that it is recorded as not started), `session_home` (the session's
   home is on and the session gets none, or not all of the user's home in it, and why); and about how a turn ended,
   `no_closing_answer` (the model did its work and then returned nothing twice, so the turn ended without a last
   word from it).
@@ -209,6 +209,83 @@ Before every tool call the harness decides whether it runs, runs in the sandbox,
   command the user allowed to run without it) the command is not given it either, but it runs as the server's
   user and can read it from the server's process: there `withholdEnv` keeps a variable out of what a command
   prints or passes on by accident, and protects nothing. The model is told nothing about the lists.
+- **Required checks.** A project's file replaces the user's `checks` and sets `verify`, and the agent can edit
+  it, so a client that needs certain checks to have run before a turn counts as done names them when it opens the
+  session ([safety.md](safety.md), "Required checks"):
+
+  ```json
+  { "_meta": { "windlass": { "requiredChecks": [
+    { "name": "test", "command": "bun test", "timeoutSeconds": 300 },
+    { "name": "types", "command": "bun run typecheck", "when": ["src/**", "tsconfig.json"], "outputTail": "always" }
+  ] } } }
+  ```
+
+  Each entry is a check as a configuration file writes one: `name` (letters, digits, `_`, `.` and `-`, starting
+  with a letter or digit, once in the list) and `command` (run with `bash -c`) are required; `timeoutSeconds`
+  (1 to 3600, default 120), `when` (glob patterns of changed files that make the check run; absent: any change)
+  and `outputTail` (`failure`, the default, or `always`) are optional. Anything else, an unknown key included,
+  is refused with `-32602` and a message that names the value at fault
+  (`_meta.windlass.requiredChecks[0].command: expected a value, got nothing`, with that path as `data.field`); no
+  session is created.
+
+  What they do, in the session they are named for:
+
+  - They run before a turn ends, when the turn changed a file their `when` patterns cover, in the list's order
+    and before the project's own checks. They run in the session's `cwd`, and their patterns are relative to it.
+  - The project's file cannot replace them, remove them or switch them off: its `checks` (an empty list
+    included) are run besides them, a check of its with the name of a required one is not run, its
+    `verify.mode` (`off`, `report`) and `verify.maxRounds` do not apply to them, and `requiredChecks` in it is
+    not followed. The client gets a `notice` (`approval_ignored`) for the last two.
+  - A required check that fails sends the agent back, at most as often as `verify.maxRounds` of the user's own
+    file says (default 3). The turn then ends as `passed`, or as `unresolved` with the reason (`acknowledged`:
+    the agent reported with `report_check_failure` that it cannot fix it; `max_rounds`) and the check in
+    `failing`. A turn never ends as done on a required check that failed.
+  - Where commands are sandboxed and there is no sandbox (any mode but `full`), no check can run. A required
+    check is then in the run with `status: "could_not_start"` and the reason in `startError`, and the turn ends
+    as `unresolved`, not as `not_configured`.
+  - A subagent's turn runs none and ends as `left_to_parent`; its work in the session's working directory is
+    checked when the session's own turn ends.
+
+  They are the user's choice for the session: they add to `requiredChecks` of the user's own configuration
+  file, and a name in both is the client's. They apply from the next turn: a turn that is running keeps the
+  checks it started with. They are not stored, so a client says them again each time it opens the session, on
+  `session/load` and `session/resume` too, and when it opens a fork. In a server that still has the session
+  open, opening it again without the key keeps what was said, and `[]` takes them back. A wake-up that fires
+  while no server has the session open runs under the user's file alone. A server that has the key lists
+  `requiredChecks` in `agentCapabilities._meta["windlass"].openMeta`; one that does not ignores the key, so a
+  client looks there before it relies on it.
+
+  **Whose check ran, and what it printed.** Every check in the evidence of a run (`checks.finished`, and the
+  `verification.evidence` of a turn's ending) says where it came from, so a client does not work out the merge
+  of the files itself:
+
+  ```ts
+  {
+    name: string, command: string,
+    status: "passed" | "failed" | "timed_out" | "could_not_start" | "interrupted",
+    exitCode: number | null, signal: string | null, durationMs: number,
+    files: string[],                  // the changed files that selected the check
+    fingerprint: string, reusedFromSeq: number | null,   // not null: a pass carried over from an earlier run, not run again
+    outputPath: string | null,        // the file with the whole output, on the machine the server runs on
+    outputBytes: number, outputLines: number,
+    origin?: "user" | "session" | "project",   // the user's own file, the client that opened the session, the project's file
+    required?: boolean,               // true: a required check
+    outputTail?: { text: string, truncated: boolean } | null,
+    startError?: string               // could_not_start with no exit code: why the command was not started
+  }
+  ```
+
+  `origin` is `session` for a check named with `requiredChecks` here, `user` for one from the user's own file
+  (its `requiredChecks`, or its `checks` when the project's file has no `checks`), and `project` for one of the
+  project's `checks`. `outputTail` is the end of the check's output: at most the last 60 lines and 4096 bytes,
+  from the start of a line, with `truncated` saying that the output has more before it. It is there for a check
+  that ran in this run and did not pass, and for one that passed when its entry says `"outputTail": "always"`
+  (asked for per check, by whoever names the check); otherwise it is `null`. The bound is small because the
+  evidence is in the log with each run and again with the turn's ending, and goes to the client with both: the
+  last lines are where a test runner says what failed. The text is redacted like all tool output before it is
+  stored or sent ([safety.md](safety.md), "Secrets in tool output"), and so is the file `outputPath` names,
+  which still holds all of it. The four fields are absent in a session's older records, written before they
+  existed, which a `session/load` replays as they are.
 - **A session that is loaded** replays an asked-and-answered call as the call with its final status and content.
   A client that takes the harness's events gets `approval.requested`, `approval.answered` and `approval.denied`
   with `replay: true`; it shows them as history and puts no question. No question is ever pending in a stored
