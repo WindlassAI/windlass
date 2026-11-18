@@ -27,6 +27,8 @@ your configuration file (`~/.config/windlass/config.json`). The default is `auto
 | Change only Windlass's own records: cancel a wake-up, save or retract a memory note | asks | runs | runs |
 | The project's checks (the verification gate) | sandboxed, no question | sandboxed, no question | unsandboxed |
 | The project's checks, on a machine without a sandbox | not run | not run | run |
+| A required check ("Required checks" below) | sandboxed, no question | sandboxed, no question | unsandboxed |
+| A required check, on a machine without a sandbox | not run, and recorded as not started: the turn does not end as done | same | run |
 | After untrusted content entered the conversation: network access for a command, a command without the sandbox, an MCP tool | asks again; earlier approvals for it stop applying | same | commands run in the sandbox; the rest asks |
 
 `full` is an explicit choice for a container or a machine with nothing to lose. A project's own configuration file
@@ -256,6 +258,75 @@ What the lists do not do:
 - **What Windlass itself runs is not covered:** `git` for a subagent's worktree, with hooks off, gets Windlass's
   environment, and `rg` for the search tool does too. Neither runs a command the agent or the project chose.
 
+## Required checks
+
+The checks of the verification gate are the project's to configure: its file replaces your `checks`, sets `verify`,
+and is a file the agent can edit. Checks that whoever starts Windlass needs to have run are named apart
+([user-guide.md](user-guide.md), "Required checks"):
+
+- for yourself, as `requiredChecks` in your own configuration file, `~/.config/windlass/config.json`;
+- a program that starts `windlass acp` for you names them for a session when it opens it, with `requiredChecks`
+  in `_meta["windlass"]` of `session/new`, and again in `session/load` and `session/resume` ([acp.md](acp.md)).
+  They add to your file's, and a name in both is the program's.
+- a project's own `.windlass/config.json` names none. The key there is not followed, and you are told once, with
+  the names.
+
+**What a project's file cannot do to a required check.**
+
+| In the project's file | What happens |
+|---|---|
+| `checks`, also `[]` | The project's checks run after the required ones, or none of its own does. The required ones run. |
+| a check with a required check's name | Not run, and you are told once. Under that name the required check runs and is recorded. |
+| `verify.mode` `off` or `report` | Applies to the project's checks. A required check that fails still sends the agent back. |
+| `verify.maxRounds` | Applies while only the project's checks fail. While a required one fails, the agent is sent back as often as your own file says (default 3). |
+| `requiredChecks` | Not followed. |
+| the file itself, created, moved or removed | A required check runs in the directory the session works in, and its `when` patterns are relative to it. The project directory, where the project's checks run, is the one that holds the project's file; a required check is not run there because a file put into a subdirectory would move it. |
+| `sandbox.withholdEnv`, `sandbox.passEnv` | Not followed, as for every command ("A command's environment"). |
+| `hooks` | No hook runs before or after a check: a check is not a tool call. A `stop` hook runs once the gate has decided, and can send the agent back or object; it cannot turn failing checks into done. |
+| a mistake in the file | The turn fails before anything is sent to the model, as with any configuration that cannot be read. |
+
+They are read when a turn starts, and a turn keeps the ones it started with: an edit of any file during the turn
+changes nothing for it, and no file of the project changes them for the next.
+
+**What a project can still do to one: make it fail, not pass.** These are settings a project may make stricter,
+and a stricter setting can keep a required check from passing:
+
+- `approval.mode`, or `approval.untrustedPaths` that taint the session: where you chose `full`, the checks then
+  run in the sandbox, with no network and nothing writable outside the working directory and the temp directory.
+  A check that needs more fails. On a machine without a sandbox it cannot run at all: it is recorded as one that
+  could not start, with the reason, the agent is told, and the turn ends with failing checks.
+- `sandbox.home: "user"` turns the session's home off: a sandboxed check that writes under the home fails.
+
+**What a required check does not promise.**
+
+- **Its command is yours; what the command runs is the repository's.** `bun test` runs the tests the agent can
+  edit or delete, `npm test` the script that `package.json` names, `make check` the Makefile. A required check is
+  as strong as what its command reads from the working directory. A command that the repository cannot redirect
+  (a linter with its configuration on the command line, a script outside the working directory) holds more.
+- **It runs only for a turn that changed a file its `when` patterns cover**, as every check does, and a change is
+  what a snapshot of the working directory sees. A new file that a `.gitignore` of the repository ignores, a new
+  file over 2 MiB and anything inside a nested repository are not seen: a turn that changed only such files ends
+  as done with nothing checked. Leave `when` out for a check that should run on any change that is seen.
+- **A subagent's turn runs no check, required or not.** Its ending says `left_to_parent`. What it changed in the
+  session's working directory is checked when its parent's turn ends; what it left in a worktree of its own is
+  checked once it is brought into the working directory, like any change.
+- **The agent may say it cannot fix one.** A turn can end with a required check failing: the agent reported it
+  (`report_check_failure`), or was sent back as often as allowed. That turn ends as unresolved, never as done, and
+  its record names the check. Whether unresolved work is accepted is yours, or the program's, to decide.
+- **The ones a program names are not stored with the session.** It names them each time it opens the session. In
+  a process that still has the session open, opening it again without the key keeps what was named; an empty list
+  takes them back. A fork is a session of its own and is opened like one. A wake-up that fires for a session no
+  process has open runs under your file's required checks alone.
+- **In `full` the agent has your rights.** It can edit your own configuration file, and required checks named
+  there are then gone from the next turn on; in `ask` and `auto` that file cannot be edited by the agent or read
+  by its commands. The ones a program names are held by the server's process, where no file reaches them, but an
+  agent in `full` on the same machine can do what you can to that process. `full` is for a container: decide
+  there from the turn's record, read from outside it, not from what the agent says.
+
+**The record.** Every run's evidence says of each check whose it is (`origin`: `user`, `session` or `project`) and
+whether it is required, and carries the last lines of a failing check's output, redacted like all tool output
+("Secrets in tool output"). [acp.md](acp.md) has the shape.
+
 ## What the sandbox does not stop
 
 - Reading any file that is not hidden: your source, dotfiles, `/etc`, other projects. What a command prints goes to
@@ -395,8 +466,8 @@ What the redaction misses:
 - `Bearer`/`Basic` values without a digit, and a token glued to the next token with no separator;
 - in a command's output, a secret in a line longer than 64 KB that falls where the line is passed on in parts.
 
-The same redaction covers what a running command shows while it runs and the files that keep a long output in full
-(in the session's temp directory): a command's output is redacted as it arrives, holding back the unfinished end of
+The same redaction covers what a running command shows while it runs, the last lines of a check's output that the
+record of a run carries, and the files that keep a long output in full (in the session's temp directory): a command's output is redacted as it arrives, holding back the unfinished end of
 a line until it is complete, so a secret printed in two parts is replaced whole. Those files hold the redacted
 output, not what the command printed byte for byte (invalid UTF-8 is replaced too). Where long output is shortened,
 the cut never splits a placeholder.

@@ -471,6 +471,19 @@ is a new version with a decoder for the old one.
   deterministic text the model is shown; `acknowledgeTool` is the tool (`report_check_failure`) with which the model
   says it cannot fix a failing check. An acknowledgement is that tool call, never parsed prose; a check may be
   named by its name or by the label the report shows it with.
+- `planChecks` (`verify/required.ts`) says which checks a session has and whose each is. The configuration's own
+  (`checks`, a project's list replacing the user's) are under the merged `verify`. *Required checks* are the ones
+  a project's file cannot replace or switch off: `requiredChecks` of the user's own file, read from that file
+  only, and the ones a client names when it opens a session (`setRequiredChecks`, not stored, like the session's
+  home and its environment lists). They come first, a configuration's check with the name of one is left out,
+  and the gate treats a failing one as gated whatever `verify.mode` says, for as many rounds as the user's own
+  file says. The loop reads what the client named when an execution starts, so a turn keeps the checks it began
+  with; runs a required check in the session's working directory, with its `when` patterns relative to it,
+  because the project directory is wherever a project file is; and, where no check can run (commands are
+  sandboxed and there is no sandbox), records each required check as one that could not start instead of ending
+  the turn as `not_configured`. A subagent's turn still runs none. Each check's evidence says whose it is
+  (`origin`), whether it is required, and carries the end of a failing output (`outputTail`, 60 lines and 4096
+  bytes at most, redacted).
 
 **Engine** (`engine/`)
 - `createEngine` takes everything it touches as a dependency (the stores, provider, tools, clock, ID generators,

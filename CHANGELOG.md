@@ -6,6 +6,39 @@ All notable changes to Windlass are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Required checks: checks that a project's file cannot replace or switch off.** A project's
+  `.windlass/config.json` replaces your `checks` and sets `verify`, and the agent can edit that file, so
+  `"checks": []` or `"verify": { "mode": "off" }` there ran nothing from the next turn on, and nobody who starts
+  Windlass could say "these checks always run". `requiredChecks` in your own configuration file now does: a list
+  like `checks`, read from your file only. A program that starts `windlass acp` for you names them for a session
+  with `requiredChecks` in `_meta["windlass"]` of `session/new`, `session/load` and `session/resume`; they add to
+  your file's, and the key is listed in `agentCapabilities._meta["windlass"].openMeta`.
+  - They run before a turn ends when it changed a file their `when` patterns cover, before the project's own
+    checks, which still run. A project's check with the name of a required one is not run, `requiredChecks` in a
+    project's file is not followed, and you are told once of either.
+  - A failing required check sends the agent back whatever `verify.mode` says, as often as `verify.maxRounds` in
+    your own file says. The project's `verify` applies to the project's checks.
+  - A turn keeps the checks it started with: no file edited during a session changes them. They run in the
+    directory the session works in, not in the project directory, which is wherever the project's file is.
+  - Where commands are sandboxed and there is no sandbox, a required check is recorded as one that could not
+    start and the turn ends with failing checks, where the project's checks are passed over as before.
+  - A subagent's turn runs no check, as before; its parent's turn runs them. The checks a program names are not
+    stored with the session: it names them each time it opens it. `docs/safety.md`, "Required checks", has what a
+    project can still do to one (make it fail, not pass) and what a required check does not promise.
+  - With no required check named, the checks, the gate and the report are what they were.
+- **The record of a check says whose check it was.** Each check in the evidence of a run (`checks.finished`, a
+  turn's ending, `_windlass/turn` and the prompt response over ACP) has `origin`: `user` for your own file,
+  `session` for the program that opened the session, `project` for the project's file, and `required`. A client
+  no longer works out from the two files which check ran.
+- **The last lines of a failing check's output are in the record.** The evidence held only the path of the file
+  with the whole output, which is a path on the machine Windlass runs on. It now also has `outputTail`: the end
+  of the output of a check that did not pass, at most 60 lines and 4096 bytes, redacted like all tool output,
+  with `truncated` when there was more; the file is kept as before. A check that says `"outputTail": "always"`
+  has it also when it passes. `startError` says why a check's command could not be started at all. Records
+  written before this have none of these fields and are read as they are.
+
 ## [0.2.0] - 2026-11-16
 
 ### Added
