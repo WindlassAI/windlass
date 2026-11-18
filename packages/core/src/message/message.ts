@@ -33,6 +33,7 @@ import { providerError } from "../provider/error.ts"
 import { usage } from "../provider/usage.ts"
 import { type ToolEffect, toolEffect, toolSpec, truncation } from "../tool/tool.ts"
 import { verificationEvidence } from "../verify/evidence.ts"
+import { requiredCheckRefs } from "../verify/required.ts"
 import {
   type Infer,
   array,
@@ -424,13 +425,28 @@ export const sessionState = object({
    * - `verified`: the workspace state checks are selected against: the
    *   session's first snapshot, then the state at each verification that
    *   passed or found nothing to check. `snapshot` is `null` when none could
-   *   be taken; `seq` is where in the log that was.
+   *   be taken; `seq` is where in the log that was. Once a record has moved
+   *   it on from the first snapshot, `run` is the run of checks that last
+   *   passed on the way to it (the `seq` of its `checks.finished` and its
+   *   number in its turn; `null` when none has), and `requiredChecks` is
+   *   the required checks that stand on it (`verify/required.ts`), as the
+   *   record that moved it named them. Both are absent at the first
+   *   snapshot, which every check stands on, and where a record written
+   *   before they were kept moved it; `requiredChecks` also where none
+   *   stands.
    * - `latest`: the most recent run of checks that produced results, with the
    *   snapshot taken right after it (so files a check itself wrote do not
    *   count as a change by the model).
    */
   verification: object({
-    verified: nullable(object({ seq: integer(1), snapshot: nullable(snapshotId) })),
+    verified: nullable(
+      object({
+        seq: integer(1),
+        snapshot: nullable(snapshotId),
+        run: optional(nullable(object({ seq: integer(1), run: integer(1) }))),
+        requiredChecks: optional(requiredCheckRefs),
+      }),
+    ),
     latest: nullable(object({ run: integer(1), seq: integer(1), snapshot: nullable(snapshotId), evidence: verificationEvidence })),
   }),
   /**

@@ -44,10 +44,31 @@ describe("what the renderer says", () => {
     expect(plain).not.toContain("outside this turn")
     const child = render(stored([...opening(), stepStarted("a1"), stepEnded("a1"), succeeded({ status: "left_to_parent" })]))
     expect(child).toMatch(/✓ done · its checks are left to its parent's turn · 1 step · /)
+    // The turn changed files and they are back as they were in a verified state: said under the ending, with which state.
+    const since = { seq: 12, run: { seq: 12, run: 1 } }
+    const back = render(stored([...opening(), stepStarted("a1"), stepEnded("a1"), succeeded({ status: "not_needed", reason: "state_unchanged", since })]), { columns: () => 300 })
+    expect(back).toMatch(/✓ done · nothing to check · 1 step · /)
+    expect(back).toContain("  The files are as they were when the checks last passed, so the checks were not run again.\n")
+    const start = render(stored([...opening(), stepStarted("a1"), stepEnded("a1"), succeeded({ status: "not_needed", reason: "state_unchanged", since: { seq: 4, run: null } })]), { columns: () => 300 })
+    expect(start).toContain("  The files are as they were when the session started. No check has run on that state.\n")
+    // The other reasons are the ending they were.
+    for (const reason of ["turn_unchanged", "not_covered"] as const) expect(render(stored([...opening(), stepStarted("a1"), stepEnded("a1"), succeeded({ status: "not_needed", reason, since })]))).not.toContain("The files are")
     const silent = render([
       ...stored([...opening(), stepStarted("a1"), stepEnded("a1")]),
       { type: "notice", sessionId: "ses_test" as SessionId, kind: "no_closing_answer", message: "The model returned an empty response twice after its work, so the turn ended without a closing answer." },
     ])
     expect(silent).toContain("⚠ no closing answer: The model returned an empty response twice after its work,\n  so the turn ended without a closing answer.\n")
+  })
+
+  test("checks that were never started are not called failing: the ending says they could not be started, and why", () => {
+    const check = { name: "test", command: "sh test.sh", status: "could_not_start" as const, exitCode: null, signal: null, durationMs: 0, files: [], fingerprint: "f", reusedFromSeq: null, outputPath: null, outputBytes: 0, outputLines: 0, origin: "session" as const, required: true, outputTail: { text: "", truncated: false }, startError: "the sandbox is unavailable (bubblewrap (bwrap) is not installed.)" }
+    const ending = succeeded({ status: "unresolved", reason: "not_started", failing: ["test"], acknowledgement: null, evidence: { run: 1, afterSeq: 5, changedFiles: ["a.txt"], checks: [check] } })
+    const shown = render(stored([...opening(), stepStarted("a1"), stepEnded("a1"), ending]), { columns: () => 300 })
+    expect(shown).toContain("✗ stopped with checks that could not be started: test")
+    expect(shown).toContain("  not started, so nothing was verified and the agent was not sent back: no change to the code starts a check. test: the sandbox is unavailable (bubblewrap (bwrap) is not installed.)\n")
+    expect(shown).not.toContain("failing checks")
+    // A turn that ended on checks that failed says what it always said.
+    const failed = succeeded({ status: "unresolved", reason: "max_rounds", failing: ["test"], acknowledgement: null, evidence: { run: 1, afterSeq: 5, changedFiles: ["a.txt"], checks: [{ ...check, status: "failed", exitCode: 1 }] } })
+    expect(render(stored([...opening(), stepStarted("a1"), stepEnded("a1"), failed]))).toContain("✗ stopped with failing checks: test")
   })
 })

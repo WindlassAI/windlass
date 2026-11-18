@@ -277,6 +277,8 @@ export function checkResult(check: Pick<CheckConfig, "name" | "command" | "timeo
 
 /** The text a scripted check prints when it fails. */
 export const CHECK_OUTPUT = "1 fail\n"
+/** Why a scripted check that could not start did not: it was never started, as when the shell cannot be spawned, so it printed nothing. */
+export const START_ERROR = "the directory does not exist"
 
 /** Scripted checks: each run of a check takes the next behaviour queued for its name. A run stops at an interrupt, as the real one does. */
 export class ScriptedChecks {
@@ -305,7 +307,7 @@ export class ScriptedChecks {
       const behaviour = this.queues.get(check.name)?.shift()
       if (behaviour === undefined) throw new Error(`the test scripted no behaviour for this run of check ${check.name}`)
       const status = typeof behaviour === "string" ? behaviour : await behaviour(check, options)
-      results.push(options.signal.aborted ? stopped() : checkResult(check, status, status === "passed" ? "" : CHECK_OUTPUT))
+      results.push(options.signal.aborted ? stopped() : status === "could_not_start" ? { ...checkResult(check, status), startError: START_ERROR } : checkResult(check, status, status === "passed" ? "" : CHECK_OUTPUT))
     }
     return results
   }
@@ -730,8 +732,10 @@ type Plain = { readonly type: string; readonly data: Record<string, unknown> }
  * - snapshot IDs: a scenario names workspace states (`w0`, `w1`), the loop
  *   records tree hashes. Both are replaced by the order of first appearance,
  *   so "the same state as before" and "a new state" are compared.
- * - check evidence: `afterSeq`, and per check `durationMs`, `fingerprint`
- *   and `outputPath` (see `evidence` in the scenario vocabulary).
+ * - check evidence: `afterSeq`, where the state it names is in the log
+ *   (`since.seq`, and the `seq` of the run in it), and per check
+ *   `durationMs`, `fingerprint` and `outputPath` (see `evidence` in the
+ *   scenario vocabulary).
  * - when an approval was given: `grantedAt` of the grants an answer created
  *   (the loop records its clock). The rule, the scope and the position
  *   (`at`) are compared.
@@ -842,5 +846,7 @@ function label(events: readonly NewEvent[]): Plain[] {
 
 /** Check evidence without the values a scenario writes as stand-ins. */
 function plainEvidence(evidence: VerificationEvidence) {
-  return { ...evidence, afterSeq: 0, checks: evidence.checks.map((check) => ({ ...check, durationMs: 0, fingerprint: "", outputPath: null })) }
+  // Where the verified state and the run that last passed are in the log are positions, like `afterSeq`; whether a run has passed is compared.
+  const since = evidence.since === undefined ? {} : { since: { ...evidence.since, seq: 1, ...(evidence.since.run == null ? {} : { run: { ...evidence.since.run, seq: 1 } }) } }
+  return { ...evidence, afterSeq: 0, checks: evidence.checks.map((check) => ({ ...check, durationMs: 0, fingerprint: "", outputPath: null })), ...since }
 }

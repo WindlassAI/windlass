@@ -5,6 +5,11 @@
  * ones, which it says in a closing line. Passing and interrupted checks come first,
  * one line each, then the failures; each group keeps the order given.
  *
+ * A check that was never started (`neverStarted`) is kept apart from
+ * the ones that failed: the model is asked to fix the code only for a check
+ * that ran, and is told of one that did not start that it says nothing about
+ * the code and is not the model's to fix or to report.
+ *
  * The whole report fits the tool output limits, so nothing downstream caps it
  * again. Failing checks share the room left after the fixed lines equally; each
  * output is capped by the same rule as tool output (line boundaries, a marker
@@ -12,7 +17,7 @@
  * of the output, where failures usually are.
  */
 import { ACKNOWLEDGE_TOOL_NAME } from "./acknowledge.ts"
-import { type CheckOutput, type CheckResult, isFailure } from "./run.ts"
+import { type CheckOutput, type CheckResult, isFailure, neverStarted } from "./run.ts"
 import { OUTPUT_LIMITS, type OutputLimits, countLines, fitsLimits, renderCapped } from "../tool/cap.ts"
 
 /** The part of a result the report reads, and whether the check is a required one of the session (`required.ts`). */
@@ -67,12 +72,27 @@ function render(results: readonly ReportedCheck[], failing: readonly ReportedChe
   // One-line results first, then each failure with its output, so the failures read as one block.
   for (const result of results) if (!isFailure(result.status)) lines.push(...describe(result, output))
   for (const result of failing) lines.push(...describe(result, output))
-  if (failing.length > 0)
+  const unstarted = failing.filter(neverStarted)
+  const fixable = failing.filter((result) => !neverStarted(result))
+  if (fixable.length > 0)
     lines.push(
       "",
-      `Fix the code so that ${failing.length === 1 ? "this check passes" : "these checks pass"}, or, if you cannot, call ${ACKNOWLEDGE_TOOL_NAME} with the name of each failing check and the reason.`,
+      // With a check that was not started beside them, the ones to fix are named: "these checks" would take it in.
+      unstarted.length === 0
+        ? `Fix the code so that ${fixable.length === 1 ? "this check passes" : "these checks pass"}, or, if you cannot, call ${ACKNOWLEDGE_TOOL_NAME} with the name of each failing check and the reason.`
+        : `Fix the code so that ${fixable.map((result) => result.name).join(", ")} ${fixable.length === 1 ? "passes" : "pass"}, or, if you cannot, call ${ACKNOWLEDGE_TOOL_NAME} with ${fixable.length === 1 ? "its name" : "the name of each of them"} and the reason.`,
     )
-  // Said only of a required check that fails, so a report without one is the text it always was.
+  if (unstarted.length > 0) {
+    const names = unstarted.map((result) => result.name).join(", ")
+    const one = unstarted.length === 1
+    lines.push(
+      ...(fixable.length === 0 ? [""] : []),
+      fixable.length === 0
+        ? `${one ? "This check was" : "These checks were"} not started, so ${one ? "it says" : "they say"} nothing about your changes, and no change to the code makes ${one ? "it" : "them"} start. Nothing is asked of you: the turn ends with ${one ? "it" : "them"} recorded as not started, and the reason above goes to the user.`
+        : `${names} ${one ? "was" : "were"} not started, so ${one ? "it says" : "they say"} nothing about your changes, and no change to the code makes ${one ? "it" : "them"} start: leave ${one ? "it" : "them"}, and do not name ${one ? "it" : "them"} to ${ACKNOWLEDGE_TOOL_NAME}.`,
+    )
+  }
+  // Said only of a required check that did not pass, so a report without one is the text it always was.
   const required = failing.filter((result) => result.required === true).map((result) => result.name)
   if (required.length > 0) lines.push(`This session requires ${required.join(", ")}: no file of the project replaces a required check or switches it off.`)
   return `${lines.join("\n")}\n`
@@ -86,7 +106,8 @@ function describe(result: ReportedCheck, output: (output: CheckOutput) => string
     case "interrupted":
       return [`interrupted: ${what}, stopped ${result.interruptedBy === "shutdown" ? "because the harness is shutting down" : "by the user"}`]
     case "could_not_start":
-      if (result.startError !== null) return ["", `could not start: ${what}: ${result.startError}`]
+      // Never started: there is no output, only why. Else the shell ran and found no such command, or could not execute it.
+      if (result.startError !== null || neverStarted(result)) return ["", `could not start: ${what}: ${result.startError === null || result.startError === "" ? "the command could not be started" : result.startError}`]
       return withOutput(`could not start: ${what}, exit code ${result.exitCode}`, result, output)
     case "timed_out":
       return withOutput(`timed out: ${what}, stopped after ${result.timeoutSeconds} ${result.timeoutSeconds === 1 ? "second" : "seconds"}`, result, output)

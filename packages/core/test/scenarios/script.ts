@@ -1018,10 +1018,12 @@ export function checkResult(status: CheckStatus, check: { readonly name: string;
 }
 
 /**
- * The record of one run of the check. `afterSeq`, `fingerprint`, `durationMs`
- * and `outputPath` are stand-ins (the loop fills in the position of
- * `checks.started`, a hash of the changed files' state, the time taken and
- * the file that keeps the output).
+ * The record of one run of the check. `afterSeq`, `since.seq`, `fingerprint`,
+ * `durationMs` and `outputPath` are stand-ins (the loop fills in the position
+ * of `checks.started`, the position of the verified state the changed files
+ * are measured from, a hash of the changed files' state, the time taken and
+ * the file that keeps the output). `since.run` is `null`: in every scenario
+ * the state a run is measured from is one no run has passed on yet.
  */
 export function evidence(run: number, status: CheckStatus, changedFiles: readonly string[]): VerificationEvidence {
   const result = checkResult(status)
@@ -1049,6 +1051,7 @@ export function evidence(run: number, status: CheckStatus, changedFiles: readonl
         outputTail: status === "passed" || status === "interrupted" ? null : outputTailOf(result.output),
       },
     ],
+    since: { seq: 1, run: null },
   }
 }
 

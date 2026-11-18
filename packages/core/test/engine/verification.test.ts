@@ -22,6 +22,8 @@ const write = (path: string, content: string) => call("write", { path, content }
 const say = (value: string) => [script.text(value)]
 /** The gate outcome of each execution that ended as done, in order. */
 const outcomes = (h: Harness): VerificationOutcome[] => h.log().flatMap((item) => (item.type === "execution.succeeded" ? [item.data.verification] : []))
+/** Where the session's first snapshot is in the log: the state the first checks are selected against. */
+const verifiedAtStart = (h: Harness): number => h.log().find((item) => item.type === "snapshot.taken")!.seq
 const reports = (h: Harness) => h.log().filter((item): item is StoredEvent<"synthetic.appended"> => item.type === "synthetic.appended" && item.data.origin === "check_report")
 
 interface Options {
@@ -59,7 +61,7 @@ describe("which checks run", () => {
       h.create().send("What is in a.ts?")
       await h.settled()
       expect(h.checks.ran).toEqual([])
-      expect(outcomes(h)).toEqual([{ status: "not_needed" }])
+      expect(outcomes(h)).toEqual([{ status: "not_needed", reason: "turn_unchanged", since: expect.any(Object) }])
       // A step of reads takes no snapshot of its own: the one before the prompt and the one at the gate are the same state.
       expect(h.log().flatMap((item) => (item.type === "snapshot.taken" ? [item.data.point] : []))).toEqual(["delivery", "checks_start"])
     }))
@@ -72,7 +74,8 @@ describe("which checks run", () => {
         h.create().send("Update the readme.")
         await h.settled()
         expect(h.checks.ran).toEqual([])
-        expect(outcomes(h)).toEqual([{ status: "not_needed" }])
+        // The ending says why: what changed is covered by no check, and the state it is measured from is the session's start, which no run has passed on.
+        expect(outcomes(h)).toEqual([{ status: "not_needed", reason: "not_covered", since: { seq: verifiedAtStart(h), run: null } }])
 
         h.session.send("Now change a.ts.")
         await h.settled()
@@ -109,7 +112,7 @@ describe("which checks run", () => {
         h.session.send("Why do they fail?")
         await h.settled()
         expect(h.checks.ran).toEqual(["test"])
-        expect(outcomes(h)[1]).toEqual({ status: "not_needed", unverified: true })
+        expect(outcomes(h)[1]).toEqual({ status: "not_needed", unverified: true, reason: "turn_unchanged", since: expect.any(Object) })
         expect(h.session.projection().session.verification.verified).toEqual(verified)
 
         // The next turn changes another file: the checks are selected from everything unverified, a.ts included.

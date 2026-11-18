@@ -102,6 +102,43 @@ const requiredCases: [string, Partial<GateInput>, GateDecision][] = [
   ["all passed: finish", { latest: ran(["typecheck", "passed"], ["test", "passed"]) }, { kind: "finish" }],
 ]
 
+/** A check that was never started (no exit code), and one whose command the shell did not find (exit code 127). */
+const unstarted = (name: string) => ({ name, status: "could_not_start" as const, exitCode: null })
+const notFound = (name: string) => ({ name, status: "could_not_start" as const, exitCode: 127 })
+const failed = (name: string) => ({ name, status: "failed" as const, exitCode: 1 })
+const passed = (name: string) => ({ name, status: "passed" as const, exitCode: 0 })
+
+const unstartedCases: [string, Partial<GateInput>, GateDecision][] = [
+  ["the only check that did not pass was never started: unresolved at once, before any report", { latest: [passed("typecheck"), unstarted("test")] }, { kind: "finish_unresolved", reason: "not_started", failing: ["test"] }],
+  ["none was started: unresolved at once", { latest: [unstarted("typecheck"), unstarted("test")] }, { kind: "finish_unresolved", reason: "not_started", failing: ["typecheck", "test"] }],
+  ["in report mode too, and that is the reason given", { mode: "report", latest: [unstarted("test")] }, { kind: "finish_unresolved", reason: "not_started", failing: ["test"] }],
+  ["a required one too, whatever its rounds", { required: { names: ["test"], maxRounds: 5 }, latest: [unstarted("test")] }, { kind: "finish_unresolved", reason: "not_started", failing: ["test"] }],
+  ["with mode off, a required one that was never started", { mode: "off", required: { names: ["test"], maxRounds: 5 }, selected: ["test"], latest: [unstarted("test")] }, { kind: "finish_unresolved", reason: "not_started", failing: ["test"] }],
+  ["a command the shell did not find is not one of these: the model is sent back, as it may be the code's to provide", { latest: [notFound("test")] }, { kind: "report_and_continue", failing: ["test"] }],
+  ["beside one that failed: the model is sent back, and the report names both", { latest: [failed("typecheck"), unstarted("test")] }, { kind: "report_and_continue", failing: ["typecheck", "test"] }],
+  [
+    "beside one that failed: naming the one that failed acknowledges",
+    { latest: [failed("typecheck"), unstarted("test")], reportsSent: 1, acknowledgement: { checks: ["typecheck"], reason: "r" } },
+    { kind: "finish_unresolved", reason: "acknowledged", failing: ["typecheck", "test"] },
+  ],
+  ["beside one that failed: the rounds are the failed one's", { latest: [failed("typecheck"), unstarted("test")], reportsSent: 3 }, { kind: "finish_unresolved", reason: "max_rounds", failing: ["typecheck", "test"] }],
+  [
+    "a required check that was never started does not make a failing plain check a required failure: report mode ends as it does",
+    { mode: "report", required: { names: ["test"], maxRounds: 5 }, latest: [failed("typecheck"), unstarted("test")] },
+    { kind: "finish_unresolved", reason: "report_mode", failing: ["typecheck", "test"] },
+  ],
+  [
+    "nor does it lend the failing plain check its rounds",
+    { maxRounds: 1, required: { names: ["test"], maxRounds: 5 }, latest: [failed("typecheck"), unstarted("test")], reportsSent: 1 },
+    { kind: "finish_unresolved", reason: "max_rounds", failing: ["typecheck", "test"] },
+  ],
+  ["an acknowledgement of a check that was never started is not needed and changes nothing", { latest: [unstarted("test")], acknowledgement: { checks: ["test"], reason: "r" } }, { kind: "finish_unresolved", reason: "not_started", failing: ["test"] }],
+]
+
+describe("decideGate with a check that was never started", () => {
+  for (const [name, input, expected] of unstartedCases) test(name, () => expect(decideGate({ ...base, ...input })).toEqual(expected))
+})
+
 describe("decideGate with a required check", () => {
   for (const [name, input, expected] of requiredCases) test(name, () => expect(decideGate({ ...base, required, ...input })).toEqual(expected))
 

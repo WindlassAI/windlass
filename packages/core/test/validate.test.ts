@@ -3,6 +3,7 @@ import {
   DecodeError,
   array,
   branded,
+  extensible,
   integer,
   json,
   literal,
@@ -66,6 +67,22 @@ describe("validate", () => {
 
   test("objects reject arrays, null and class instances", () => {
     for (const bad of [[], null, new Date(0), "x"]) expect(() => object({})(bad, "")).toThrow(DecodeError)
+  })
+
+  test("an extensible object checks the keys it knows and keeps the others as they are", () => {
+    const report = extensible({ name: string, count: integer(0), inner: object({ ok: literal(true) }) })
+    const input = { name: "a", count: 2, inner: { ok: true }, added: { by: ["a later build", 1, null] }, flag: false }
+    const decoded = report(input, "")
+    expect(decoded).toEqual(input as never)
+    expect(decoded).not.toBe(input as never)
+    // The keys it knows are held to their types, and the ones it needs are needed.
+    expect(() => report({ ...input, count: -1 }, "at")).toThrow("at.count: expected integer >= 0")
+    expect(() => report({ name: "a", inner: { ok: true }, added: 1 }, "")).toThrow("count: expected a value")
+    // An object inside it is as strict as it was declared.
+    expect(() => report({ ...input, inner: { ok: true, more: 1 } }, "")).toThrow("inner.more: expected no such key")
+    // A key it does not know holds JSON.
+    expect(() => report({ ...input, added: { at: new Date(0) } }, "")).toThrow("added.at: expected JSON value")
+    for (const bad of [[], null, "x"]) expect(() => report(bad, "")).toThrow(DecodeError)
   })
 
   test("branded validates the underlying string", () => {

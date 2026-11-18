@@ -78,6 +78,7 @@ import {
   MAX_ENV_NAMES,
   sandboxHomeChoices,
   sessionChecks,
+  unreadableSession,
   brand,
   currentTodos,
   describeRestrictions,
@@ -434,7 +435,8 @@ class ConnectionState {
     await models
     // The files each earlier turn changed, from its snapshots, for the replayed turn endings. Read before the open: the
     // turns that have ended are history and do not change.
-    const changes = replay ? await this.replayChanges(sessionId as SessionId) : new Map<number, readonly string[]>()
+    // The log is read here for the first time: a record in it that this build does not read refuses the session.
+    const changes = replay ? await this.engineErrors(() => this.replayChanges(sessionId as SessionId), sessionId) : new Map<number, readonly string[]>()
     // What the log held before this open: events after it (a crashed claim's recovery) are news to a client.
     const openedAt = summary.lastSeq
     // A claim left by a process that died is repaired here; a suspended one (a clean shutdown in the middle of a
@@ -444,7 +446,7 @@ class ConnectionState {
     applyApproval(session, meta)
     // Read, translate and queue the stored log before listening, all in this synchronous block, so that a live
     // event either is in the log read here or arrives after it, never both and never neither.
-    const history = session.readEvents()
+    const history = this.engineErrors(() => session.readEvents(), sessionId)
     const lastSeq = history.at(-1)?.seq ?? 0
     const view = this.attach(session, cwd, lastSeq, changes, (prime) => {
       // Without a replay the log is still folded, so the translator knows the model and the calls in it. A
@@ -1297,6 +1299,9 @@ class ConnectionState {
         const message = `that session was written by another version of ${brand.name} and cannot be opened by this one (${error.message})`
         throw new RequestError(-32603, message, errorData({ reason: "schema_mismatch", message }))
       }
+      // A record this build does not read, met while working in a session: said as that, not as an internal error.
+      const unreadable = sessionId === undefined ? null : unreadableSession(error)
+      if (unreadable !== null) throw new RequestError(-32603, unreadable, errorData({ reason: "unreadable_session", message: unreadable }))
       if (this.harness.closed) throw RequestError.internalError({ reason: "shutting down" }, `${brand.name} is shutting down`)
       throw error
     }

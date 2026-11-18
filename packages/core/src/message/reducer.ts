@@ -60,6 +60,7 @@ import { type HookEnding, type RetiredResult, type StepError, type StoredEvent, 
 import type { MessageId } from "../id.ts"
 import { releasesClaim } from "../interrupt.ts"
 import { sumUsage } from "../provider/usage.ts"
+import type { RequiredCheckRef } from "../verify/required.ts"
 import {
   type AssistantMessage,
   type Exclusion,
@@ -306,6 +307,21 @@ function apply(state: Projection, event: AppliedEvent): Projection {
     const subagent = state.session.lineage?.kind === "spawn"
     if (subagent && outcome.status !== "left_to_parent") fail("invalid_transition", "a subagent's turn is not verified by itself: its ending says left_to_parent")
     if (!subagent && outcome.status === "left_to_parent") fail("invalid_transition", "only a subagent leaves the verification of its turn to the session that started it")
+  }
+  /**
+   * The verified state after this event moved it to the workspace as it is: a run of checks passed (`run`), or
+   * an ending needed no check. `required` is the required checks the record names, which are the ones that
+   * stand on the new state (`verify/required.ts`). `lastRun` is the run that last passed on the way to it, where
+   * the record says: this run, or the one the ending names; else it stays what it was.
+   */
+  const movedOn = (required: readonly RequiredCheckRef[] | undefined, lastRun: { readonly seq: number; readonly run: number } | null | undefined) => {
+    const run = lastRun === undefined ? state.session.verification.verified?.run : lastRun
+    return {
+      seq: event.seq,
+      snapshot: state.session.workspace.snapshot?.id ?? null,
+      ...(run === undefined ? {} : { run }),
+      ...(required === undefined || required.length === 0 ? {} : { requiredChecks: required }),
+    }
   }
   /** The baseline every request of a step or compaction is built from. */
   const based = () => {
@@ -618,10 +634,7 @@ function apply(state: Projection, event: AppliedEvent): Projection {
         open: { kind: "handover", messageId: queued.messageId },
         // As when an execution ends with nothing to check: what is there now is what later checks are selected against.
         // Not so when changes made outside the turn were left unchecked: they stay to be verified.
-        verification:
-          outcome.status === "not_needed" && outcome.unverified !== true
-            ? { ...state.session.verification, verified: { seq: event.seq, snapshot: state.session.workspace.snapshot?.id ?? null } }
-            : state.session.verification,
+        verification: outcome.status === "not_needed" && outcome.unverified !== true ? { ...state.session.verification, verified: movedOn(outcome.requiredChecks, outcome.since?.run) } : state.session.verification,
       })
     }
     case "synthetic.appended":
@@ -665,10 +678,7 @@ function apply(state: Projection, event: AppliedEvent): Projection {
         fail("invalid_transition", "the model has not answered everything it was given under this execution")
       // With nothing to check, what is there now is what later checks are selected against. A turn that changed
       // nothing while files changed outside it verified nothing: those changes stay to be checked.
-      const verification =
-        outcome.status === "not_needed" && outcome.unverified !== true
-          ? { ...state.session.verification, verified: { seq: event.seq, snapshot: state.session.workspace.snapshot?.id ?? null } }
-          : state.session.verification
+      const verification = outcome.status === "not_needed" && outcome.unverified !== true ? { ...state.session.verification, verified: movedOn(outcome.requiredChecks, outcome.since?.run) } : state.session.verification
       return session({ execution: null, verification })
     }
     case "execution.failed":
@@ -1062,11 +1072,12 @@ function apply(state: Projection, event: AppliedEvent): Projection {
       checking(event.data.run)
       if (event.data.evidence.run !== event.data.run) fail("invalid_transition", `the evidence is of run ${event.data.evidence.run}`)
       const snapshot = state.session.workspace.snapshot?.id ?? null
-      const passed = event.data.evidence.checks.every((check) => check.status === "passed")
+      const evidence = event.data.evidence
+      const passed = evidence.checks.every((check) => check.status === "passed")
       return session({
         open: null,
         verification: {
-          verified: passed ? { seq: event.seq, snapshot } : state.session.verification.verified,
+          verified: passed ? movedOn(evidence.requiredChecks, { seq: event.seq, run: event.data.run }) : state.session.verification.verified,
           latest: { run: event.data.run, seq: event.seq, snapshot, evidence: event.data.evidence },
         },
       })

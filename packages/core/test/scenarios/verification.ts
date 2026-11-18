@@ -313,7 +313,7 @@ export const queuedWaitsForTheGate: Scenario = {
     },
     {
       label: "the follow-up is answered; nothing changed since the checks passed",
-      events: [stepStarted("a5"), say("a5", "Added the test."), stepEnded("a5"), snapshot("checks_start", "w2"), succeededWith({ status: "not_needed" })],
+      events: [stepStarted("a5"), say("a5", "Added the test."), stepEnded("a5"), snapshot("checks_start", "w2"), succeededWith({ status: "not_needed", reason: "turn_unchanged", since: { seq: 36, run: { seq: 36, run: 2 } } })],
       expect: { execution: null, history: ["u1", "a1", "a2", "r1", "a3", "a4", "u2", "a5"] },
     },
   ],
@@ -331,7 +331,7 @@ export const questionAfterHandEdit: Scenario = {
   phases: [
     {
       label: "a question: nothing changed, nothing to check",
-      events: [...openingIn("What does add do?"), stepStarted("a1"), say("a1", "It subtracts, which looks like a bug."), stepEnded("a1"), snap("checks_start", "w0"), succeededWith({ status: "not_needed" })],
+      events: [...openingIn("What does add do?"), stepStarted("a1"), say("a1", "It subtracts, which looks like a bug."), stepEnded("a1"), snap("checks_start", "w0"), succeededWith({ status: "not_needed", reason: "turn_unchanged", since: { seq: 4, run: null } })],
       expect: { execution: null, history: ["u1", "a1"] },
     },
     {
@@ -345,7 +345,7 @@ export const questionAfterHandEdit: Scenario = {
         say("a2", "It expects 4 for 2 + 2, which is right."),
         stepEnded("a2"),
         snap("checks_start", "w1"),
-        succeededWith({ status: "not_needed", unverified: true }, "exe_2"),
+        succeededWith({ status: "not_needed", unverified: true, reason: "turn_unchanged", since: { seq: 11, run: null } }, "exe_2"),
       ],
       expect: { execution: null, history: ["u1", "a1", "u2", "a2"] },
       rejects: [{ event: checksStarted(1), code: "invalid_transition", why: "no execution is running: checks run under a claim, when a turn that changed files would end" }],

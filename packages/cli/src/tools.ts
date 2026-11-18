@@ -248,6 +248,23 @@ export function checkLines(checks: readonly CheckEvidence[]): { name: string; st
     }))
 }
 
+/** What a turn that ended with checks not passed stopped with, as the words before their names: checks that failed, or, when none of them was started, checks that say nothing about the code. */
+export function unresolvedWhat(verification: Extract<VerificationOutcome, { status: "unresolved" }>): string {
+  return verification.reason === "not_started" ? "checks that could not be started" : "failing checks"
+}
+
+/**
+ * What to say under an ending that needed no check although the turn changed files: the workspace is back in a
+ * state checks are measured from, which reads oddly after a run that failed in the same turn. `null` for every
+ * other ending.
+ */
+export function stateUnchangedNote(verification: VerificationOutcome): string | null {
+  if (verification.status !== "not_needed" || verification.reason !== "state_unchanged") return null
+  const run = verification.since?.run
+  if (run === null) return "The files are as they were when the session started. No check has run on that state."
+  return run === undefined ? "The files are as they were when they were last verified, so no check was run." : "The files are as they were when the checks last passed, so the checks were not run again."
+}
+
 /** Why a turn ended with checks still failing, as a sentence. */
 export function unresolvedReason(verification: Extract<VerificationOutcome, { status: "unresolved" }>): string {
   switch (verification.reason) {
@@ -257,6 +274,11 @@ export function unresolvedReason(verification: Extract<VerificationOutcome, { st
       return `still failing after ${plural(verification.evidence.run, "run")}; the agent was sent back as often as verify.maxRounds allows`
     case "report_mode":
       return "verify.mode is report: failures are recorded and the agent is not sent back"
+    case "not_started": {
+      // Why each could not be started is the whole reason: nothing ran, so there is nothing else to show.
+      const why = verification.evidence.checks.filter((check) => check.status === "could_not_start" && check.exitCode === null).map((check) => `${check.name}: ${check.startError ?? "the command could not be started"}`)
+      return `not started, so nothing was verified and the agent was not sent back: no change to the code starts a check. ${why.join("; ")}`
+    }
   }
 }
 

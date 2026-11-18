@@ -10,6 +10,7 @@
  * The sessions run in mode `full`, where checks run without the sandbox, so
  * the tests do not depend on a sandbox being there.
  */
+import { Database } from "bun:sqlite"
 import { afterAll, afterEach, expect, test, setDefaultTimeout } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -64,7 +65,8 @@ function put(path: string, content: string) {
 const projectFile = (harness: Harness, content: Record<string, unknown>) => put(join(harness.workspace, `.${brand.directory}`, "config.json"), JSON.stringify(content))
 
 type Check = { name: string; command: string; status: string; exitCode: number | null; origin?: string; required?: boolean; outputTail?: { text: string; truncated: boolean } | null; outputPath: string | null; outputBytes: number; startError?: string }
-type Turn = { outcome: string; verification: { status: string; reason?: string; failing?: string[]; evidence?: { run: number; checks: Check[] } } }
+type Since = { seq: number; run?: { seq: number; run: number } | null }
+type Turn = { outcome: string; verification: { status: string; reason?: string; failing?: string[]; since?: Since; requiredChecks?: { name: string; definition: string }[]; evidence?: { run: number; changedFiles: string[]; checks: Check[]; since?: Since; requiredChecks?: { name: string; definition: string }[] } } }
 
 const open = (harness: Harness, meta: Record<string, unknown>, cwd = harness.workspace) =>
   harness.connection.agent.request(methods.agent.session.new, { cwd, mcpServers: [], _meta: { [NS]: { attended: false, approval: "full", ...meta } } })
@@ -222,6 +224,118 @@ test("a required check runs in the session's working directory and its patterns 
   // the required check runs where it ran, selected by the same paths.
   await prompt(harness, sessionId, "Add a project file here.")
   expect(places(await prompt(harness, sessionId, "Change src/x.txt."))).toEqual({ "where-required": cwd, "where-project": cwd })
+})
+
+test("a turn in which a required check failed and the agent put the file back ends as done without a run, and says which state and which run that rests on; named with another command, the check does not stand on that state and runs", async () => {
+  const value = (id: string, content: string) => write(id, "value.txt", content)
+  const harness = await start([value("c1", "5\n"), done, value("c2", "6\n"), [script.text("Faster.")], value("c3", "5\n"), [script.text("Put back.")], value("c4", "6\n"), [script.text("Faster.")], value("c5", "5\n"), [script.text("Put back.")]])
+  const five = { name: "test", command: 'test "$(cat value.txt)" = 5' }
+  const { sessionId } = await open(harness, { requiredChecks: [five] })
+  const first = await prompt(harness, sessionId, "Write 5.")
+  expect(first.verification).toMatchObject({ status: "passed", evidence: { run: 1, changedFiles: ["value.txt"] } })
+  // The run names the state its changes are measured from (the session's start: no run before it) and the required checks.
+  expect(first.verification.evidence!.since).toEqual({ seq: expect.any(Number), run: null })
+  expect(first.verification.evidence!.requiredChecks).toEqual([{ name: "test", definition: expect.stringMatching(/^[0-9a-f]{64}$/) }])
+  const finished = () => harness.ext.filter((note) => note.method === EXT.event && note.params.sessionId === sessionId && (note.params.event as { type: string }).type === "checks.finished").map((note) => note.params.event as { seq: number; data: { run: number; evidence: { checks: Check[] } } })
+  const passedAt = finished()[0]!.seq
+
+  const second = await prompt(harness, sessionId, "Make it faster.")
+  // One run in this turn, which failed; the agent was sent back and wrote the file as it was.
+  expect(finished().slice(1).map((run) => run.data.evidence.checks.map((check) => check.status))).toEqual([["failed"]])
+  expect(second.outcome).toBe("succeeded")
+  expect(second.verification).toEqual({ status: "not_needed", reason: "state_unchanged", since: { seq: passedAt, run: { seq: passedAt, run: 1 } }, requiredChecks: first.verification.evidence!.requiredChecks! })
+
+  // The client opens the session again and names the check with another command: it never passed on this state.
+  await harness.connection.agent.request(methods.agent.session.resume, { sessionId, cwd: harness.workspace, mcpServers: [], _meta: { [NS]: { attended: false, approval: "full", requiredChecks: [{ name: "test", command: "grep -qx 5 value.txt" }] } } })
+  const third = await prompt(harness, sessionId, "Make it faster.")
+  expect(finished().slice(2).map((run) => run.data.evidence.checks.map((check) => [check.command, check.status]))).toEqual([[["grep -qx 5 value.txt", "failed"]], [["grep -qx 5 value.txt", "passed"]]])
+  expect(third.verification).toMatchObject({ status: "passed", evidence: { run: 2, changedFiles: [], checks: [{ name: "test", command: "grep -qx 5 value.txt", status: "passed", required: true }] } })
+  expect(third.verification.evidence!.requiredChecks![0]!.definition).not.toBe(first.verification.evidence!.requiredChecks![0]!.definition)
+})
+
+test("a session a later version recorded more in: keys this version does not know in the evidence of a run are replayed and kept as they are; one anywhere else refuses the session, in a sentence that says so", async () => {
+  const first = await start([write("c1", "ok.txt", "ok\n"), done, [script.text("Hello.")]])
+  const dataDir = first.dataDir
+  const workspace = first.workspace
+  const { sessionId } = await open(first, { requiredChecks: [{ ...TEST, outputTail: "always" }] })
+  expect((await prompt(first, sessionId, "Write ok.txt.")).verification.status).toBe("passed")
+  await first.close({ keep: true })
+  h = null
+
+  // What a later version might have written, put into the stored records as it would have stored them. The log is
+  // append-only by trigger, so the triggers are taken off for the edit and put back.
+  const file = [...new Bun.Glob(`**/${sessionId}.db`).scanSync({ cwd: dataDir, absolute: true })][0]!
+  const canonical = (value: unknown): string =>
+    Array.isArray(value) ? `[${value.map(canonical).join(",")}]` : value !== null && typeof value === "object" ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(",")}}` : JSON.stringify(value)
+  const edit = (change: (type: string, data: Record<string, any>) => boolean, state: (value: Record<string, any>) => void) => {
+    const db = new Database(file)
+    const triggers = db.query("SELECT name, sql FROM sqlite_master WHERE type = 'trigger'").all() as { name: string; sql: string }[]
+    for (const trigger of triggers) db.run(`DROP TRIGGER ${trigger.name}`)
+    for (const row of db.query("SELECT seq, type, data FROM event").all() as { seq: number; type: string; data: string }[]) {
+      const data = JSON.parse(row.data) as Record<string, any>
+      if (change(row.type, data)) db.run("UPDATE event SET data = ? WHERE seq = ?", [canonical(data), row.seq])
+    }
+    const stored = JSON.parse((db.query("SELECT state FROM session").get() as { state: string }).state) as Record<string, any>
+    state(stored)
+    db.run("UPDATE session SET state = ?", [canonical(stored)])
+    for (const trigger of triggers) db.run(trigger.sql)
+    db.close()
+  }
+  const more = (evidence: Record<string, any>) => {
+    evidence.runner = { version: 3 }
+    evidence.checks[0].retries = 2
+    evidence.checks[0].outputTail.encoding = "utf-8"
+  }
+  edit(
+    (type, data) => {
+      const evidence = type === "checks.finished" ? data.evidence : (data.verification?.evidence ?? null)
+      if (evidence === null) return false
+      more(evidence)
+      return true
+    },
+    (state) => more(state.verification.latest.evidence),
+  )
+
+  const restart = async (responses: readonly ScriptedResponse[]) => {
+    h = await startHarness({ responses, dataDir, clientCapabilities: { _meta: { [NS]: { events: true } } } })
+    await h.initialize()
+    return h
+  }
+  const load = (harness: Harness) => harness.connection.agent.request(methods.agent.session.load, { sessionId, cwd: workspace, mcpServers: [], _meta: { [NS]: { attended: false, approval: "full", requiredChecks: [{ ...TEST, outputTail: "always" }] } } })
+  const second = await restart([write("c2", "more.txt", "1\n"), done])
+  await load(second)
+  const replayed = second.ext.filter((note) => note.method === EXT.event && note.params.replay === true && (note.params.event as { type: string }).type === "checks.finished").map((note) => (note.params.event as { data: { evidence: Record<string, any> } }).data.evidence)
+  expect(replayed).toHaveLength(1)
+  expect(replayed[0]).toMatchObject({ runner: { version: 3 }, checks: [{ name: "test", status: "passed", origin: "session", required: true, retries: 2, outputTail: { text: "", truncated: false, encoding: "utf-8" } }] })
+  // The session goes on, and what was stored is still there.
+  expect((await prompt(second, sessionId, "Write more.txt.")).verification.status).toBe("passed")
+  await second.close({ keep: true })
+  h = null
+  const kept = new Database(file, { readonly: true })
+  expect((kept.query("SELECT data FROM event WHERE type = 'checks.finished' ORDER BY seq LIMIT 1").get() as { data: string }).data).toContain('"retries":2')
+  kept.close()
+
+  // A key of a later version where the session's state is decided from: the ending of a turn.
+  edit(
+    (type, data) => {
+      if (type !== "execution.succeeded") return false
+      data.verification.confidence = "high"
+      return true
+    },
+    () => {},
+  )
+  const third = await restart([])
+  const refused = await load(third).then(
+    () => null,
+    (error: { code: number; message: string; data?: Record<string, { reason: string; message: string }> }) => error,
+  )
+  expect(refused).toMatchObject({ code: -32603, data: { [NS]: { reason: "unreadable_session" } } })
+  expect(refused!.message).toBe(
+    `that session holds a record this version of ${brand.name} does not read (event execution.succeeded: data.verification.confidence: expected no such key, got "high"). A later version wrote it, or the file is damaged: open the session with the version that wrote it, or a later one.`,
+  )
+  expect(refused!.data![NS]!.message).toBe(refused!.message)
+  await third.close()
+  h = null
 })
 
 test("no hook stands between a required check and its run: one that refuses every command does not refuse the check, and one that is content with the turn's ending does not turn a failing check into done", async () => {

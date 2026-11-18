@@ -5,7 +5,8 @@
  *
  * Conventions:
  * - Objects are strict: an unknown key is an error, so a new field needs a new
- *   event version instead of slipping through unnoticed.
+ *   event version instead of slipping through unnoticed. The one exception is
+ *   declared as such (`extensible`).
  * - There are no optional keys. An absent value is an explicit `null`, which
  *   keeps the stored JSON canonical.
  */
@@ -130,6 +131,23 @@ export function object<S extends Shape>(shape: S): Validator<ObjectOf<S>> {
         return [[key, validator(input[key], join(path, key))]]
       }),
     ) as ObjectOf<S>
+  }
+}
+
+/**
+ * An object that a later build may add keys to: the keys in `shape` are checked as `object` checks them, and any
+ * other key is kept as it is (any JSON value) instead of being refused, so the value is written back as it was
+ * read. For a record of what was found (the evidence of a run of checks), where a key this build does not know
+ * adds to what the others say and changes nothing they mean. Whatever a reader has to act on is not added this
+ * way: it goes where the object is strict, and an older build then refuses the value rather than misread it.
+ */
+export function extensible<S extends Shape>(shape: S): Validator<ObjectOf<S>> {
+  const known = object(shape)
+  return (input, path) => {
+    if (!isPlainObject(input)) throw new DecodeError(path, "object", input)
+    const others = Object.keys(input).filter((key) => !Object.hasOwn(shape, key))
+    const checked = known(Object.fromEntries(Object.keys(shape).flatMap((key) => (Object.hasOwn(input, key) ? [[key, input[key]]] : []))), path)
+    return { ...Object.fromEntries(others.map((key) => [key, json(input[key], join(path, key))])), ...checked } as ObjectOf<S>
   }
 }
 

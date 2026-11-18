@@ -138,11 +138,11 @@ import { currentTodos, renderTodos } from "../tools/todo.ts"
 import { type Authorization, type ToolCall, type ToolCallOutcome, type ToolRuntime, createToolRuntime } from "../tool/runtime.ts"
 import type { AnyTool, BackgroundCommand, TempDirectory, ToolContext, ToolEffect, ToolResult } from "../tool/tool.ts"
 import { ACKNOWLEDGE_TOOL_NAME, acknowledgeTool } from "../verify/acknowledge.ts"
-import { type VerificationEvidence, buildEvidence } from "../verify/evidence.ts"
+import { type VerificationEvidence, type VerifiedState, buildEvidence } from "../verify/evidence.ts"
 import { fingerprintCheck, reusablePass } from "../verify/fingerprint.ts"
 import { type GateInput, decideGate } from "../verify/gate.ts"
 import { renderReport } from "../verify/report.ts"
-import { type CheckPlan, type SessionCheck, planChecks } from "../verify/required.ts"
+import { type CheckPlan, type RequiredCheckRef, type SessionCheck, type Standing, planChecks, requiredCheckRefOf, stands } from "../verify/required.ts"
 import { type CheckResult, type RunCheckOptions, couldNotStart, runChecks } from "../verify/run.ts"
 import { selectChecks } from "../verify/select.ts"
 import { type ApprovalSetup, type Approvals, type FactContext, addProjectGrants, aliased, callFacts, pathKey, projectApprovalHome, effectivePolicy, environmentSecrets, finishOutput, readProjectGrants, realWorkspace, redactor, resolveApprovals, runRecord } from "./approval.ts"
@@ -2071,6 +2071,8 @@ class LiveSession implements EngineSession {
   private requiredChoice: readonly CheckConfig[] | null = null
   /** `requiredChoice` as it was when the execution in progress (or the latest one) started: what its gate decides from. */
   private requiredNow: readonly CheckConfig[] | null = null
+  /** `firstSnapshotSeq`, once found. */
+  private firstSnapshot: number | null = null
   /** The question that waits for an answer. One at a time. */
   private question: PendingQuestion | null = null
   /** The questions asked so far, as a chain: each waits for the one before it. */
@@ -6484,12 +6486,21 @@ class LiveSession implements EngineSession {
    *   A turn in which the checks already ran is not such a turn: what it
    *   changed after them (sent back by a stop hook, say) is checked again,
    *   also when that put the workspace back as it was when the turn began;
-   * - nothing the checks cover changed since they last passed: done;
+   * - nothing the checks cover changed since they last passed: done, and the
+   *   ending says which state that is (`since`) and whether the workspace is
+   *   that state again or differs only in files no check covers. This is
+   *   also how a turn ends in which checks ran and failed and the model then
+   *   put back what it had changed. It holds for a required check only if
+   *   that check stands on that state (`verify/required.ts`): one that was
+   *   not a required check, or had another command, when the state was
+   *   recorded is run whatever changed;
    * - the checks pass: done, with the evidence;
    * - they fail: the report is appended as a harness message and the model
    *   carries on, until they pass, the model reports with the acknowledgement
    *   tool that it cannot fix them, or it was sent back `maxRounds` times.
-   *   Then the execution ends as unresolved, with the reason and the evidence.
+   *   Then the execution ends as unresolved, with the reason and the evidence;
+   * - none of those that did not pass was started at all: unresolved at once.
+   *   The model is not sent back for a check no change to the code starts.
    *
    * Everything it decides from is stored state: the latest run of this turn,
    * the reports already sent, the acknowledgement, the snapshots.
@@ -6537,8 +6548,22 @@ class LiveSession implements EngineSession {
     const latest = recorded !== null && recorded.seq > turnStartSeq(state) ? recorded : null
     const changed = await this.changedSinceVerified(state, current, loaded.projectDir)
     if (signal.aborted) return interrupted()
+    // The state the changes are measured from, and the session's required checks, run or not, as a record names them.
+    const verified = state.session.verification.verified
+    // A verified state that no record has moved on is the session's first snapshot: what was there before the agent
+    // did anything. No run has passed on it, and every required check stands on it. Once a record moved it, the
+    // record said which run last passed and which required checks stand; one written before that was kept said neither.
+    const atStart = verified !== null && verified.run === undefined && verified.requiredChecks === undefined && verified.seq === this.firstSnapshotSeq()
+    const since: VerifiedState | undefined = verified === null ? undefined : { seq: verified.seq, ...(atStart ? { run: null } : verified.run === undefined ? {} : { run: verified.run }) }
+    const requiredChecks = checks.filter((item) => item.required).map(requiredCheckRefOf)
+    const named = (list: readonly RequiredCheckRef[]) => (list.length === 0 ? {} : { requiredChecks: list })
     // Without a snapshot diff nobody knows which files changed, so every check applies.
-    const selected = changed.files === null ? (changed.any ? checks : []) : selectChecks(checks, changed.files)
+    const covering = changed.files === null ? (changed.any ? checks : []) : selectChecks(checks, changed.files)
+    // A check that covers nothing that changed is not run: its result on the verified state holds. That is so for a
+    // required check only if it stands on that state. One that does not (the client named it, or gave it another
+    // command, after the state was recorded) is run whatever changed.
+    const standing: Standing = verified === null || atStart ? null : verified.requiredChecks
+    const selected = checks.filter((item) => covering.includes(item) || (item.required && !stands(standing, requiredCheckRefOf(item))))
     // Checks run for a turn that changed files, and only for one. Which ones then is decided from everything that
     // is unverified, the turn's own changes or not: a check that runs cannot tell whose change it reads.
     // A turn whose checks already ran is such a turn whatever the workspace looks like now: when the model was
@@ -6548,7 +6573,11 @@ class LiveSession implements EngineSession {
     if (latest === null && !this.turnChangedFiles(state, current)) {
       await this.announceChanges()
       if (signal.aborted) return interrupted()
-      return this.finish(run, selected.length === 0 ? { status: "not_needed" } : { status: "not_needed", unverified: true })
+      // What is still to be checked is what changed outside the turn. A required check that does not stand yet is
+      // not that: it runs with the next change, and until then the ending names only the ones that stand, so the
+      // verified state this ending moves on is not taken to be one it was checked on.
+      const stood = requiredChecks.filter((item) => stands(standing, item))
+      return this.finish(run, { status: "not_needed", ...(covering.length === 0 ? {} : { unverified: true as const }), reason: "turn_unchanged", ...(since === undefined ? {} : { since }), ...named(stood) })
     }
     const input: GateInput = {
       mode: plan.mode,
@@ -6562,14 +6591,14 @@ class LiveSession implements EngineSession {
       acknowledgement: acknowledgementThisTurn(state),
     }
     const decision = decideGate(input)
+    const work = { loaded, checks: selected, place, files: changed.files ?? [], filesKnown: changed.files !== null, number: (latest?.run ?? 0) + 1, input, since, requiredChecks }
     switch (decision.kind) {
       case "run_checks":
-        return this.check(run, { loaded, checks: selected, place, files: changed.files ?? [], filesKnown: changed.files !== null, number: (latest?.run ?? 0) + 1, input })
+        return this.check(run, work)
       case "report_and_continue": {
         // The model stopped again without changing a file and without saying it cannot fix them: the same report again.
         const previous = reportsThisTurn(state).at(-1)
-        if (previous === undefined)
-          return this.check(run, { loaded, checks: selected, place, files: changed.files ?? [], filesKnown: changed.files !== null, number: (latest?.run ?? 0) + 1, input })
+        if (previous === undefined) return this.check(run, work)
         this.write([event("synthetic.appended", { messageId: this.core.ids.message(), origin: HARNESS_ORIGIN.checkReport, content: previous.content })])
         return "continue"
       }
@@ -6578,7 +6607,12 @@ class LiveSession implements EngineSession {
         if (signal.aborted) return interrupted()
         // The latest run of this turn still describes the workspace and nothing in it failed, or nothing needed checking.
         const passed = latest !== null && !input.changedSinceLatest && latest.evidence.checks.every((check) => check.status === "passed")
-        return this.finish(run, passed ? { status: "passed", evidence: latest.evidence } : { status: "not_needed" })
+        if (passed) return this.finish(run, { status: "passed", evidence: latest.evidence })
+        // No check covers what differs from the verified state, or nothing does: also where checks ran in this turn
+        // and failed, and the model then put back what it had changed. Every required check stands on that state,
+        // or it would have been selected. The ending says which state, for whoever reads a failed run before it.
+        const reason = changed.files !== null && changed.files.length > 0 ? "not_covered" : "state_unchanged"
+        return this.finish(run, { status: "not_needed", reason, ...(since === undefined ? {} : { since }), ...named(requiredChecks) })
       }
       case "finish_unresolved": {
         if (latest === null) throw new Error("the gate left checks unresolved that never ran")
@@ -6675,6 +6709,10 @@ class LiveSession implements EngineSession {
       readonly filesKnown: boolean
       readonly number: number
       readonly input: GateInput
+      /** The verified state `files` is measured from; absent when none was recorded yet. */
+      readonly since: VerifiedState | undefined
+      /** The session's required checks, run or not. */
+      readonly requiredChecks: readonly RequiredCheckRef[]
     },
   ): Promise<GateResult> {
     const signal = run.interrupt.signal
@@ -6760,7 +6798,7 @@ class LiveSession implements EngineSession {
     // A check's output is tool output: what the evidence carries of it and what the model is shown are redacted like any other.
     const secrets = this.core.approvals?.secrets
     const shown = (value: string) => (secrets === undefined ? value : redact(aliased(value, this.tempContext().temp), secrets).text)
-    const evidence = buildEvidence({ run: number, afterSeq: started!.seq, changedFiles: files, checks: work.checks, results, fingerprints, reused, redact: shown })
+    const evidence = buildEvidence({ run: number, afterSeq: started!.seq, changedFiles: files, checks: work.checks, results, fingerprints, reused, redact: shown, ...(work.since === undefined ? {} : { since: work.since }), requiredChecks: work.requiredChecks })
     const finished = event("checks.finished", { run: number, evidence })
     const after = this.projection()
     const input: GateInput = { ...work.input, latest: evidence.checks, changedSinceLatest: false, reportsSent: reportsThisTurn(after).length, acknowledgement: acknowledgementThisTurn(after) }
@@ -6786,6 +6824,24 @@ class LiveSession implements EngineSession {
         // A result says it was interrupted although the execution was not: nothing is known, and the gate asks again.
         this.write([finished])
         return "continue"
+    }
+  }
+
+  /**
+   * Where in the log the session's first snapshot is: the state its checks are first selected against, before
+   * the agent did anything (a fork's is among its own events: it starts untracked). `null` while it has none.
+   * Read from the log once: the first snapshot never changes.
+   */
+  private firstSnapshotSeq(): number | null {
+    if (this.firstSnapshot !== null) return this.firstSnapshot
+    const PAGE = 64
+    let afterSeq = forkOf(this.projection().session.lineage)?.throughSeq ?? 0
+    for (;;) {
+      const page = this.store.readEvents(this.id, { afterSeq, limit: PAGE })
+      const found = page.find((item) => item.type === "snapshot.taken")
+      if (found !== undefined) return (this.firstSnapshot = found.seq)
+      if (page.length < PAGE) return null
+      afterSeq = page.at(-1)!.seq
     }
   }
 

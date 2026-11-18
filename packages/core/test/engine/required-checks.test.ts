@@ -8,8 +8,10 @@
  * middle of the session; the project's own checks run besides them; under a
  * name both have, the required check runs; a turn keeps the required checks
  * it started under; a subagent's turn runs none and its parent's runs them;
- * where they cannot run at all the turn does not end as done; and a session
- * without any behaves as it always did. The checks are scripted: real
+ * where they cannot run at all the turn ends unresolved at once, without the
+ * model being sent back; a turn in which one failed ends as done only on a
+ * state the check stands on, and says which; and a session without any
+ * behaves as it always did. The checks are scripted: real
  * commands, their output in the evidence, the real configuration files and
  * where a required check runs are in
  * `packages/acp/test/required-checks.e2e.test.ts`.
@@ -23,7 +25,8 @@ import type { SessionId } from "../../src/id.ts"
 import type { Json } from "../../src/json.ts"
 import type { CommandSandbox } from "../../src/sandbox/command.ts"
 import { script } from "../../src/testing/fake-provider.ts"
-import { CHECK_OUTPUT, FakeWorkspace, Harness, type HarnessOptions, converse, removeHarnessDirectories } from "./harness.ts"
+import { requiredCheckRefOf } from "../../src/verify/required.ts"
+import { CHECK_OUTPUT, FakeWorkspace, Harness, type HarnessOptions, START_ERROR, converse, removeHarnessDirectories } from "./harness.ts"
 
 afterAll(removeHarnessDirectories)
 
@@ -38,6 +41,8 @@ const of = <T extends StoredEvent["type"]>(h: Harness, type: T) => h.log().filte
 /** The gate outcome of each execution that ended as done, in order. */
 const outcomes = (h: Harness): VerificationOutcome[] => of(h, "execution.succeeded").map((item) => item.data.verification)
 const reports = (h: Harness) => of(h, "synthetic.appended").filter((item) => item.data.origin === "check_report")
+/** The text of a harness message. */
+const textOf = (content: StoredEvent<"synthetic.appended">["data"]["content"]) => content.map((part) => (part.type === "text" ? part.text : "")).join("")
 const notices = (h: Harness) => h.seenEvents.flatMap((item) => (item.type === "notice" ? [item as Extract<EngineEvent, { type: "notice" }>] : []))
 /** What the evidence says of each check, without what varies. */
 const said = (outcome: VerificationOutcome | undefined) => {
@@ -119,7 +124,12 @@ describe("whoever starts the harness names required checks", () => {
       session.send("Update the readme.")
       await h.settled()
       expect(h.checks.ran).toEqual([])
-      expect(outcomes(h)).toEqual([{ status: "not_needed" }, { status: "not_needed" }])
+      // Each ending says why no check ran, and names the session's required checks.
+      const types = requiredCheckRefOf({ ...check("types", "tsc", { when: ["**/*.ts"] }), under: "" })
+      expect(outcomes(h)).toEqual([
+        { status: "not_needed", reason: "turn_unchanged", since: { seq: of(h, "snapshot.taken")[0]!.seq, run: null }, requiredChecks: [types] },
+        { status: "not_needed", reason: "not_covered", since: { seq: of(h, "execution.succeeded")[0]!.seq, run: null }, requiredChecks: [types] },
+      ])
       session.send("Change a.ts.")
       await h.settled()
       expect(h.checks.ran).toEqual(["types"])
@@ -395,22 +405,32 @@ describe("where they cannot run", () => {
   test("with commands sandboxed and no sandbox, a required check is recorded as not started and the turn does not end as done; the project's own is not run, as before", () =>
     withProject(
       async (h) => {
-        h.provider.enqueue(write("a.ts", "2\n"), say("Done."), call("report_check_failure", { checks: ["test"], reason: "There is no sandbox on this machine." }, "call_2"), say("The check could not be run."))
+        h.provider.enqueue(write("a.ts", "2\n"), say("Done."))
         h.create().send("Change a.ts.")
         await h.settled()
         expect(h.checks.ran).toEqual([])
+        expect(of(h, "checks.started")).toHaveLength(1)
         expect(of(h, "checks.started")[0]!.data).toEqual({ run: 1, checks: ["test"] })
         const reason = "the checks run only in the sandbox in this mode, and the sandbox is unavailable (bubblewrap (bwrap) is not installed.)"
         expect(outcomes(h)).toMatchObject([
           {
             status: "unresolved",
-            reason: "acknowledged",
+            reason: "not_started",
             failing: ["test"],
-            evidence: { checks: [{ name: "test", status: "could_not_start", exitCode: null, origin: "user", required: true, startError: reason, outputPath: null }] },
+            acknowledgement: null,
+            evidence: { run: 1, checks: [{ name: "test", status: "could_not_start", exitCode: null, origin: "user", required: true, startError: reason, outputPath: null }] },
           },
         ])
-        // The model was told why, and that the check is required.
-        expect(JSON.stringify(reports(h)[0]!.data.content)).toContain(`could not start: test (bun test): ${reason}`)
+        // The model was not sent back: it answered once after its call, and nothing it could change starts a check.
+        expect(h.provider.requests).toHaveLength(2)
+        // What it is told, for whoever continues: why the check did not start, that this says nothing about the code,
+        // and nothing about fixing the code or reporting a failure.
+        expect(reports(h)).toHaveLength(1)
+        const told = textOf(reports(h)[0]!.data.content)
+        expect(told).toBe(
+          `Checks run by the harness after your changes: 1 could not start.\n\ncould not start: test (bun test): ${reason}\n\nThis check was not started, so it says nothing about your changes, and no change to the code makes it start. Nothing is asked of you: the turn ends with it recorded as not started, and the reason above goes to the user.\nThis session requires test: no file of the project replaces a required check or switches it off.\n`,
+        )
+        expect(told).not.toContain("Fix the code")
         expect(notices(h).filter((item) => item.kind === "checks_not_run").map((item) => item.message)).toEqual([
           "The checks were not run: they run only in the sandbox in this mode, and the sandbox is unavailable (bubblewrap (bwrap) is not installed.). Mode full runs them without it. The required checks (test) are recorded as not started, so a turn that changed what they cover does not end as done.",
         ])
@@ -422,10 +442,10 @@ describe("where they cannot run", () => {
   test("a project's stricter approval mode on such a machine cannot make the turn end as done either", () =>
     withProject(
       async (h) => {
-        h.provider.enqueue(write("a.ts", "2\n"), say("Done."), call("report_check_failure", { checks: ["test"], reason: "No sandbox." }, "call_2"), say("Could not be run."))
+        h.provider.enqueue(write("a.ts", "2\n"), say("Done."))
         h.create().send("Change a.ts.")
         await h.settled()
-        expect(outcomes(h)).toMatchObject([{ status: "unresolved", reason: "acknowledged", failing: ["test"], evidence: { checks: [{ status: "could_not_start", required: true }] } }])
+        expect(outcomes(h)).toMatchObject([{ status: "unresolved", reason: "not_started", failing: ["test"], evidence: { checks: [{ status: "could_not_start", required: true }] } }])
       },
       // The user chose `full`, where checks run without a sandbox; the project's file tightens the mode.
       { user: USER, project: { approval: { mode: "auto" } } },
@@ -444,6 +464,157 @@ describe("where they cannot run", () => {
       { user: USER },
       { approval: setup("full") },
     ))
+})
+
+describe("a check that was never started", () => {
+  test("a plain check too: the turn ends unresolved at once, in any mode, and the model is not sent back", async () => {
+    for (const mode of ["gate", "report"] as const)
+      await withProject(
+        async (h) => {
+          h.provider.enqueue(write("a.ts", "2\n"), say("Done."))
+          h.checks.on("lint", "could_not_start")
+          h.create().send("Change a.ts.")
+          await h.settled()
+          expect(outcomes(h)).toMatchObject([{ status: "unresolved", reason: "not_started", failing: ["lint"], evidence: { checks: [{ name: "lint", status: "could_not_start", exitCode: null, required: false, startError: START_ERROR }] } }])
+          expect(h.provider.requests).toHaveLength(2)
+          expect(textOf(reports(h)[0]!.data.content)).toBe(
+            `Checks run by the harness after your changes: 1 could not start.\n\ncould not start: lint (bun lint): ${START_ERROR}\n\nThis check was not started, so it says nothing about your changes, and no change to the code makes it start. Nothing is asked of you: the turn ends with it recorded as not started, and the reason above goes to the user.\n`,
+          )
+        },
+        { project: { checks: [{ name: "lint", command: "bun lint" }], verify: { mode } } },
+      )
+  })
+
+  test("beside one that failed on the code: the model is sent back for the one that failed, told to leave the other, and the turn ends on the other once the first passes", () =>
+    withProject(
+      async (h) => {
+        h.provider.enqueue(write("a.ts", "2\n"), say("Done."), write("a.ts", "3\n"), say("Fixed."))
+        h.checks.on("test", "failed", "passed").on("lint", "could_not_start", "could_not_start")
+        h.create().send("Change a.ts.")
+        await h.settled()
+        expect(h.checks.ran).toEqual(["test", "lint", "test", "lint"])
+        // Sent back once, for the check that ran and failed; the other is named apart.
+        expect(reports(h)).toHaveLength(2)
+        const first = textOf(reports(h)[0]!.data.content)
+        expect(first).toContain("Fix the code so that test passes, or, if you cannot, call report_check_failure with its name and the reason.")
+        expect(first).toContain("lint was not started, so it says nothing about your changes, and no change to the code makes it start: leave it, and do not name it to report_check_failure.")
+        expect(first).toContain(`could not start: lint (bun lint): ${START_ERROR}`)
+        // With `test` passing, every check that did not pass is one that was not started: the turn ends there.
+        expect(outcomes(h)).toMatchObject([{ status: "unresolved", reason: "not_started", failing: ["lint"], evidence: { run: 2, checks: [{ name: "test", status: "passed" }, { name: "lint", status: "could_not_start" }] } }])
+        expect(textOf(reports(h)[1]!.data.content)).not.toContain("Fix the code")
+      },
+      { user: USER, project: { checks: [{ name: "lint", command: "bun lint" }] } },
+    ))
+
+  test("beside one that failed on the code: the model acknowledges by naming the one that failed, and the ending names both", () =>
+    withProject(
+      async (h) => {
+        h.provider.enqueue(write("a.ts", "2\n"), say("Done."), call("report_check_failure", { checks: ["test"], reason: "The test is wrong." }, "call_2"), say("It cannot pass."))
+        h.checks.on("test", "failed").on("lint", "could_not_start")
+        h.create().send("Change a.ts.")
+        await h.settled()
+        expect(outcomes(h)).toMatchObject([{ status: "unresolved", reason: "acknowledged", failing: ["test", "lint"], acknowledgement: { checks: ["test"] } }])
+      },
+      { user: USER, project: { checks: [{ name: "lint", command: "bun lint" }] } },
+    ))
+})
+
+describe("a turn that ends as done after a required check failed in it", () => {
+  const ref = (item: CheckConfig) => requiredCheckRefOf({ ...item, under: "" })
+  const finished = (h: Harness) => of(h, "checks.finished")
+
+  test("the model put the files back as they were when the check passed in an earlier turn: no run is needed, and the ending says which state and which run", () =>
+    withProject(
+      async (h) => {
+        h.provider.enqueue(write("a.ts", "2\n"), say("Done."), write("a.ts", "broken\n"), say("Faster."), write("a.ts", "2\n"), say("Put back."))
+        h.checks.on("test", "passed", "failed")
+        h.create().send("Change a.ts.")
+        await h.settled()
+        expect(outcomes(h)[0]).toMatchObject({ status: "passed", evidence: { run: 1, requiredChecks: [ref(TEST)], since: { seq: of(h, "snapshot.taken")[0]!.seq, run: null } } })
+        h.session.send("Speed it up.")
+        await h.settled()
+        // The check ran once in the second turn and failed; then the workspace was the first turn's again.
+        expect(h.checks.ran).toEqual(["test", "test"])
+        expect(reports(h)).toHaveLength(1)
+        const passed = finished(h)[0]!
+        expect(outcomes(h)[1]).toEqual({ status: "not_needed", reason: "state_unchanged", since: { seq: passed.seq, run: { seq: passed.seq, run: 1 } }, requiredChecks: [ref(TEST)] })
+        // The last run on record is the failed one, and the ending is what says why it does not stand.
+        expect(finished(h).at(-1)!.data.evidence.checks[0]).toMatchObject({ name: "test", status: "failed", required: true })
+      },
+      { user: USER },
+    ))
+
+  test("in a session's first turn the state it goes back to is the one the session started from, which no run has passed on, and the ending says so", () =>
+    withProject(
+      async (h) => {
+        h.provider.enqueue(write("a.ts", "broken\n"), say("Done."), write("a.ts", "1\n"), say("Put back."))
+        h.checks.on("test", "failed")
+        h.create().send("Change a.ts.")
+        await h.settled()
+        expect(h.checks.ran).toEqual(["test"])
+        expect(outcomes(h)).toEqual([{ status: "not_needed", reason: "state_unchanged", since: { seq: of(h, "snapshot.taken")[0]!.seq, run: null }, requiredChecks: [ref(TEST)] }])
+      },
+      { user: USER },
+    ))
+
+  test("a check that passed under another command does not stand: named again with a new command, it is run on the state the files went back to", () =>
+    withProject(async (h) => {
+      h.provider.enqueue(write("a.ts", "2\n"), say("Done."), write("a.ts", "broken\n"), say("Faster."), write("a.ts", "2\n"), say("Put back."))
+      h.checks.on("test", "passed", "failed", "passed")
+      const session = h.create()
+      session.setRequiredChecks([TEST])
+      session.send("Change a.ts.")
+      await h.settled()
+      // The client opens the session again and names the check with another command.
+      const renamed = check("test", "make test")
+      session.setRequiredChecks([renamed])
+      session.send("Speed it up.")
+      await h.settled()
+      // The workspace is what `bun test` passed on. `make test` never ran on it, so it runs: three runs, not two.
+      expect(h.checks.ran).toEqual(["test", "test", "test"])
+      expect(outcomes(h)[1]).toMatchObject({ status: "passed", evidence: { run: 2, changedFiles: [], checks: [{ name: "test", command: "make test", status: "passed", files: [] }], requiredChecks: [ref(renamed)] } })
+      // From that run on it stands: the same thing again needs no run.
+      h.provider.enqueue(write("a.ts", "broken\n"), say("Faster."), write("a.ts", "2\n"), say("Put back."))
+      h.checks.on("test", "failed")
+      session.send("Try again.")
+      await h.settled()
+      expect(h.checks.ran).toEqual(["test", "test", "test", "test"])
+      const stood = finished(h).findLast((item) => item.data.evidence.checks.every((result) => result.status === "passed"))!
+      expect(outcomes(h)[2]).toEqual({ status: "not_needed", reason: "state_unchanged", since: { seq: stood.seq, run: { seq: stood.seq, run: 2 } }, requiredChecks: [ref(renamed)] })
+    }))
+
+  test("a required check named later does not stand on what was verified without it: it runs with the next turn that changes a file, whatever the file, and not for a turn that changes none", () =>
+    withProject(async (h) => {
+      const types = check("types", "tsc", { when: ["**/*.ts"] })
+      const build = check("build", "make", { when: ["src/**"] })
+      h.provider.enqueue(write("a.ts", "2\n"), say("Done."), say("It is 2."), write("README.md", "hello\n"), say("Updated."), write("README.md", "hello again\n"), say("Updated again."))
+      h.checks.on("types", "passed").on("build", "passed")
+      const session = h.create()
+      session.setRequiredChecks([types])
+      session.send("Change a.ts.")
+      await h.settled()
+      expect(h.checks.ran).toEqual(["types"])
+      session.setRequiredChecks([types, build])
+      // A question changes no file: nothing runs, and the ending does not make `build` stand.
+      session.send("What is in a.ts?")
+      await h.settled()
+      expect(h.checks.ran).toEqual(["types"])
+      // The ending names the required check that stands on the state it leaves, not the one named since.
+      const first = finished(h)[0]!
+      expect(outcomes(h)[1]).toEqual({ status: "not_needed", reason: "turn_unchanged", since: { seq: first.seq, run: { seq: first.seq, run: 1 } }, requiredChecks: [ref(types)] })
+      expect(h.session.projection().session.verification.verified?.requiredChecks).toEqual([ref(types)])
+      // A file neither check covers: `types` stands and is not run, `build` does not and is.
+      session.send("Update the readme.")
+      await h.settled()
+      expect(h.checks.ran).toEqual(["types", "build"])
+      expect(outcomes(h)[2]).toMatchObject({ status: "passed", evidence: { changedFiles: ["README.md"], checks: [{ name: "build", status: "passed", files: [] }] } })
+      expect(h.session.projection().session.verification.verified?.requiredChecks).toEqual([ref(types), ref(build)])
+      // Now both stand, and such a change needs no check.
+      session.send("Update it again.")
+      await h.settled()
+      expect(h.checks.ran).toEqual(["types", "build"])
+      expect(outcomes(h)[3]).toMatchObject({ status: "not_needed", reason: "not_covered" })
+    }))
 })
 
 describe("a session without any", () => {

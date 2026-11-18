@@ -18,8 +18,10 @@ import {
   outputTailOf,
   planChecks,
   renderReport,
+  requiredCheckRefOf,
   selectChecks,
   sessionChecks,
+  stands,
   verificationEvidence,
 } from "../../src/verify/index.ts"
 import type { CheckOutput, CheckResult, CheckStatus } from "../../src/verify/run.ts"
@@ -245,11 +247,80 @@ describe("the evidence of a run", () => {
     expect(evidence.checks[0]).not.toHaveProperty("startError")
   })
 
+  const old = { name: "test", command: "bun test", status: "failed", exitCode: 1, signal: null, durationMs: 12, files: ["a.ts"], fingerprint: "f", reusedFromSeq: null, outputPath: "/spill/x.log", outputBytes: 7, outputLines: 1 }
+
   test("a record written before any of this still decodes, as it is", () => {
-    const old = { name: "test", command: "bun test", status: "failed", exitCode: 1, signal: null, durationMs: 12, files: ["a.ts"], fingerprint: "f", reusedFromSeq: null, outputPath: "/spill/x.log", outputBytes: 7, outputLines: 1 }
     expect(checkEvidence(old, "")).toEqual(old as never)
     expect(() => checkEvidence({ ...old, origin: "repository" }, "")).toThrow(DecodeError)
     expect(() => checkEvidence({ ...old, outputTail: { text: "x" } }, "")).toThrow(DecodeError)
+    const run = { run: 1, afterSeq: 3, changedFiles: ["a.ts"], checks: [old] }
+    expect(verificationEvidence(run, "")).toEqual(run as never)
+  })
+
+  test("names the state its changed files are measured from and the session's required checks, run or not", () => {
+    const required = [requiredCheckRefOf(checks[0]!), requiredCheckRefOf(checks[3]!)]
+    const since = { seq: 12, run: { seq: 12, run: 2 } }
+    const evidence = buildEvidence({ run: 1, afterSeq: 20, changedFiles: ["a.ts"], checks, results: [result(checks[0]!, "passed")], fingerprints, since, requiredChecks: required })
+    expect(evidence.since).toEqual(since)
+    // `docs` covers nothing that changed and was not run: it is named all the same.
+    expect(evidence.requiredChecks).toEqual(required)
+    expect(names(evidence.checks)).toEqual(["test"])
+    expect(verificationEvidence(JSON.parse(JSON.stringify(evidence)), "")).toEqual(evidence)
+    // A session without a required check, and one in which nothing was verified yet, say neither.
+    const bare = buildEvidence({ run: 1, afterSeq: 20, changedFiles: ["a.ts"], checks: checks.slice(1, 3), results: [result(checks[1]!, "passed")], fingerprints, requiredChecks: [] })
+    expect(bare).not.toHaveProperty("since")
+    expect(bare).not.toHaveProperty("requiredChecks")
+  })
+
+  test("a record a later build wrote more into still decodes: keys this build does not know are kept as they are, and the ones it knows are checked as ever", () => {
+    const later = {
+      run: 2,
+      afterSeq: 9,
+      changedFiles: ["a.ts"],
+      checks: [{ ...old, origin: "session", required: true, outputTail: { text: "1 fail\n", truncated: false, encoding: "utf-8" }, retries: 2, cache: { hit: false, key: ["a", 1, null] } }],
+      since: { seq: 4, run: null },
+      host: { os: "linux", cores: 2 },
+      flaky: null,
+    }
+    const read = verificationEvidence(JSON.parse(JSON.stringify(later)), "")
+    // Nothing was dropped or changed: written back, it is the record it was.
+    expect(read).toEqual(later as never)
+    expect(JSON.parse(JSON.stringify(read))).toEqual(later)
+    // What this build reads of it is what it would read of its own.
+    expect(read.checks[0]).toMatchObject({ name: "test", status: "failed", origin: "session", required: true, outputTail: { text: "1 fail\n", truncated: false } })
+    // A key it knows is still held to its type, and one it needs is still needed, whatever else is there.
+    expect(() => verificationEvidence({ ...later, checks: [{ ...later.checks[0], status: "skipped" }] }, "")).toThrow(/checks\[0\]\.status/)
+    expect(() => verificationEvidence({ ...later, checks: [{ ...later.checks[0], required: "yes" }] }, "")).toThrow(/checks\[0\]\.required/)
+    expect(() => verificationEvidence({ ...later, checks: [(({ status: _status, ...rest }) => rest)(later.checks[0]!)] }, "")).toThrow(/checks\[0\]\.status: expected a value/)
+    // A key it does not know holds JSON, like everything stored.
+    expect(() => verificationEvidence({ ...later, host: () => 1 }, "")).toThrow(/host: expected JSON value/)
+    // The state a record names is not evidence: it stays strict.
+    expect(() => verificationEvidence({ ...later, since: { seq: 4, run: null, turn: 2 } }, "")).toThrow(/since\.turn: expected no such key/)
+  })
+})
+
+describe("which required checks stand on a verified state", () => {
+  const types = { ...check("types", "tsc", { when: ["**/*.ts"] }), required: true, under: "" }
+  const test_ = { ...check("test", "bun test"), required: true, under: "" }
+  const [a, b] = [requiredCheckRefOf(types), requiredCheckRefOf(test_)]
+
+  test("a check is named by its name and a digest of what it runs: the command, the timeout, the patterns and where they are relative to", () => {
+    expect(a).toEqual({ name: "types", definition: expect.stringMatching(/^[0-9a-f]{64}$/) })
+    expect(requiredCheckRefOf({ ...types })).toEqual(a)
+    for (const other of [{ ...types, command: "tsc --strict" }, { ...types, timeoutSeconds: 60 }, { ...types, when: ["src/**/*.ts"] }, { ...types, when: null }, { ...types, under: "packages/a/" }])
+      expect(requiredCheckRefOf(other).definition).not.toBe(a.definition)
+    // Whose it is and what the evidence carries of its output do not change what it runs.
+    expect(requiredCheckRefOf({ ...types, origin: "user", outputTail: "always" })).toEqual(a)
+    expect(requiredCheckRefOf({ ...types, name: "typecheck" })).toEqual({ name: "typecheck", definition: a.definition })
+  })
+
+  test("every check stands on the state a session starts from, the ones a record names on the state it moved to, and none where it names none", () => {
+    expect(stands(null, a)).toBe(true)
+    expect(stands(undefined, a)).toBe(false)
+    expect(stands([b], a)).toBe(false)
+    expect(stands([b, a], a)).toBe(true)
+    // The same name with another command is another check.
+    expect(stands([a], requiredCheckRefOf({ ...types, command: "tsc --strict" }))).toBe(false)
   })
 })
 
@@ -265,5 +336,60 @@ describe("the report", () => {
     expect(told).toBe(`${plain}This session requires test: no file of the project replaces a required check or switches it off.\n`)
     // A required check that passes is not mentioned.
     expect(renderReport([{ ...result(check("test", "bun test"), "passed"), required: true }, other])).not.toContain("requires")
+  })
+
+  const unstarted = couldNotStart(check("test", "bun test"), "the sandbox is unavailable")
+
+  test("of a check that was never started says why, that it says nothing about the changes, and asks for nothing", () => {
+    expect(renderReport([unstarted])).toBe(
+      [
+        "Checks run by the harness after your changes: 1 could not start.",
+        "",
+        "could not start: test (bun test): the sandbox is unavailable",
+        "",
+        "This check was not started, so it says nothing about your changes, and no change to the code makes it start. Nothing is asked of you: the turn ends with it recorded as not started, and the reason above goes to the user.",
+        "",
+      ].join("\n"),
+    )
+    const two = renderReport([{ ...unstarted, required: true }, couldNotStart(check("lint", "bun lint"), "the sandbox is unavailable")])
+    expect(two).toContain("These checks were not started, so they say nothing about your changes, and no change to the code makes them start. Nothing is asked of you: the turn ends with them recorded as not started, and the reason above goes to the user.\nThis session requires test: no file of the project replaces a required check or switches it off.\n")
+    expect(two).not.toContain("Fix the code")
+    expect(two).not.toContain("report_check_failure")
+  })
+
+  test("keeps a check that was never started apart from one that failed: the code is to be fixed for the one that ran", () => {
+    expect(renderReport([other, unstarted])).toBe(
+      [
+        "Checks run by the harness after your changes: 1 failed, 1 could not start.",
+        "",
+        "failed: lint (bun lint), exit code 1. Output:",
+        "2 problems",
+        "[end of lint output]",
+        "",
+        "could not start: test (bun test): the sandbox is unavailable",
+        "",
+        "Fix the code so that lint passes, or, if you cannot, call report_check_failure with its name and the reason.",
+        "test was not started, so it says nothing about your changes, and no change to the code makes it start: leave it, and do not name it to report_check_failure.",
+        "",
+      ].join("\n"),
+    )
+    const more = renderReport([other, failing, unstarted, couldNotStart(check("build", "make"), "the sandbox is unavailable")])
+    expect(more).toContain("Fix the code so that lint, test pass, or, if you cannot, call report_check_failure with the name of each of them and the reason.\ntest, build were not started, so they say nothing about your changes, and no change to the code makes them start: leave them, and do not name them to report_check_failure.\n")
+  })
+
+  test("a command the shell did not find is not one of those: it ran, and the report is the one it always was", () => {
+    const missing = { ...result(check("test", "bun test"), "could_not_start", "bash: line 1: bun: command not found\n"), exitCode: 127 }
+    expect(renderReport([missing])).toBe(
+      [
+        "Checks run by the harness after your changes: 1 could not start.",
+        "",
+        "could not start: test (bun test), exit code 127. Output:",
+        "bash: line 1: bun: command not found",
+        "[end of test output]",
+        "",
+        "Fix the code so that this check passes, or, if you cannot, call report_check_failure with the name of each failing check and the reason.",
+        "",
+      ].join("\n"),
+    )
   })
 })

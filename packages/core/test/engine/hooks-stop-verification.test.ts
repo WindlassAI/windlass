@@ -57,7 +57,7 @@ test("files changed after the checks passed, because a stop hook sent the model 
     h.provider.enqueue(say("Nothing to do."))
     h.session.send("Anything else?")
     await h.settled()
-    expect(of(h, "execution.succeeded")[1]!.data.verification).toEqual({ status: "not_needed" })
+    expect(of(h, "execution.succeeded")[1]!.data.verification).toEqual({ status: "not_needed", reason: "turn_unchanged", since: expect.any(Object) })
     expect(h.checks.unused).toBe(0)
   } finally {
     await h.dispose()
