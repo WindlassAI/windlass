@@ -462,7 +462,7 @@ export class Harness {
       loadConfig:
         this.options.config === undefined && this.options.userConfig === undefined
           ? null
-          : async (cwd: string) => ({ config: this.config ?? resolveConfig({}), projectDir: this.projectDirOf(cwd), files: this.files }),
+          : async (cwd: string) => ({ config: this.config ?? resolveConfig({}), projectDir: this.projectDirOf(cwd), files: this.files, approval: { user: this.files.user?.approval ?? null, project: this.files.project?.approval ?? null } }),
       // The same files, for what is read without waiting: the agent a session starts as, the approval mode before a first turn.
       loadConfigSync:
         this.options.config === undefined && this.options.userConfig === undefined

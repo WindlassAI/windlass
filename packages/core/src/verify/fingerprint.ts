@@ -27,11 +27,17 @@ import { randomBytes } from "node:crypto"
 import { join } from "node:path"
 import type { CheckConfig } from "../config/schema.ts"
 import type { CheckEvidence } from "./evidence.ts"
+import type { CheckStanding } from "./required.ts"
 import { filesFor } from "./select.ts"
 
-export async function fingerprintCheck(check: CheckConfig, changedFiles: readonly string[], cwd: string): Promise<string> {
+/**
+ * `cwd` is the project directory, which the changed paths are relative to. A required check's fingerprint says
+ * that it is one and where its patterns are relative to, so a pass of a project's check with the same name and
+ * command never stands for it; any other check's is what it always was.
+ */
+export async function fingerprintCheck(check: CheckConfig & CheckStanding, changedFiles: readonly string[], cwd: string): Promise<string> {
   const files = await Promise.all(filesFor(check, changedFiles).map(async (file) => [file, await contentHash(join(cwd, file))]))
-  const material = JSON.stringify(["v2", check.command, check.timeoutSeconds, check.when, files])
+  const material = JSON.stringify(["v2", check.command, check.timeoutSeconds, check.when, files, ...(check.required === true ? [["required", check.under ?? ""]] : [])])
   return new Bun.CryptoHasher("sha256").update(material).digest("hex")
 }
 

@@ -43,7 +43,7 @@ import { type ReduceErrorCode, reduce } from "../../src/message/reducer.ts"
 import { type ProviderError, type ProviderErrorKind, makeProviderError } from "../../src/provider/error.ts"
 import type { ToolEffect } from "../../src/tool/tool.ts"
 import type { Acknowledgement } from "../../src/verify/acknowledge.ts"
-import type { VerificationEvidence } from "../../src/verify/evidence.ts"
+import { type VerificationEvidence, outputTailOf } from "../../src/verify/evidence.ts"
 import { renderReport } from "../../src/verify/report.ts"
 import type { CheckResult } from "../../src/verify/run.ts"
 import type { CheckStatus } from "../../src/verify/status.ts"
@@ -1043,6 +1043,10 @@ export function evidence(run: number, status: CheckStatus, changedFiles: readonl
         outputPath: null,
         outputBytes: result.output.totalBytes,
         outputLines: result.output.totalLines,
+        // The scenarios' check is the project file's, and no check is required; a failing run carries the end of its output.
+        origin: "project",
+        required: false,
+        outputTail: status === "passed" || status === "interrupted" ? null : outputTailOf(result.output),
       },
     ],
   }

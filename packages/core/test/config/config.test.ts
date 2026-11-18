@@ -139,8 +139,8 @@ describe("validation errors name the file and the path", () => {
     ["not an object", "[]", "f.json: expected object, got array"],
     ["model type", `{"model": 3}`, "f.json: model: expected non-empty string, got 3"],
     ["empty effort", `{"effort": ""}`, `f.json: effort: expected non-empty string, got ""`],
-    ["unknown top-level key, close", `{"modle": "x"}`, `f.json: modle: unknown key "modle" (did you mean "model"?); known keys: $schema, model, effort, checks, verify`],
-    ["unknown key, nothing close", `{"permissions": {}}`, `f.json: permissions: unknown key "permissions"; known keys: $schema, model, effort, checks, verify`],
+    ["unknown top-level key, close", `{"modle": "x"}`, `f.json: modle: unknown key "modle" (did you mean "model"?); known keys: $schema, model, effort, checks, requiredChecks, verify`],
+    ["unknown key, nothing close", `{"permissions": {}}`, `f.json: permissions: unknown key "permissions"; known keys: $schema, model, effort, checks, requiredChecks, verify`],
     ["unknown verify key", `{"verify": {"maxRound": 2}}`, `f.json: verify.maxRound: unknown key "maxRound" (did you mean "maxRounds"?); known keys: mode, maxRounds`],
     ["bad mode", `{"verify": {"mode": "gated"}}`, `f.json: verify.mode: expected "off" | "report" | "gate", got "gated"`],
     ["maxRounds zero", `{"verify": {"maxRounds": 0}}`, "f.json: verify.maxRounds: expected integer >= 1, got 0"],
@@ -356,6 +356,52 @@ describe("the sandbox section", () => {
     const loaded = await loadConfig({ cwd: repo, home, env: {} })
     expect(loaded.files.user?.sandbox).toEqual({ home: "session" })
     expect(loaded.files.project?.sandbox).toEqual({ home: "user" })
+  })
+})
+
+describe("required checks", () => {
+  const required = [{ name: "test", command: "bun test", timeoutSeconds: 300, when: ["src/**"], outputTail: "always" }, { name: "types", command: "tsc" }]
+
+  test("requiredChecks is a list of checks like checks, and not part of the merged configuration", () => {
+    const file = parseConfigFile(JSON.stringify({ requiredChecks: required, checks: [{ name: "lint", command: "eslint ." }] }), "f.json")
+    expect(file.requiredChecks).toEqual(required as never)
+    const config = resolveConfig(file)
+    expect(Object.keys(config).sort()).toEqual(["checks", "effort", "model", "verify"])
+    // A file that names only required checks leaves the plain list as it was: empty here.
+    expect(config.checks).toEqual([{ name: "lint", command: "eslint .", timeoutSeconds: 120, when: null }])
+    expect(resolveConfig(parseConfigFile(JSON.stringify({ requiredChecks: required }), "f.json")).checks).toEqual([])
+  })
+
+  test("a bad value names the file and the path, as in checks", () => {
+    expect(errorOf(() => parseConfigFile(JSON.stringify({ requiredChecks: [{ name: "t", command: "true" }, { name: "t", command: "false" }] }), "f.json")).message).toBe(
+      `f.json: requiredChecks[1].name: expected a name not already used (requiredChecks[0] is "t"), got "t"`,
+    )
+    expect(errorOf(() => parseConfigFile(JSON.stringify({ requiredChecks: [{ name: "t" }] }), "f.json")).message).toStartWith("f.json: requiredChecks[0].command: expected a value")
+    expect(errorOf(() => parseConfigFile(JSON.stringify({ requiredChecks: { test: "bun test" } }), "f.json")).message).toStartWith("f.json: requiredChecks: expected array")
+    // The same name in both lists of one file is two checks to the validator: which one runs is decided where both are known.
+    expect(() => parseConfigFile(JSON.stringify({ requiredChecks: [{ name: "t", command: "true" }], checks: [{ name: "t", command: "false" }] }), "f.json")).not.toThrow()
+  })
+
+  test("a check says when the end of its output is kept with the evidence: on failure, or always", () => {
+    const file = parseConfigFile(JSON.stringify({ checks: [{ name: "a", command: "true", outputTail: "always" }, { name: "b", command: "true", outputTail: "failure" }, { name: "c", command: "true" }] }), "f.json")
+    expect(resolveConfig(file).checks).toEqual([
+      { name: "a", command: "true", timeoutSeconds: 120, when: null, outputTail: "always" },
+      { name: "b", command: "true", timeoutSeconds: 120, when: null, outputTail: "failure" },
+      { name: "c", command: "true", timeoutSeconds: 120, when: null },
+    ])
+    expect(errorOf(() => parseConfigFile(JSON.stringify({ checks: [{ name: "a", command: "true", outputTail: true }] }), "f.json")).message).toStartWith('f.json: checks[0].outputTail: expected "failure" | "always"')
+  })
+
+  test("both files are handed on apart: a project's file may hold the key, and only the user's own is read for it", async () => {
+    const { home, repo, userFile } = layout()
+    write(userFile, { requiredChecks: [{ name: "test", command: "bun test" }], checks: [{ name: "lint", command: "eslint ." }] })
+    write(projectFile(repo), { requiredChecks: [{ name: "fake", command: "true" }], checks: [] })
+    for (const loaded of [await loadConfig({ cwd: repo, home, env: {} }), loadConfigSync({ cwd: repo, home, env: {} })]) {
+      expect(loaded.files.user?.requiredChecks).toEqual([{ name: "test", command: "bun test" }])
+      expect(loaded.files.project?.requiredChecks).toEqual([{ name: "fake", command: "true" }])
+      // The plain list is merged as ever: the project's empty one replaced the user's.
+      expect(loaded.config.checks).toEqual([])
+    }
   })
 })
 

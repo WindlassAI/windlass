@@ -72,3 +72,40 @@ const cases: [string, Partial<GateInput>, GateDecision][] = [
 describe("decideGate", () => {
   for (const [name, input, expected] of cases) test(name, () => expect(decideGate({ ...base, ...input })).toEqual(expected))
 })
+
+/**
+ * With a required check (`required.ts`): `typecheck` is the session's required check, sent back up to five times;
+ * `test` is the configuration's own, under `mode` and `maxRounds` as before. The loop leaves the configuration's
+ * checks out of `selected` when the mode is `off`.
+ */
+const required = { names: ["typecheck"], maxRounds: 5 }
+const failingRequired = ran(["typecheck", "failed"], ["test", "passed"])
+const bothFail = ran(["typecheck", "failed"], ["test", "failed"])
+
+const requiredCases: [string, Partial<GateInput>, GateDecision][] = [
+  ["mode off runs the required checks", { mode: "off", selected: ["typecheck"] }, { kind: "run_checks", checks: ["typecheck"] }],
+  ["mode off with nothing selected: finish", { mode: "off", selected: [] }, { kind: "finish" }],
+  ["mode off: a failing required check sends the model back", { mode: "off", selected: ["typecheck"], latest: ran(["typecheck", "failed"]) }, { kind: "report_and_continue", failing: ["typecheck"] }],
+  ["mode off: a passing required check finishes", { mode: "off", selected: ["typecheck"], latest: ran(["typecheck", "passed"]) }, { kind: "finish" }],
+  ["mode off: a result of a check that is not required is not acted on", { mode: "off", selected: ["typecheck"], latest: ran(["typecheck", "passed"], ["test", "failed"]) }, { kind: "finish" }],
+  ["mode report: a failing required check sends the model back all the same", { mode: "report", latest: failingRequired }, { kind: "report_and_continue", failing: ["typecheck"] }],
+  ["mode report: the report names every failing check", { mode: "report", latest: bothFail }, { kind: "report_and_continue", failing: ["typecheck", "test"] }],
+  ["mode report: once only the configuration's check fails, the turn ends as report mode does", { mode: "report", latest: failingTest, reportsSent: 1 }, { kind: "finish_unresolved", reason: "report_mode", failing: ["test"] }],
+  ["a failing required check is sent back past the configuration's rounds", { maxRounds: 1, latest: failingRequired, reportsSent: 4 }, { kind: "report_and_continue", failing: ["typecheck"] }],
+  ["and not past its own", { maxRounds: 20, latest: failingRequired, reportsSent: 5 }, { kind: "finish_unresolved", reason: "max_rounds", failing: ["typecheck"] }],
+  ["the configuration's check alone keeps the configuration's rounds", { maxRounds: 1, latest: failingTest, reportsSent: 1 }, { kind: "finish_unresolved", reason: "max_rounds", failing: ["test"] }],
+  [
+    "a required check is acknowledged like any other",
+    { mode: "off", selected: ["typecheck"], latest: ran(["typecheck", "could_not_start"]), reportsSent: 1, acknowledgement: { checks: ["typecheck"], reason: "no sandbox here" } },
+    { kind: "finish_unresolved", reason: "acknowledged", failing: ["typecheck"] },
+  ],
+  ["all passed: finish", { latest: ran(["typecheck", "passed"], ["test", "passed"]) }, { kind: "finish" }],
+]
+
+describe("decideGate with a required check", () => {
+  for (const [name, input, expected] of requiredCases) test(name, () => expect(decideGate({ ...base, required, ...input })).toEqual(expected))
+
+  test("without one the decision is what the mode and the rounds give, whatever the name", () => {
+    for (const [, input, expected] of cases) expect(decideGate({ ...base, ...input, required: undefined })).toEqual(expected)
+  })
+})

@@ -256,8 +256,9 @@ Two JSON files, both optional:
 - the project's: `.windlass/config.json`, looked for from the working directory up to the repository root.
 
 The project file overrides yours key by key (a list such as `checks` replaces yours whole), except `approval`,
-where the project can only tighten what you chose, and `sandbox`, where it can only turn the session's home off.
-An unknown key is an error that names the file and suggests the key you probably meant.
+where the project can only tighten what you chose, `sandbox`, where it can only turn the session's home off, and
+`requiredChecks`, which only your own file names. An unknown key is an error that names the file and suggests the
+key you probably meant.
 
 ```json
 {
@@ -280,6 +281,7 @@ Every key:
 | `model` | the model for new sessions |
 | `effort` | the reasoning effort for new sessions |
 | `checks` | the project's checks, a list (below) |
+| `requiredChecks` | checks that a project's file cannot replace or switch off, a list like `checks` ("Required checks" below). Only your own file: a project's is not followed |
 | `verify` | what is done with the checks (below) |
 | `approval` | the approval policy (below) |
 | `mcp` | MCP servers: `servers`, by name, each started by a `command` or reached at a `url`; one a project's file names is not started until you approve it |
@@ -299,6 +301,9 @@ Every key:
 | `command` | required; run with `bash -c` in the project directory |
 | `timeoutSeconds` | 1 to 3600; default 120 |
 | `when` | glob patterns of changed files that make the check run; default: any change |
+| `outputTail` | `failure` (default) or `always`: when the last lines of the check's output are kept in the record of a run, beside the path of the file with all of it: when the check did not pass, or also when it passed |
+
+An entry of `requiredChecks` has the same keys.
 
 | Key in `verify` | Value |
 |---|---|
@@ -360,6 +365,40 @@ the two interfaces word them differently:
 With `gate` (the default) a failing check is shown to the agent (`↻ the agent is shown the failing checks and
 carries on`), which then fixes the code or reports why it cannot. Each check's full output is kept in a file the
 report names. On a machine without a sandbox the checks are not run, except in `full`.
+
+### Required checks
+
+A project's file replaces your `checks` and sets `verify`, and the agent can edit that file: with `"checks": []` or
+`"verify": { "mode": "off" }` there, nothing runs from the next turn on. Checks that have to run whatever a
+project's file says are named apart, as `requiredChecks` in your own configuration file:
+
+```json
+{ "requiredChecks": [{ "name": "test", "command": "bun test", "timeoutSeconds": 300 }] }
+```
+
+A program that starts `windlass acp` for you names them for a session when it opens it ([acp.md](acp.md),
+"Required checks"); they add to your file's, and a name in both is the program's.
+
+- They run before a turn ends when the turn changed a file their `when` patterns cover, like any check, and
+  before the project's own checks, which still run. A check of the project's with the name of a required one is
+  not run, and you are told once: under that name the required check runs.
+- A required check that fails sends the agent back whatever `verify.mode` says, in either file, and at most as
+  often as `verify.maxRounds` in your own file says (default 3). The project's `verify` is for the project's
+  checks. To stop a required check, take it out of the list.
+- `requiredChecks` in a project's file is not followed, and you are told once.
+- They are read when a turn starts, like the rest of the configuration, and no file of the project changes them:
+  not in the turn that edits the file, and not in the next.
+- A required check runs in the directory the session works in (where you started `windlass`), and its `when`
+  patterns are relative to that directory. The project's checks run in the project directory, the one that holds
+  the project's file, which is not for a project to choose for a required check.
+- A subagent's turn runs no check, required or not. Its work is checked when its parent's turn ends, with
+  everything else that turn changed.
+- On a machine without a sandbox, outside `full`, a required check cannot be run either. It is then recorded as
+  one that could not start, the agent is told why, and the turn ends with failing checks, not as done.
+
+The record of a run says of each check whose it is (your file's, the program's or the project's) and whether it is
+required; with `--json` that is `origin` and `required` in the `evidence` of `checks.finished`. What a required
+check does not promise is in [safety.md](safety.md), "Required checks".
 
 ## Commands at the prompt
 

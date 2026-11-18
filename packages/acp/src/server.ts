@@ -72,9 +72,12 @@ import {
   type StoredEvent,
   StoreError,
   approvalModes,
+  type CheckConfig,
+  DecodeError,
   envNames,
   MAX_ENV_NAMES,
   sandboxHomeChoices,
+  sessionChecks,
   brand,
   currentTodos,
   describeRestrictions,
@@ -199,7 +202,7 @@ export const EXTENSION_CAPABILITIES = {
   /** Keys of `clientCapabilities._meta[<ns>]` this server reads (`ClientMeta`). */
   clientMeta: ["events", "updates"],
   /** Keys of `_meta[<ns>]` on `session/new`, `session/load` and `session/resume` (`OpenMeta`). */
-  openMeta: ["model", "effort", "agent", "approval", "unattended", "sandboxHome", "withholdEnv", "passEnv", "attended", "children"],
+  openMeta: ["model", "effort", "agent", "approval", "unattended", "sandboxHome", "withholdEnv", "passEnv", "requiredChecks", "attended", "children"],
   /** The permission requests this server sends: the hand-edit question of an undo, and the approval of a tool call (the session's own, or a subagent's). */
   permissionRequests: ["revert", APPROVAL_META],
 } as const
@@ -390,7 +393,7 @@ class ConnectionState {
 
   // ---- sessions ----
 
-  async newSession(cwd: string, mcpServers: number, meta: OpenMeta | null) {
+  async newSession(cwd: string, mcpServers: number, meta: Opened | null) {
     requireDirectory(cwd)
     await this.requireSignIn()
     if (mcpServers > 0) this.log.warn(`ignoring ${mcpServers} MCP server(s): ${brand.name} does not connect to MCP servers yet`)
@@ -415,7 +418,7 @@ class ConnectionState {
     return { sessionId: session.id, configOptions: await this.configOptions(view.settings, view.session) }
   }
 
-  async loadSession(sessionId: string, cwd: string, replay: boolean, meta: OpenMeta | null) {
+  async loadSession(sessionId: string, cwd: string, replay: boolean, meta: Opened | null) {
     if (!isAbsolute(cwd)) throw RequestError.invalidParams({ cwd }, `cwd must be an absolute path: ${cwd}`)
     await this.requireSignIn()
     const asked = { model: meta?.model ?? null, effort: meta?.effort ?? null }
@@ -1715,7 +1718,10 @@ function namespaced(meta: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null
 }
 
-function openMeta(meta: unknown): OpenMeta | null {
+/** What a client said when it opened a session, checked: its required checks are the ones the engine runs, with the defaults. */
+type Opened = Omit<OpenMeta, "requiredChecks"> & { readonly requiredChecks: readonly CheckConfig[] | null }
+
+function openMeta(meta: unknown): Opened | null {
   const value = namespaced(meta)
   if (value === null) return null
   const text = (key: string) => {
@@ -1734,6 +1740,7 @@ function openMeta(meta: unknown): OpenMeta | null {
     sandboxHome: oneOfOrNull(value.sandboxHome, sandboxHomeChoices, `_meta.${META.capabilities}.sandboxHome`),
     withholdEnv: envNamesOrNull(value.withholdEnv, `_meta.${META.capabilities}.withholdEnv`),
     passEnv: envNamesOrNull(value.passEnv, `_meta.${META.capabilities}.passEnv`),
+    requiredChecks: requiredChecksOrNull(value.requiredChecks, `_meta.${META.capabilities}.requiredChecks`),
     ...(typeof value.attended === "boolean" ? { attended: value.attended } : {}),
     ...(typeof value.children === "boolean" ? { children: value.children } : {}),
   }
@@ -1754,15 +1761,27 @@ function envNamesOrNull(value: unknown, name: string): readonly string[] | null 
   return names
 }
 
+/** A list of checks written as `requiredChecks` is in a configuration file, or `null` when it is absent. Anything else is a bad request that names the value at fault. */
+function requiredChecksOrNull(value: unknown, name: string): readonly CheckConfig[] | null {
+  if (value === undefined || value === null) return null
+  try {
+    return sessionChecks(value, name)
+  } catch (error) {
+    if (error instanceof DecodeError) throw RequestError.invalidParams({ field: error.path }, error.message)
+    throw error
+  }
+}
+
 /**
  * What a client says about approval when it opens a session: whether a
  * person is there to answer (yes, unless it says otherwise: an ACP client
  * can answer `session/request_permission`), the user's own mode and
  * unattended behaviour for this session, the home its sandboxed commands
- * get, when the client says which, and the environment variables it names
- * for the session's commands.
+ * get, when the client says which, the environment variables it names
+ * for the session's commands, and the checks it requires of the session's
+ * turns.
  */
-function applyApproval(session: EngineSession, meta: OpenMeta | null): void {
+function applyApproval(session: EngineSession, meta: Opened | null): void {
   const attended = meta?.attended ?? true
   // Whoever answers for the session answers for its subagents too, unless the client says it does not.
   session.setAttended(attended, { children: attended && meta?.children !== false })
@@ -1778,6 +1797,8 @@ function applyApproval(session: EngineSession, meta: OpenMeta | null): void {
   const withhold = meta?.withholdEnv ?? null
   const pass = meta?.passEnv ?? null
   if (withhold !== null || pass !== null) session.setCommandEnv({ withhold: withhold ?? [], pass: pass ?? [] })
+  const required = meta?.requiredChecks ?? null
+  if (required !== null) session.setRequiredChecks(required)
 }
 
 function stepLimit(value: unknown): number | undefined {

@@ -13,6 +13,11 @@
  * project `checks` list replaces the user's list whole. Concatenating would make
  * it impossible for a project to drop a user-level check, and would make the
  * order and name uniqueness of checks depend on two files at once.
+ *
+ * `requiredChecks` is the list a project cannot drop: checks that whoever
+ * starts the harness names, in the user's own file here (a client names them
+ * when it opens a session). It is read from the user's file only and never
+ * merged: `verify/required.ts` is handed both files as written.
  */
 import { type AgentsConfigSection, parseAgentsSection } from "../agents/config.ts"
 import { approvalSection } from "../approval/policy.ts"
@@ -87,6 +92,8 @@ function boundedInteger(min: number, max: number): Validator<number> {
   }
 }
 
+export const OUTPUT_TAIL_CHOICES = ["failure", "always"] as const
+
 const checkFields = section({
   /** Shown in the report and named by the model when it reports a failure it cannot fix. Unique. */
   name: checkName,
@@ -95,6 +102,12 @@ const checkFields = section({
   timeoutSeconds: boundedInteger(1, MAX_CHECK_TIMEOUT_SECONDS),
   /** Glob patterns (Bun.Glob syntax) matched against changed paths relative to the project directory. Any match triggers the check. Omitted: any change. */
   when: patterns,
+  /**
+   * When the end of the check's output is put into the evidence of a run (`verify/evidence.ts`, `outputTail`), next
+   * to the path of the file that keeps all of it. `failure` (the default): when the check did not pass. `always`:
+   * also when it passed. Said per check, by whoever names the check.
+   */
+  outputTail: oneOf(OUTPUT_TAIL_CHOICES),
 })
 
 /** `name` and `command` are required; the rest are optional. */
@@ -105,12 +118,13 @@ function check(input: unknown, path: string) {
   return { ...fields, name: fields.name, command: fields.command }
 }
 
-const checks: Validator<readonly ReturnType<typeof check>[]> = (input, path) => {
+/** A list of checks as a file or a client writes it: every `name` once. */
+export const checkList: Validator<readonly ReturnType<typeof check>[]> = (input, path) => {
   if (!Array.isArray(input)) throw new DecodeError(path, "array", input)
   const parsed = input.map((item, index) => check(item, `${path}[${index}]`))
   parsed.forEach((item, index) => {
     const first = parsed.findIndex((other) => other.name === item.name)
-    if (first !== index) throw new DecodeError(`${path}[${index}].name`, `a name not already used (checks[${first}] is "${item.name}")`, item.name)
+    if (first !== index) throw new DecodeError(`${path}[${index}].name`, `a name not already used (${path}[${first}] is "${item.name}")`, item.name)
   })
   return parsed
 }
@@ -144,7 +158,12 @@ const baseFile = section({
   $schema: string,
   model: nonEmptyString,
   effort: nonEmptyString,
-  checks,
+  checks: checkList,
+  /**
+   * Checks a project's file cannot replace, remove or switch off (`verify/required.ts`). Never merged like the
+   * other keys: only the user's own file names them; in a project's file the key is not followed.
+   */
+  requiredChecks: checkList,
   verify: section({ mode: verifyMode, maxRounds: boundedInteger(1, MAX_VERIFY_ROUNDS) }),
   /**
    * The approval policy (`approval/policy.ts`). Never merged like the other
@@ -228,6 +247,8 @@ export interface CheckConfig {
   readonly timeoutSeconds: number
   /** `null`: any changed file triggers the check. */
   readonly when: readonly string[] | null
+  /** `always`: the end of the output is in the evidence also when the check passed. Absent: `failure`, only when it did not. */
+  readonly outputTail?: (typeof OUTPUT_TAIL_CHOICES)[number]
 }
 
 /** The effective configuration: both files merged, defaults applied. */
@@ -255,17 +276,23 @@ export function mergeConfigFiles(user: ConfigFile | null, project: ConfigFile | 
   return mergeObjects(user ?? {}, project ?? {}) as ConfigFile
 }
 
+/** Applies the defaults to a list of checks as written. */
+export function resolveChecks(list: ConfigFile["checks"]): CheckConfig[] {
+  return (list ?? []).map((item) => ({
+    name: item.name,
+    command: item.command,
+    timeoutSeconds: item.timeoutSeconds ?? DEFAULT_CHECK_TIMEOUT_SECONDS,
+    when: item.when ?? null,
+    ...(item.outputTail === undefined ? {} : { outputTail: item.outputTail }),
+  }))
+}
+
 /** Applies the defaults to a merged file. */
 export function resolveConfig(file: ConfigFile): Config {
   return {
     model: file.model ?? null,
     effort: file.effort ?? null,
-    checks: (file.checks ?? []).map((item) => ({
-      name: item.name,
-      command: item.command,
-      timeoutSeconds: item.timeoutSeconds ?? DEFAULT_CHECK_TIMEOUT_SECONDS,
-      when: item.when ?? null,
-    })),
+    checks: resolveChecks(file.checks),
     verify: { mode: file.verify?.mode ?? DEFAULT_VERIFY.mode, maxRounds: file.verify?.maxRounds ?? DEFAULT_VERIFY.maxRounds },
   }
 }

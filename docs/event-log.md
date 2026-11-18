@@ -1054,6 +1054,8 @@ Declared in `packages/core/src/approval/record.ts`.
 
 ### `checkEvidence`
 
+One check of a run. `origin` is who named the check: the user's own configuration file (`user`), the client that opened the session (`session`), or the project's file (`project`). `required` is whether it is a required check, which a project's file can neither replace nor switch off. `outputTail` is the end of the output when the check ran in this run and did not pass, or passed and its configuration asks for it (`outputTail: "always"`), and `null` otherwise. `startError` is why the command could not be started at all. A record written before these four existed has none of them; `origin` is also absent where the engine was handed a configuration without the files it came from.
+
 | Field | Type | Required |
 | --- | --- | --- |
 | `name` | string, not empty | yes |
@@ -1068,6 +1070,10 @@ Declared in `packages/core/src/approval/record.ts`.
 | `outputPath` | string, or `null` | yes |
 | `outputBytes` | integer ≥ 0 | yes |
 | `outputLines` | integer ≥ 0 | yes |
+| `origin` | one of `"user"`, `"session"`, `"project"` | may be absent |
+| `required` | boolean | may be absent |
+| `outputTail` | [outputTail](#outputtail), or `null` | may be absent |
+| `startError` | string, not empty | may be absent |
 
 Declared in `packages/core/src/verify/evidence.ts`.
 
@@ -1309,6 +1315,17 @@ One of these, told apart by `kind`:
 | `changed.settings` | boolean | yes |
 
 Declared in `packages/core/src/event/durable.ts`.
+
+### `outputTail`
+
+The end of a check's output, as the evidence of a run carries it. `text` is the last lines of the output (at most 4096 bytes and 60 lines), redacted like the output itself. `truncated` says that the output has more before it: all of it is in the file the check's `outputPath` names.
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `text` | string | yes |
+| `truncated` | boolean | yes |
+
+Declared in `packages/core/src/verify/evidence.ts`.
 
 ### `providerError`
 
