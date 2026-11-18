@@ -23,7 +23,12 @@ All notable changes to Windlass are recorded here. The format follows
   - A turn keeps the checks it started with: no file edited during a session changes them. They run in the
     directory the session works in, not in the project directory, which is wherever the project's file is.
   - Where commands are sandboxed and there is no sandbox, a required check is recorded as one that could not
-    start and the turn ends with failing checks, where the project's checks are passed over as before.
+    start and the turn ends there, unresolved, where the project's checks are passed over as before.
+  - After a required check failed in a turn, the turn ends as done only when a later run of it passed, or
+    with the files it covers again exactly as they were in a state the check stands on: the one the session
+    started from, or one verified since while it was a required check with the command it has now. A required check
+    named later, or with another command, is run at the end of the next turn that changes a file, whatever the
+    file.
   - A subagent's turn runs no check, as before; its parent's turn runs them. The checks a program names are not
     stored with the session: it names them each time it opens it. `docs/safety.md`, "Required checks", has what a
     project can still do to one (make it fail, not pass) and what a required check does not promise.
@@ -38,6 +43,38 @@ All notable changes to Windlass are recorded here. The format follows
   with `truncated` when there was more; the file is kept as before. A check that says `"outputTail": "always"`
   has it also when it passes. `startError` says why a check's command could not be started at all. Records
   written before this have none of these fields and are read as they are.
+- **An ending that needed no check says why, and what it rests on.** A turn could end as done with no check
+  needed right after a run of checks that failed in it, because the agent had put its change back, and nothing
+  in the record said so. `not_needed` now has `reason`: `turn_unchanged` (the turn changed no file),
+  `state_unchanged` (the workspace is again what it was in a verified state) or `not_covered` (no check covers
+  what differs from it), and `since`: where that verified state is in the log, and the run of checks that last
+  passed on the way to it (`null`: none has, the state is what the session started from). The evidence of every
+  run has `since` too, for what its `changedFiles` are measured from, and both name the session's required
+  checks (`requiredChecks`). The two interfaces say it under the ending.
+- **A session that holds a record this version does not read is refused in a sentence.** It was
+  `Internal error`. Over ACP the error has `data["windlass"].reason` `unreadable_session`.
+- **A later version may add to the evidence of a run of checks without locking this one out.** A key this
+  version does not know in the evidence of a run, in a check of it or in the end of its output is kept as it is
+  and written back unchanged. Everything else in a session's records is still read strictly.
+
+### Changed
+
+- **A check that could not be started no longer sends the agent back to fix the code.** When the shell for a
+  check cannot be run at all (commands run only in the sandbox and there is none, the directory is gone), the
+  check says nothing about the code, and no change to the code starts it. The agent was told
+  `Fix the code so that this check passes` and sent back, as often as `verify.maxRounds` allows, and the turn
+  ended as `max_rounds`. Now, when every check that did not pass is one that was never started, the turn ends
+  unresolved at once with the new reason `not_started`, and the agent and you are told that the check could not
+  be started and why. When other checks failed, the agent is sent back for those alone and is told to leave
+  the one that did not start. This holds for every check, required or not. A command the shell does not find
+  (exit code 126 or 127) is as before: the check ran, and the agent is shown its output.
+- **Windlass 0.2.0 and earlier do not open a session in which this version recorded anything about checks.**
+  They read a session's records strictly, and the records gained fields: a run of checks (`origin`, `required`,
+  `outputTail`, `since`), an ending that needed no check (`reason`), the reason `not_started`. Asked to open
+  such a session, 0.2.0 says `Internal error` and writes nothing; the session is intact, and this version opens
+  it. A session without checks (`not_configured` endings only) holds nothing new and still opens in 0.2.0. This
+  version opens every session 0.2.0 wrote. There is no way to record these facts that 0.2.0 would read: every
+  place in a session it reads, it reads strictly. If you go back to 0.2.0, start new sessions there.
 
 ## [0.2.0] - 2026-11-16
 

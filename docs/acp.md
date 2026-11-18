@@ -99,10 +99,10 @@ IDs are stable: a user message has the harness message ID, agent text and reason
 
 How a turn ended goes beyond the stop reason: the verification gate decides whether a turn may end as done (see
 `docs/` on checks). The prompt response's `_meta["windlass"]` and the `_windlass/turn` notification (below)
-carry `outcome` (`succeeded`, `unresolved`: done but the project's checks still fail, `failed`, `interrupted`), the
-gate's `verification` (`passed` with the evidence; `not_needed`, with `unverified: true` when files the checks cover
+carry `outcome` (`succeeded`, `unresolved`: done but checks still fail or could not be started, `failed`, `interrupted`), the
+gate's `verification` (`passed` with the evidence; `not_needed`, with why no check ran and with `unverified: true` when files the checks cover
 changed outside the turn and are still to be checked; `not_configured`; `left_to_parent` for a subagent, whose checks
-are its parent's turn's; or `unresolved` with the reason and the failing checks), and the files the turn changed. The evidence says of each check whose it is and whether it is required, and carries the last lines of a failing check's output ("Required checks" below has the shape). On `session/load` every earlier turn's ending is replayed
+are its parent's turn's; or `unresolved` with the reason and the checks that did not pass), and the files the turn changed. "How a turn's checks ended" below has the shapes and what a client does with each. The evidence says of each check whose it is and whether it is required, and carries the last lines of a failing check's output ("Required checks" below has the shape). On `session/load` every earlier turn's ending is replayed
 as a `_windlass/turn` notification marked `replay: true`, after that turn's updates (and, for a client that
 takes the harness's events, after that turn's events), with the files it changed worked out from its snapshots.
 
@@ -239,10 +239,22 @@ Before every tool call the harness decides whether it runs, runs in the sandbox,
   - A required check that fails sends the agent back, at most as often as `verify.maxRounds` of the user's own
     file says (default 3). The turn then ends as `passed`, or as `unresolved` with the reason (`acknowledged`:
     the agent reported with `report_check_failure` that it cannot fix it; `max_rounds`) and the check in
-    `failing`. A turn never ends as done on a required check that failed.
+    `failing`.
+  - After a required check did not pass in a turn, the turn ends as done only when a later run of the check
+    passed, or when the agent put the files the check covers back exactly as they were in a verified state the
+    check stands on. The check is then not run again: the turn ends as `not_needed`, or as `passed` on a run of
+    other checks that further changes called for, and either says which state and which run that rests on
+    (`reason` and `since` of the ending, `since` of the evidence, below). A check stands on the state the
+    session started from and on every state verified since while it was a required check with the command,
+    timeout and patterns it has now. One that a client names later, or names with another command, does not
+    stand on what was verified without it: it runs at the end of the next turn that changes a file, whatever
+    the file, and stands from the run it passes in. A state verified by a server that did not have
+    `requiredChecks` is one no required check stands on.
   - Where commands are sandboxed and there is no sandbox (any mode but `full`), no check can run. A required
-    check is then in the run with `status: "could_not_start"` and the reason in `startError`, and the turn ends
-    as `unresolved`, not as `not_configured`.
+    check is then in the run with `status: "could_not_start"`, no exit code and the reason in `startError`, and
+    the turn ends at once as `unresolved` with `reason: "not_started"`, not as `not_configured`. The agent is
+    not sent back: nothing it changes in the code starts a check. The same holds for any check, required or
+    not, whose command could not be started at all.
   - A subagent's turn runs none and ends as `left_to_parent`; its work in the session's working directory is
     checked when the session's own turn ends.
 
@@ -275,6 +287,71 @@ Before every tool call the harness decides whether it runs, runs in the sandbox,
   }
   ```
 
+  The evidence of a run, around its checks:
+
+  ```ts
+  {
+    run: number,                      // 1 for the first run of checks in the turn, then 2, ...
+    afterSeq: number,
+    changedFiles: string[],           // what differs from the verified state `since` names
+    checks: Check[],                  // the shape above: the checks that ran, or whose earlier pass was carried over
+    since?: { seq: number, run?: { seq: number, run: number } | null },
+    requiredChecks?: { name: string, definition: string }[]
+  }
+  ```
+
+  `since` names the verified state the changes are measured from: `seq` is where in the session's log it was
+  recorded, and `run` the run of checks that last passed on the way to it, by the `seq` of its `checks.finished`
+  event and its number in its turn; `run: null` says that no run has passed up to that state, which is then what
+  the session started from. `requiredChecks` is the session's required checks when the run was made, run or not
+  (absent when it has none), each with a digest of what it runs (command, timeout, patterns, directory): a
+  required check that is not in `checks` covers none of `changedFiles` and stands on the state `since` names.
+  A later version may add keys to the evidence, to a check in it and to `outputTail`; a client ignores a key it
+  does not know there, as the server does.
+
+  **How a turn's checks ended**, in `verification` of the prompt response, of `_windlass/turn` and of the
+  `execution.succeeded` and `turn.ended` events, and what a client does with each:
+
+  ```ts
+  | { status: "passed", evidence }
+  | { status: "not_needed", unverified?: true,
+      reason?: "turn_unchanged" | "state_unchanged" | "not_covered",
+      since?: { seq: number, run?: { seq: number, run: number } | null },
+      requiredChecks?: { name: string, definition: string }[] }
+  | { status: "not_configured" } | { status: "left_to_parent" }
+  | { status: "unresolved", reason: "acknowledged" | "max_rounds" | "report_mode" | "not_started",
+      failing: string[], acknowledgement: { checks: string[], reason: string } | null, evidence }
+  ```
+
+  - `passed`: the run in `evidence` is the turn's last, and every check in it passed. A required check that is
+    in `evidence.requiredChecks` and not in `evidence.checks` was not needed: nothing it covers differs from the
+    state `evidence.since` names.
+  - `not_needed` with `reason: "turn_unchanged"`: the turn changed no file. Nothing to show. With
+    `unverified: true`, files the checks cover changed outside the turn and are checked with the next turn that
+    changes a file.
+  - `not_needed` with `reason: "state_unchanged"`: the turn changed files, and the workspace is again what it was
+    in the verified state `since` names. This is how a turn ends in which a check failed and the agent then put
+    its change back: the last `checks.finished` of the turn is a run that did not pass, and this ending is what
+    says why it does not stand. A client shows it as done on an earlier verification: when `since.run` is an
+    object, the files are as they were when that run passed (find it by `since.run.seq`, the `seq` of its
+    `checks.finished`), and its checks are the ones to show; when `since.run` is `null`, the files are as they
+    were when the session started, and no check has verified that state.
+  - `not_needed` with `reason: "not_covered"`: files differ from the state `since` names, and no check covers
+    any of them. The same reading of `since` applies to what the checks do cover.
+  - With `state_unchanged` and `not_covered`, `requiredChecks` is every required check of the session, and each
+    stands on that state. With `turn_unchanged` it is the ones that stand; one the client named since is not
+    among them and runs with the next turn that changes a file. In records written before these fields existed
+    `reason`, `since` and `requiredChecks` are absent, and a `since` without `run` is one whose state such a
+    record moved.
+  - `unresolved` with `acknowledged`, `max_rounds` or `report_mode`: checks failed on the code, and the agent
+    gave up, ran out of rounds, or is never sent back in this mode. `failing` names every check that did not
+    pass; a check among them with `status: "could_not_start"` and `exitCode: null` did not fail, it was not
+    started (`startError` says why).
+  - `unresolved` with `not_started`: no check that did not pass was started. Nothing was verified, the agent was
+    not sent back and was not told that the code is wrong. A client shows the `startError` of each check in
+    `failing` as the thing to resolve (a sandbox to install, a directory that is gone), not a failing check.
+    The run is the turn's first and only one.
+
   `origin` is `session` for a check named with `requiredChecks` here, `user` for one from the user's own file
   (its `requiredChecks`, or its `checks` when the project's file has no `checks`), and `project` for one of the
   project's `checks`. `outputTail` is the end of the check's output: at most the last 60 lines and 4096 bytes,
@@ -286,6 +363,15 @@ Before every tool call the harness decides whether it runs, runs in the sandbox,
   stored or sent ([safety.md](safety.md), "Secrets in tool output"), and so is the file `outputPath` names,
   which still holds all of it. The four fields are absent in a session's older records, written before they
   existed, which a `session/load` replays as they are.
+
+  **Sessions and other versions.** A server opens every session an earlier version wrote. A session that a
+  later version has recorded something new in is refused, whole, by an earlier one, which reads records strictly
+  rather than skip what it does not know: `session/load` and `session/resume` answer `-32603` with
+  `data["windlass"].reason` `unreadable_session` and a `message` that names the record and says to open the
+  session with the version that wrote it. Windlass 0.2.0 and earlier answer `-32603 Internal error` with the
+  place in `data.details` instead, and refuse a session in which a later version recorded a run of checks or
+  the ending of a turn of a session with checks. A client that may meet both versions on the same sessions
+  keeps a session with the version that last wrote to it.
 - **A session that is loaded** replays an asked-and-answered call as the call with its final status and content.
   A client that takes the harness's events gets `approval.requested`, `approval.answered` and `approval.denied`
   with `replay: true`; it shows them as history and puts no question. No question is ever pending in a stored
@@ -460,9 +546,11 @@ do not ask get the standard updates exactly as before, and none of this.
   executionId: string,
   outcome: "succeeded" | "unresolved" | "failed" | "interrupted",
   stopReason: string,               // a session/prompt stop reason, or "error"
-  verification?: object,            // execution.succeeded's verification: { status: "passed", evidence } | { status: "not_needed", unverified?: true }
+  verification?: object,            // execution.succeeded's verification: { status: "passed", evidence }
+                                    //   | { status: "not_needed", unverified?: true, reason?, since?, requiredChecks? }
                                     //   | { status: "not_configured" } | { status: "left_to_parent" }
                                     //   | { status: "unresolved", reason, failing, acknowledgement, evidence }
+                                    //   ("How a turn's checks ended" above)
   hooks?: { unsatisfied: string[],  // stop hooks still objected after the agent had been sent back as often as a turn
             objections: { hook: string, text: string }[] },   // allows (hooks.maxStopRounds): the turn ended anyway, with
                                     //   these hooks unsatisfied; objections: what each said that last time, for the
@@ -714,8 +802,9 @@ have loosened the user's policy.
 `data["windlass"] = { reason, message, holderPid? }`, `message` being the harness's own sentence:
 `auth_required` (`-32000`), `session_in_use` (`-32603`, with the holder's process ID), `session_not_found`
 (`-32002`), `ambiguous_session`, `unknown_model`, `unknown_effort` (the message names the efforts the model accepts)
-and `invalid_request` (`-32602`), `schema_mismatch` (a session written by another
-version), `model_list_failed`, `execution_failed` (a failed turn, with `providerError`), `approval_required` (a turn ended
+and `invalid_request` (`-32602`), `schema_mismatch` (a session file of another schema version),
+`unreadable_session` (a session that holds a record this version does not read, as when a later version has
+worked in it), `model_list_failed`, `execution_failed` (a failed turn, with `providerError`), `approval_required` (a turn ended
 because a call needed approval and nobody was present), `closed`.
 
 `auth_required`, `execution_failed` and `model_list_failed` also carry `code` when what failed has one, so that a

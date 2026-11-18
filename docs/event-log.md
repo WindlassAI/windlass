@@ -39,13 +39,19 @@ a build refuses a file of another version rather than misread it.
   never made, a second terminal event for a step).
 - **Strict decoding.** Each event type has one validator. An object has exactly the fields listed below: an unknown
   field is an error, and a field is absent only where the table says it may be (fields added to a shape after it
-  was first written); otherwise an absent value is an explicit `null`. An event of an unknown type, or of a version
-  the build does not read, is an error too: a reader must stop there rather than skip it, because a log folded with
-  a hole in it gives a wrong state.
-- **Versions.** Every event type has a version, `v`. Nothing has been released, so every type is at version 1 and
-  shapes were still changed in place. From the first release on, a change to an event's data is a new version, and
-  the program keeps a decoder for the old one. A new event type, or a new value of an enumeration, needs no new
-  version.
+  was first written); otherwise an absent value is an explicit `null`. An event of an unknown type, of a version
+  the build does not read, or with a value of an enumeration it does not know is an error too: a reader must stop
+  there rather than skip it, because a log folded with a hole in it gives a wrong state. The one exception is the
+  evidence of a run of checks ([verificationEvidence](#verificationevidence), each
+  [checkEvidence](#checkevidence) in it and its [outputTail](#outputtail)): it reports what a run found, a later
+  build may add keys to it, and a key a build does not know is kept as it is and written back unchanged.
+- **Versions, and opening a session with another build.** Every event type has a version, `v`, and every type is
+  at version 1. A build reads everything an earlier release wrote: a field added to a shape may be absent, and a
+  change that an existing record could not satisfy would be a new version with a decoder kept for the old one. The
+  other way round is not promised. A session that a later build has written something new into (a new field outside
+  the evidence, a new event type, a new value of an enumeration) is refused by an earlier build, whole, with the
+  place of what it does not know, rather than opened and misread; the later build still opens it. Which releases
+  that applies to is in the changelog.
 - **Frozen text.** Text the model saw (a tool's output, an appended instruction, a checkpoint) is stored in the event
   as it was sent and is never rendered again, so a request can be rebuilt from the log byte for byte.
 
@@ -1075,6 +1081,8 @@ One check of a run. `origin` is who named the check: the user's own configuratio
 | `outputTail` | [outputTail](#outputtail), or `null` | may be absent |
 | `startError` | string, not empty | may be absent |
 
+A later build may add keys to this object: a key that is not listed here is kept as it is, not refused.
+
 Declared in `packages/core/src/verify/evidence.ts`.
 
 ### `content`
@@ -1325,6 +1333,8 @@ The end of a check's output, as the evidence of a run carries it. `text` is the 
 | `text` | string | yes |
 | `truncated` | boolean | yes |
 
+A later build may add keys to this object: a key that is not listed here is kept as it is, not refused.
+
 Declared in `packages/core/src/verify/evidence.ts`.
 
 ### `providerError`
@@ -1441,6 +1451,23 @@ One of these, told apart by `kind`:
 | `requestId` | string, not empty, or `null` | yes |
 
 Declared in `packages/core/src/provider/error.ts`.
+
+### `requiredCheckRef`
+
+A required check of a session, as a record names it: its `name`, and `definition`, a digest (SHA-256, hex) of what it runs: the command, the timeout, its patterns and the directory they are relative to. Two records name the same check when both are the same.
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `name` | string, not empty | yes |
+| `definition` | string, not empty | yes |
+
+Declared in `packages/core/src/verify/required.ts`.
+
+### `requiredCheckRefs`
+
+A list of [requiredCheckRef](#requiredcheckref).
+
+Declared in `packages/core/src/verify/required.ts`.
 
 ### `restoreRecord`
 
@@ -1817,12 +1844,18 @@ Declared in `packages/core/src/provider/usage.ts`.
 
 ### `verificationEvidence`
 
+The evidence of one run of checks. `changedFiles` is every file that differs from the verified state `since` names; `checks` is the checks that ran or whose earlier pass was carried over. `requiredChecks` is the session's required checks when the run was made, in their order, run or not: a required check that is not in `checks` covers none of `changedFiles` and stands on the state `since` names. `since` and `requiredChecks` are absent in a record written before they were kept; `requiredChecks` also when the session has none.
+
 | Field | Type | Required |
 | --- | --- | --- |
 | `run` | integer ≥ 1 | yes |
 | `afterSeq` | integer ≥ 0 | yes |
 | `changedFiles` | list of string | yes |
 | `checks` | list of [checkEvidence](#checkevidence) | yes |
+| `since` | [verifiedState](#verifiedstate) | may be absent |
+| `requiredChecks` | [requiredCheckRefs](#requiredcheckrefs) | may be absent |
+
+A later build may add keys to this object: a key that is not listed here is kept as it is, not refused.
 
 Declared in `packages/core/src/verify/evidence.ts`.
 
@@ -1831,9 +1864,12 @@ Declared in `packages/core/src/verify/evidence.ts`.
 What the verification gate found when an execution ended as done.
 - `not_configured`: verification is off, or no check is configured. Nothing was verified.
 - `left_to_parent`: the session is a subagent, and a subagent's turn is not verified by itself: the turn of the session that started it is, once the subagent's work is in, with whatever checks that session's project has. It says nothing about whether checks exist; the parent's ending does.
-- `not_needed`: checks are configured and none ran. Either nothing they cover changed since the last verification that passed, or this turn changed no file: the gate verifies a turn's own work, and a turn that only answered has none. In the second case `unverified` is set when files the checks cover did change since the last verification, outside this turn (the user edited by hand, a turn was undone, an earlier turn ended with its checks failing): they are still to be checked, and are, with everything else, at the end of the next turn that changes a file.
+- `not_needed`: checks are configured and none ran. Either nothing they cover changed since the last verification that passed, or this turn changed no file: the gate verifies a turn's own work, and a turn that only answered has none. In the second case `unverified` is set when files the checks cover did change since the last verification, outside this turn (the user edited by hand, a turn was undone, an earlier turn ended with its checks failing): they are still to be checked, and are, with everything else, at the end of the next turn that changes a file. `reason` says which it was, also for a turn in which checks ran and did not pass before the workspace came back to a state that needs none:
+- `turn_unchanged`: this turn changed no file;
+- `state_unchanged`: the turn changed files, and the workspace is now what it was in the verified state;
+- `not_covered`: files differ from the verified state, and no check covers any of them. `since` names that verified state, and `since.run` the run of checks that last passed on the way to it, or `null` when none has: the state is then as the session found the workspace, give or take files no check covers, and no check has verified it. `requiredChecks` is the session's required checks that stand on the state the ending leaves (`verify/required.ts`), absent when there is none. With `state_unchanged` and `not_covered` that is every required check of the session: one that does not stand is run at the end of a turn that changed a file, so such a turn does not end this way. With `turn_unchanged` a required check named since the state was verified is not among them, and runs with the next turn that changes a file. `reason`, `since` and `requiredChecks` are absent in a record written before they were kept.
 - `passed`: every check that applied passed; `evidence` is that run.
-- `unresolved`: checks still fail and the execution ended anyway. `reason` says why it was allowed to: the model reported with the acknowledgement tool that it cannot fix them (`acknowledgement` is what it said), the model had been sent back `maxRounds` times, or the mode is `report`, which never sends the model back.
+- `unresolved`: checks did not pass and the execution ended anyway. `reason` says why it was allowed to: the model reported with the acknowledgement tool that it cannot fix them (`acknowledgement` is what it said), the model had been sent back `maxRounds` times, the mode is `report`, which never sends the model back, or (`not_started`) every check that did not pass was never started: the harness could not start its command at all (`startError` in its evidence says why), which says nothing about the code and which no change to the code mends, so the model was not sent back for it. `failing` names every check that did not pass, started or not; each one's evidence says which it was.
 
 One of these, told apart by `status`:
 
@@ -1855,6 +1891,9 @@ One of these, told apart by `status`:
 | --- | --- | --- |
 | `status` | `"not_needed"` | yes |
 | `unverified` | `true` | may be absent |
+| `reason` | one of `"turn_unchanged"`, `"state_unchanged"`, `"not_covered"` | may be absent |
+| `since` | [verifiedState](#verifiedstate) | may be absent |
+| `requiredChecks` | [requiredCheckRefs](#requiredcheckrefs) | may be absent |
 
 `status: "passed"`
 
@@ -1868,12 +1907,25 @@ One of these, told apart by `status`:
 | Field | Type | Required |
 | --- | --- | --- |
 | `status` | `"unresolved"` | yes |
-| `reason` | one of `"acknowledged"`, `"max_rounds"`, `"report_mode"` | yes |
+| `reason` | one of `"acknowledged"`, `"max_rounds"`, `"report_mode"`, `"not_started"` | yes |
 | `failing` | list of string, not empty | yes |
 | `acknowledgement` | [acknowledgement](#acknowledgement), or `null` | yes |
 | `evidence` | [verificationEvidence](#verificationevidence) | yes |
 
 Declared in `packages/core/src/event/durable.ts`.
+
+### `verifiedState`
+
+The verified state that changes are measured from, as a record names it. `seq` is where in the log that state was recorded: the session's first snapshot, a run of checks that passed (its `checks.finished`), or an ending that needed no check. `run` is the run of checks that last passed on the way to it, by the `seq` of its `checks.finished` and its number in its turn: nothing the checks cover changed between that run and the state. `run` is `null` when no run has passed up to it: the state is then what the session started from, give or take files no check covers, and no check has verified it. `run` is absent where the state was recorded before runs were kept with it.
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `seq` | integer ≥ 1 | yes |
+| `run` | object, or `null` | may be absent |
+| `run.seq` | integer ≥ 1 | yes |
+| `run.run` | integer ≥ 1 | yes |
+
+Declared in `packages/core/src/verify/evidence.ts`.
 
 ### `worktreeRecord`
 

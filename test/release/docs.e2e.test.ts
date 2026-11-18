@@ -266,8 +266,17 @@ describe("the user guide against what the program prints and keeps", () => {
       ["✓ done · nothing to check", ['done("nothing to check", hint)'], "○ done · nothing to check", ['span("○ ", "ok"), span("done", "ok", { bold: true }), span(" · nothing to check", "dim")']],
       ["✓ done · no checks configured", ['done("no checks configured")'], "○ done · no checks configured", ['span("○ ", "ok"), span("done", "ok", { bold: true }), span(" · no checks configured", "dim")']],
       [`✓ done · ${leftToParent}`, ["done(LEFT_TO_PARENT)"], `○ done · ${leftToParent}`, ['span("○ ", "ok"), span("done", "ok", { bold: true }), span(` · ${LEFT_TO_PARENT}`, "dim")']],
-      ["✗ stopped with failing checks: <names>", ['seg("stopped with failing checks", ["red", "bold"])'], "✗ unresolved · failing checks: <names>", ['span("✗ ", "error"), span("unresolved", "error", { bold: true }), span(` · failing checks: ${failing}`, "error")']],
+      ["✓ done · nothing to check", ['done("nothing to check", wrap(unchanged, this.width - 2)'], "○ done · nothing to check", ["wrapped([span(`  ${unchanged}`, \"dim\")], \"    \")"]],
+      ["✗ stopped with failing checks: <names>", ['seg(`stopped with ${unresolvedWhat(verification)}`, ["red", "bold"])'], "✗ unresolved · failing checks: <names>", ['span("✗ ", "error"), span("unresolved", "error", { bold: true }), span(` · ${verification?.status === "unresolved" ? unresolvedWhat(verification) : "failing checks"}: ${failing}`, "error")']],
+      ["✗ stopped with checks that could not be started: <names>", ['seg(`stopped with ${unresolvedWhat(verification)}`, ["red", "bold"])'], "✗ unresolved · checks that could not be started: <names>", ['unresolvedWhat(verification)']],
     ]
+    // The words both interfaces put before the names of checks that did not pass, and the lines under an ending on files put back.
+    const words = source("packages/cli/src/tools.ts")
+    expect(words).toContain('return verification.reason === "not_started" ? "checks that could not be started" : "failing checks"')
+    for (const sentence of ["The files are as they were when the checks last passed, so the checks were not run again.", "The files are as they were when the session started. No check has run on that state."]) {
+      expect(words).toContain(sentence)
+      expect(checks.replace(/\s+/g, " ")).toContain(sentence)
+    }
     for (const [inLine, lineSource, onScreen, screenSource] of rows) {
       expect(checks).toContain(`| \`${inLine}\``)
       expect(checks).toContain(`\`${onScreen}\``)
