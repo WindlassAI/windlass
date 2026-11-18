@@ -17,7 +17,8 @@
  *   `DecodeError`s it throws say what it expected. An object validator is
  *   handed a Proxy that records which keys it looks up, in its own order; a
  *   key it skips when absent is optional; a value position that accepts
- *   `null` is nullable. A validator whose error this walk does not recognise
+ *   `null` is nullable; an object that accepts a key it never looked up is
+ *   one a later build may add keys to. A validator whose error this walk does not recognise
  *   (a hand-written one) stops the generator with its path, rather than
  *   being described wrongly.
  * - The shared shapes: every object or union validator exported by
@@ -47,7 +48,7 @@ export type Shape =
   | { readonly k: "enum"; readonly values: readonly (string | number | boolean)[] }
   | { readonly k: "array"; readonly item: Shape }
   | { readonly k: "nullable"; readonly inner: Shape }
-  | { readonly k: "object"; readonly fields: readonly Field[] }
+  | { readonly k: "object"; readonly fields: readonly Field[]; readonly open?: true }
   | { readonly k: "variant"; readonly tag: string; readonly variants: Readonly<Record<string, Shape>> }
 
 export interface Field {
@@ -60,6 +61,8 @@ export interface Field {
 type Probe = (value: unknown) => DecodeError | null
 
 const PROBE = Symbol("probe")
+/** A key no shape has. */
+const UNKNOWN_KEY = "keyOfALaterBuild"
 
 /** Describes what `validator` accepts. Throws when it meets a validator it cannot read. */
 export function describeValidator(validator: Validator<unknown>): Shape {
@@ -169,7 +172,10 @@ function describeObject(probe: Probe, path: string, tag: { readonly key: string;
     }
     if (!found) break
   }
-  return { k: "object", fields }
+  // A key the validator has no field for: refused by a strict object, kept by one a later build may add keys to.
+  const extra = probe(proxy({ ...values, [UNKNOWN_KEY]: null }))
+  if (extra !== null && extra.path !== joinPath(path, UNKNOWN_KEY)) throw new Error(`event-log-doc: ${path || "(root)"}: the object refused a complete value (${extra.message})`)
+  return extra === null ? { k: "object", fields, open: true } : { k: "object", fields }
 }
 
 /** A value `shape` accepts, the smallest one. */
@@ -309,6 +315,9 @@ function scalar(shape: Shape): string | null {
   }
 }
 
+/** Under the table of an object that is not strict (`extensible` in validate.ts). */
+const OPEN_NOTE = "A later build may add keys to this object: a key that is not listed here is kept as it is, not refused."
+
 class Renderer {
   readonly used = new Set<string>()
   constructor(private readonly named: Map<string, Named>) {}
@@ -362,7 +371,7 @@ class Renderer {
       const or = nullable ? ", or `null`" : ""
       const at = list ? `${path}[]` : path
       if (inner.k === "object") {
-        out.push(`| ${code(path)} | ${condition}${list ? "list of objects" : "object"}${or} | ${required} |`)
+        out.push(`| ${code(path)} | ${condition}${list ? "list of objects" : "object"}${or}${inner.open === true ? ", other keys kept" : ""} | ${required} |`)
         out.push(...this.rows(inner, `${at}.`, condition))
       } else if (inner.k === "variant") {
         out.push(`| ${code(path)} | ${condition}${list ? "list of objects" : "object"}${or}, one of the shapes below by ${code(inner.tag)} | ${required} |`)
@@ -375,7 +384,8 @@ class Renderer {
 
   table(shape: Shape & { readonly k: "object" }): string {
     if (shape.fields.length === 0) return "No fields: `data` is `{}`."
-    return ["| Field | Type | Required |", "| --- | --- | --- |", ...this.rows(shape)].join("\n")
+    const table = ["| Field | Type | Required |", "| --- | --- | --- |", ...this.rows(shape)].join("\n")
+    return shape.open === true ? `${table}\n\n${OPEN_NOTE}` : table
   }
 
   /** The body of a shared shape's section. */
@@ -443,13 +453,19 @@ a build refuses a file of another version rather than misread it.
   never made, a second terminal event for a step).
 - **Strict decoding.** Each event type has one validator. An object has exactly the fields listed below: an unknown
   field is an error, and a field is absent only where the table says it may be (fields added to a shape after it
-  was first written); otherwise an absent value is an explicit \`null\`. An event of an unknown type, or of a version
-  the build does not read, is an error too: a reader must stop there rather than skip it, because a log folded with
-  a hole in it gives a wrong state.
-- **Versions.** Every event type has a version, \`v\`. Nothing has been released, so every type is at version 1 and
-  shapes were still changed in place. From the first release on, a change to an event's data is a new version, and
-  the program keeps a decoder for the old one. A new event type, or a new value of an enumeration, needs no new
-  version.
+  was first written); otherwise an absent value is an explicit \`null\`. An event of an unknown type, of a version
+  the build does not read, or with a value of an enumeration it does not know is an error too: a reader must stop
+  there rather than skip it, because a log folded with a hole in it gives a wrong state. The one exception is the
+  evidence of a run of checks ([verificationEvidence](#verificationevidence), each
+  [checkEvidence](#checkevidence) in it and its [outputTail](#outputtail)): it reports what a run found, a later
+  build may add keys to it, and a key a build does not know is kept as it is and written back unchanged.
+- **Versions, and opening a session with another build.** Every event type has a version, \`v\`, and every type is
+  at version 1. A build reads everything an earlier release wrote: a field added to a shape may be absent, and a
+  change that an existing record could not satisfy would be a new version with a decoder kept for the old one. The
+  other way round is not promised. A session that a later build has written something new into (a new field outside
+  the evidence, a new event type, a new value of an enumeration) is refused by an earlier build, whole, with the
+  place of what it does not know, rather than opened and misread; the later build still opens it. Which releases
+  that applies to is in the changelog.
 - **Frozen text.** Text the model saw (a tool's output, an appended instruction, a checkpoint) is stored in the event
   as it was sent and is never rendered again, so a request can be rebuilt from the log byte for byte.
 

@@ -28,7 +28,7 @@ your configuration file (`~/.config/windlass/config.json`). The default is `auto
 | The project's checks (the verification gate) | sandboxed, no question | sandboxed, no question | unsandboxed |
 | The project's checks, on a machine without a sandbox | not run | not run | run |
 | A required check ("Required checks" below) | sandboxed, no question | sandboxed, no question | unsandboxed |
-| A required check, on a machine without a sandbox | not run, and recorded as not started: the turn does not end as done | same | run |
+| A required check, on a machine without a sandbox | not run, and recorded as not started: the turn ends there, not as done, and the agent is not sent back | same | run |
 | After untrusted content entered the conversation: network access for a command, a command without the sandbox, an MCP tool | asks again; earlier approvals for it stop applying | same | commands run in the sandbox; the rest asks |
 
 `full` is an explicit choice for a container or a machine with nothing to lose. A project's own configuration file
@@ -294,7 +294,8 @@ and a stricter setting can keep a required check from passing:
 - `approval.mode`, or `approval.untrustedPaths` that taint the session: where you chose `full`, the checks then
   run in the sandbox, with no network and nothing writable outside the working directory and the temp directory.
   A check that needs more fails. On a machine without a sandbox it cannot run at all: it is recorded as one that
-  could not start, with the reason, the agent is told, and the turn ends with failing checks.
+  could not start, with the reason, and the turn ends there, unresolved. The agent is not sent back for it:
+  nothing it changes in the code starts a check, and it is told so, not that the code is wrong.
 - `sandbox.home: "user"` turns the session's home off: a sandboxed check that writes under the home fails.
 
 **What a required check does not promise.**
@@ -311,8 +312,18 @@ and a stricter setting can keep a required check from passing:
   session's working directory is checked when its parent's turn ends; what it left in a worktree of its own is
   checked once it is brought into the working directory, like any change.
 - **The agent may say it cannot fix one.** A turn can end with a required check failing: the agent reported it
-  (`report_check_failure`), or was sent back as often as allowed. That turn ends as unresolved, never as done, and
-  its record names the check. Whether unresolved work is accepted is yours, or the program's, to decide.
+  (`report_check_failure`), or was sent back as often as allowed. That turn ends as unresolved, and its record
+  names the check. Whether unresolved work is accepted is yours, or the program's, to decide.
+- **A turn in which one failed ends as done only on a run it passed in, or on a state it stands on.** When the
+  agent, sent back, puts the files a required check covers back exactly as they were, the check is not run
+  again: the turn ends as done (with no check needed, or on a run of other checks that its further changes
+  called for), and its record says which state the files are in again and which run last passed on it. That holds only for a state the check stands on: the one the session started from
+  (nothing of the agent's is in it; no check has run on it, and the record says so), and every state verified
+  since while it was a required check with the command, timeout and patterns it has now. A check that you or
+  the program named later, or changed, does not stand on what was verified without it or under another command:
+  it is run at the end of the next turn that changes a file, whatever the file, and stands from the run it passes
+  in. A state that was verified by an earlier version of Windlass, which kept no record of this, is one no
+  required check stands on.
 - **The ones a program names are not stored with the session.** It names them each time it opens the session. In
   a process that still has the session open, opening it again without the key keeps what was named; an empty list
   takes them back. A fork is a session of its own and is opened like one. A wake-up that fires for a session no

@@ -156,6 +156,11 @@ windlass --session ses_9acf "and run it"
   shows each turn's number on its ending row, and `/fork <n>` does the same there). `windlass fork --help` has the precise
   form, an event number. Forking and listing need no sign-in.
 
+**Another version.** A version of Windlass opens every session an earlier one wrote. The other way round is not
+promised: a session a later version has recorded something new in is refused by an earlier one, whole, rather than
+opened and misread ([troubleshooting](troubleshooting.md#a-session-written-by-a-later-version); the
+[changelog](../CHANGELOG.md) says which versions that is true of). The later version still opens it.
+
 **Several at once.** Each `windlass` process (and each editor using `windlass acp`) works in its own session, so you can run
 several side by side in the same project. One session can be open in only one process at a time; a second one is
 refused with a message that names the process holding it (see [troubleshooting](troubleshooting.md#a-session-in-use-by-another-process)).
@@ -346,9 +351,11 @@ the two interfaces word them differently:
 | ran its checks, and they passed | `✓ done · checks passed` | `✓ done · checks passed` |
 | changed nothing that a check covers | `✓ done · nothing to check` | `○ done · checks not needed: nothing they cover changed` |
 | the same, while files the checks cover changed outside the turn | `✓ done · nothing to check`, and a line under it | `○ done · nothing to check`, and the same line under it |
+| changed files and put them back as they were | `✓ done · nothing to check`, and a line under it | `○ done · nothing to check`, and the same line under it |
 | ran in a project with no checks | `✓ done · no checks configured` | `○ done · no checks configured` |
 | was a subagent's | `✓ done · its checks are left to its parent's turn` | `○ done · its checks are left to its parent's turn` |
 | ended with checks that still fail | `✗ stopped with failing checks: <names>` | `✗ unresolved · failing checks: <names>` |
+| ended with checks that could not be started | `✗ stopped with checks that could not be started: <names>` | `✗ unresolved · checks that could not be started: <names>` |
 
 - Each row goes on with the turn's steps and time (`· 2 steps · 392ms`), and in the full-screen interface with
   the turn's number (`· turn 2`), which `/fork <n>` takes. `○` there marks a turn that ended as done with nothing
@@ -356,11 +363,23 @@ the two interfaces word them differently:
 - The line under "nothing to check" is for files the checks cover that changed outside the turn (you edited by
   hand, a turn was undone, an earlier turn ended with its checks failing): they were not checked now, and are at
   the end of the next turn that changes a file.
+- A turn that changed files and put them back needs no check when its checks had not run yet: it changed
+  nothing. When they had run and failed, and the agent then put the files back as they were when the checks last
+  passed (or as they were when the session started), no check runs again either, and the line under the row says
+  which of the two states that is: `The files are as they were when the checks last passed, so the checks were
+  not run again.` or `The files are as they were when the session started. No check has run on that state.`
 - A subagent's work is checked with its parent's.
 - Checks still fail when the agent reported that it cannot fix them, ran out of rounds (`verify.maxRounds`), or
   `verify.mode` is `report`; the line under the row says which.
-- For a one-shot run the exit code is 0 for every `done` and 3 for failing checks; with `--json` the turn's last
-  event is then `execution.succeeded` with `data.verification.status` `"unresolved"`.
+- A check that could not be started at all is not a failing check: the shell for it could not be run (commands
+  run only in the sandbox and there is none, or the directory is gone), so it says nothing about the code, and no
+  change to the code starts it. The agent is not sent back for it. When every check that did not pass is one of
+  those, the turn ends at once, and the line under the row says why each could not be started. When others
+  failed, the agent is sent back for those alone. A command the shell does not find (exit code 126 or 127) is
+  not this: the check ran, and the agent is shown its output like any failure.
+- For a one-shot run the exit code is 0 for every `done` and 3 for checks that did not pass, started or not; with
+  `--json` the turn's last event is then `execution.succeeded` with `data.verification.status` `"unresolved"`,
+  and `data.verification.reason` says which (`not_started` when none of them was started).
 
 With `gate` (the default) a failing check is shown to the agent (`↻ the agent is shown the failing checks and
 carries on`), which then fixes the code or reports why it cannot. Each check's full output is kept in a file the
@@ -394,7 +413,14 @@ A program that starts `windlass acp` for you names them for a session when it op
 - A subagent's turn runs no check, required or not. Its work is checked when its parent's turn ends, with
   everything else that turn changed.
 - On a machine without a sandbox, outside `full`, a required check cannot be run either. It is then recorded as
-  one that could not start, the agent is told why, and the turn ends with failing checks, not as done.
+  one that could not start, with the reason, and the turn ends at once with checks that could not be started,
+  not as done. The agent is not sent back: nothing it changes in the code starts a check.
+- After a required check failed in a turn, the turn ends as done only when a later run of the check passed, or
+  when the files it covers are again exactly what they were in a state the check stands on, because the agent
+  put back what it had changed; the check is then not run again. A check stands on the state the session
+  started from, and on every state verified since while it was a required check with the command, timeout and
+  patterns it has now. One that you or the program named later, or changed, does not stand on what was verified
+  without it: it runs at the end of the next turn that changes a file, whatever the file.
 
 The record of a run says of each check whose it is (your file's, the program's or the project's) and whether it is
 required; with `--json` that is `origin` and `required` in the `evidence` of `checks.finished`. What a required
@@ -538,7 +564,7 @@ the new prefix. `windlass --demo list` has scripted compactions under "Compactio
 | 0 | done; with `--unattended deny` also when calls were refused for lack of approval (the ending says how many) |
 | 1 | failed |
 | 2 | usage error: an unknown option (the nearest one is suggested), a wrong value, an unknown model, or a session ID that matches no session or several (`-c` with no session to continue is 1) |
-| 3 | done, but the project's checks still fail and were left unresolved |
+| 3 | done, but the project's checks still fail and were left unresolved, or could not be started |
 | 4 | stopped: a tool call needed your approval and nobody was there to give it (`--unattended stop`) |
 | 130 | interrupted (Ctrl-C) |
 | 141 | output closed (a pipe reader left) |

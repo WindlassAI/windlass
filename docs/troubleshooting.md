@@ -143,6 +143,23 @@ Exit code 1, also from the full-screen interface when you leave it without havin
 be open in one process at a time (another terminal, an editor, the full-screen interface). Wait for that process, stop it, or start a new session (`windlass` without `-c` or `--session`). A process that
 died holds nothing: its sessions open normally (see "A crashed session" below).
 
+## A session written by a later version
+
+```
+windlass: that session holds a record this version of Windlass does not read (session ses_<id> state.<place>: expected no such key, got <value>). A later version wrote it, or the file is damaged: open the session with the version that wrote it, or a later one.
+```
+
+Exit code 1. A session is a log of records, and each version reads them strictly: one with a field, a value or an
+event it does not know refuses the session rather than opening it and misreading it. That happens when a later
+version of Windlass has worked in the session and you open it with an earlier one. Nothing is written to the
+session, and nothing in it is lost: open it with the version that wrote it, or a later one (`windlass --version`
+says which you have). A later version always opens what an earlier one wrote.
+
+Windlass 0.2.0 and earlier say only `windlass: Internal error` for this (a program that speaks ACP gets the place
+in the error's `data.details`). They refuse a session in which a later version recorded anything about checks: a
+run of checks, or the ending of a turn of a session that has checks configured. A session without checks holds
+nothing they do not know, and opens. The [changelog](../CHANGELOG.md) lists what each version added.
+
 ## The sandbox is unavailable
 
 When commands cannot be sandboxed, the first command of a session says so, and in the default mode every command

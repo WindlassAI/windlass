@@ -134,7 +134,11 @@ is a new version with a decoder for the old one.
 
 **Events** (`event/`)
 - Each durable event records one fact and carries a version. Objects are strict: an unknown field, type or version
-  is an error on read, never something to skip.
+  is an error on read, never something to skip. So a build opens what an earlier release wrote (a field added
+  since is one that may be absent) and refuses a session a later one recorded something new in, in a sentence
+  that says so (`unreadableSession`). The one object a later build may add keys to is the evidence of a run of
+  checks (`extensible` in `validate.ts`): it reports what a run found, a key a build does not know there is kept
+  as it is, and nothing the state is decided from is added that way.
 - Only boundaries are stored. Streaming deltas are ephemeral; the event that ends an item carries its whole value.
 - Text the model will see (tool output, instructions, the interrupt marker, the compaction summary) is frozen in the
   event when it is written and never rendered again.
@@ -157,8 +161,11 @@ is a new version with a decoder for the old one.
   file, or nothing the checks cover changed; with `unverified` when files the checks cover did change outside the
   turn and were therefore not checked), `not_configured`, `left_to_parent` (the session is a subagent: its turn is not
   verified by itself, its parent's turn is; it says nothing about whether checks exist), or `unresolved` with
-  the failing checks, the reason (`acknowledged`, `max_rounds`, `report_mode`) and the evidence. A client shows
-  these as different endings.
+  the checks that did not pass, the reason (`acknowledged`, `max_rounds`, `report_mode`, or `not_started` when
+  none of them could be started at all) and the evidence. `not_needed` says why (`reason`: the turn changed no
+  file, the workspace is a verified state again, or no check covers what differs from it) and which verified
+  state that is measured from (`since`, with the run that last passed on the way to it). A client shows these as
+  different endings.
 - A summary call is a model request that is no step: it writes no `step.started`. The model requests of a turn
   are its `step.started` events plus the `calls` of the `compaction.ended` and `compaction.failed` events in it.
 
@@ -484,6 +491,22 @@ is a new version with a decoder for the old one.
   the turn as `not_configured`. A subagent's turn still runs none. Each check's evidence says whose it is
   (`origin`), whether it is required, and carries the end of a failing output (`outputTail`, 60 lines and 4096
   bytes at most, redacted).
+- *A check that was never started* (`neverStarted`: no exit code, a reason in `startError`) says nothing about
+  the code, and no change to the code starts it. The gate never sends the model back for one: when every check
+  that did not pass is one of those the turn ends unresolved at once (`not_started`), and when others failed it
+  decides from those alone (the rounds, the acknowledgement, whether a required check is among them). The
+  report tells the model which is which, and asks it to fix the code only for a check that ran. A command the
+  shell did not find (exit code 126 or 127) has the same status and is not one of these.
+- *Which required checks stand on the verified state.* Checks are selected by what differs from the verified
+  state, and a check that covers nothing that differs is not run: its result on that state is taken to hold.
+  For a required check that is true only if it was a required check, with the command it has now, when that
+  state was recorded; a client may name others when it opens the session again. So each record that moves the
+  verified state on (a run that passed, an ending that needed no check) names the required checks that stand
+  on it (`requiredChecks`, each by name and a digest of command, timeout, patterns and directory), the reducer
+  keeps them with the state (`verification.verified`), and the loop runs a required check that does not stand
+  at the end of a turn that changed a file, whatever the file. Every check stands on the session's first
+  snapshot, before the agent did anything. On a state moved by a record that names none (no check was required,
+  or an earlier build wrote it), none does.
 
 **Engine** (`engine/`)
 - `createEngine` takes everything it touches as a dependency (the stores, provider, tools, clock, ID generators,
@@ -635,7 +658,10 @@ is a new version with a decoder for the old one.
   them (`checks.started` is durable first; an interrupt stops them like tools). Which checks run is decided from
   everything that is unverified, the turn's own changes or not: a check reads the whole workspace and cannot tell
   whose change it is looking at. The results and the decision are one append: `checks.finished` with the terminal
-  event, or with the report that sends the model back. The turn ends unresolved when the model acknowledges the
+  event, or with the report that sends the model back. A turn in which checks ran and failed can still end as
+  done without another run: when the model put back what it had changed, nothing the checks cover differs from
+  the verified state any more, and the ending says so (`not_needed` with `state_unchanged` or `not_covered`, and
+  `since`), because the last run on record is then one that failed. The turn ends unresolved when the model acknowledges the
   failure with the tool, after `maxRounds` reports, or in `report` mode, where the model is shown the failure and
   not sent back. A configuration that cannot be loaded fails the execution before anything is sent, and says so; anything else
   that fails as an execution starts (the store, say) is reported as the harness's own failure, in its own
