@@ -6,6 +6,29 @@ All notable changes to Windlass are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **A client can hand a session a message of its own, once.** `_windlass/admit` admits a message under an ID the
+  client chooses, with an origin that names it, as Windlass's own wake-ups admit theirs: a queued item that never
+  steers the turn in progress, shown to the model in an envelope that names the origin, and with `start` the
+  beginning of a turn when the session is idle. An ID the session already admitted is answered `duplicate` and
+  nothing is written, so a client that is not sure its message arrived sends it again. With `untrusted: { source }`
+  the text is not the user's own: the session is tainted from the admission on, with a source of the new kind
+  `client-input`, before the turn it starts. The method is listed in `agentCapabilities._meta["windlass"].methods`.
+- **A client can declare tools it runs itself.** `hostTools` in `_meta["windlass"]` of `session/new`,
+  `session/load` and `session/resume` declares tools by name, description, input schema and `effect`; the model is
+  offered them beside the built-in tools, in the tool list frozen with the session's first baseline. A call is
+  approved by its declared effect through the same decision as every tool, then sent to the client as
+  `_windlass/host_call`, and the answer (`{ status, output }`) is the call's result. A call the client does not
+  answer within the MCP call limit (60 s) is cancelled and ends as an error the model reads. With
+  `untrustedResult: true` each answer taints the session (`host-tool`). A declaration with the name of one of the
+  agent's own tools, or one it cannot use otherwise, refuses the open with a sentence that names it. A subagent is
+  not offered them. The key is listed in `agentCapabilities._meta["windlass"].openMeta`; `docs/acp.md`, "Tools the
+  client runs", has the rest.
+- A session in which a client's tool ran under the approval layer, or that took in untrusted admitted text, holds
+  records 0.3.0 does not read, and 0.3.0 refuses to open it (`unreadable_session`) rather than open it without its
+  taint. A client that uses neither feature sees no change, and sessions of earlier versions open as before.
+
 ## [0.3.0] - 2026-11-19
 
 ### Added
