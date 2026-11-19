@@ -394,12 +394,30 @@ network  taint | A D | A D | A D
     expect(asked.question.subject).toBe("db_migrate")
     expect(asked.question.details).toEqual(["The client runs db_migrate itself, outside the sandbox, with whatever access the client has: nothing here contains what it does."])
     expect(asked.needs).toEqual([{ kind: "tool", tool: "db_migrate" }])
+    // The client named the tool for this session: an approval of it is never remembered for the project.
     expect(asked.question.choices.map((choice) => [choice.id, choice.remembers])).toEqual([
       ["once", null],
       ["session", "the tool db_migrate, for the rest of this session"],
-      ["project", "the tool db_migrate, in this project for 30 days"],
       ["deny", null],
     ])
+  })
+
+  test("a question about any of its effects offers the session and never the project", () => {
+    for (const effect of ["exec", "network"] as const) {
+      const asked = ask(decide(input({ policy: { mode: "auto", unattended: "deny", taint: "enforce" }, call: { ...HOST.exec!, effect }, sandbox: NONE })))
+      expect(asked.question.choices.map((choice) => choice.id)).toEqual(["once", "session", "deny"])
+    }
+    // A write names no path, so nothing about it can be remembered at all.
+    expect(ask(decide(input({ call: HOST.write!, sandbox: NONE }))).question.choices.map((choice) => choice.id)).toEqual(["once", "deny"])
+  })
+
+  test("a project's approval of a tool by its name does not cover a client's tool of that name, and still covers the tool it was given for", () => {
+    const forName: Grant[] = [{ scope: "project", rule: { kind: "tool", tool: "ticket_comment" }, at: null, grantedAt: NOW }]
+    const auto = { mode: "auto", unattended: "deny", taint: "enforce" } as const
+    expect(code(decide(input({ policy: auto, call: HOST.network!, sandbox: NONE, grants: forName })))).toBe("A")
+    expect(code(decide(input({ policy: auto, call: { ...HOST.network!, tool: "ticket_comment", origin: "builtin" }, grants: forName })))).toBe("R")
+    // A session's approval of it does cover it.
+    expect(code(decide(input({ policy: auto, call: HOST.network!, sandbox: NONE, grants: [sessionGrant({ kind: "tool", tool: "ticket_comment" }, 5)] })))).toBe("R")
   })
 
   test("what is remembered for it covers that tool, whatever effect it declares, and neither another tool nor the harness's commands", () => {

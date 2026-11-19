@@ -95,13 +95,24 @@ export function decide(input: DecisionInput): Decision {
   const taint = input.policy.taint === "enforce" ? input.taint : CLEAN
   const plan = planCall(input, taint.tainted)
   if ("deny" in plan) return { kind: "deny", message: deniedMessage(plan.deny), stop: false }
-  const needs = plan.needs.filter((need) => !isCovered(need, input.grants, taint, input.now))
+  const scopes = grantScopes(input.call)
+  const needs = plan.needs.filter((need) => !isCovered(need, input.grants.filter((grant) => scopes.includes(grant.scope)), taint, input.now))
   if (needs.length === 0) return plan.run
   if (!input.present) return { kind: "deny", message: unattendedMessage(needs), stop: input.policy.unattended === "stop" }
   return { kind: "ask", question: question(input, needs, plan.run, taint), needs, then: plan.run }
 }
 
 const RUN: RunDecision = { kind: "run" }
+
+/**
+ * Where an approval of this call can be remembered, and which remembered approvals apply to it. A tool the client
+ * declared is named by that client, for this session: an approval of it is one of this client's tool, so it is
+ * remembered for the session and never for the project, where it would cover whatever tool another client gives the
+ * same name. Every other call: both.
+ */
+function grantScopes(call: CallFacts): readonly GrantScope[] {
+  return call.origin === "host" ? ["session"] : ["session", "project"]
+}
 
 function planCall(input: DecisionInput, tainted: boolean): Plan {
   const call = input.call
@@ -180,7 +191,7 @@ function question(input: DecisionInput, needs: readonly Need[], then: RunDecisio
   const has = (kind: Need["kind"]) => needs.some((need) => need.kind === kind)
   const choices = [
     { id: "once", label: "Allow once", approve: true, remembers: null, grants: [] } as Choice,
-    ...(["session", "project"] as const).flatMap((scope): Choice[] => {
+    ...grantScopes(call).flatMap((scope): Choice[] => {
       if (!needs.every((need) => rememberableScopes(need).includes(scope))) return []
       return [
         {
