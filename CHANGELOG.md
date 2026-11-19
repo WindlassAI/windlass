@@ -18,7 +18,8 @@ All notable changes to Windlass are recorded here. The format follows
 - **A client can declare tools it runs itself.** `hostTools` in `_meta["windlass"]` of `session/new`,
   `session/load` and `session/resume` declares tools by name, description, input schema and `effect`; the model is
   offered them beside the built-in tools, in the tool list frozen with the session's first baseline. A call is
-  approved by its declared effect through the same decision as every tool, then sent to the client as
+  approved by its declared effect through the same decision as every tool, which is told that no sandbox contains
+  it (the client runs it), so an `exec` or a `write` asks in modes `ask` and `auto`; then it is sent to the client as
   `_windlass/host_call`, and the answer (`{ status, output }`) is the call's result. A call the client does not
   answer within the MCP call limit (60 s) is cancelled and ends as an error the model reads. With
   `untrustedResult: true` each answer taints the session (`host-tool`). A declaration with the name of one of the

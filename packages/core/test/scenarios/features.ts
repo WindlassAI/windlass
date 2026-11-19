@@ -13,7 +13,9 @@ import type { HostToolDeclaration } from "../../src/tools/host.ts"
 import {
   type Asked,
   type Scenario,
+  approvalAnswered,
   approvalDenied,
+  approvalRequested,
   baseline,
   c,
   called,
@@ -336,7 +338,10 @@ export const clientAdmitsUntrusted: Scenario = {
   ],
 }
 
-/** The tools the client of these scenarios declares: one that reads its tracker, whose text others wrote, and one that writes to it. */
+/**
+ * The tools the client of these scenarios declares: one that reads its tracker, whose text others wrote, one that
+ * writes to it, and one that runs a program on the client's own machines.
+ */
 export const HOST_TOOLS: readonly HostToolDeclaration[] = [
   {
     name: "ticket_read",
@@ -350,6 +355,13 @@ export const HOST_TOOLS: readonly HostToolDeclaration[] = [
     description: "Comment on a ticket of the team's tracker.",
     inputSchema: { type: "object", properties: { id: { type: "integer" }, text: { type: "string" } }, required: ["id", "text"] },
     effect: "network",
+    untrustedResult: false,
+  },
+  {
+    name: "db_migrate",
+    description: "Run the team's database migrations against an environment.",
+    inputSchema: { type: "object", properties: { target: { type: "string" } }, required: ["target"] },
+    effect: "exec",
     untrustedResult: false,
   },
 ]
@@ -430,4 +442,64 @@ export const hostToolTimesOut: Scenario = {
   ],
 }
 
-export const featureScenarios = [skillIndexFollowsTheFiles, lateServerAndTaintedCall, wakeWhileIdle, wakeWhileWorking, wakeDeliveredTwice, untrustedFiring, clientAdmitsTwice, clientAdmitsUntrusted, hostToolRoundTrip, hostToolTimesOut]
+export const MIGRATE = '{"target":"staging"}'
+/** A client's `exec` tool, as the decision is told about it: the client runs it, so no sandbox contains it. */
+const MIGRATING: Asked = { name: "db_migrate", effect: "exec", origin: "host", sandbox: { available: false, reason: "the client runs this tool itself, outside the sandbox" } }
+
+export const hostExecAsked: Scenario = {
+  title: "A client's tool that runs programs is asked about in mode auto, though commands here run in the sandbox",
+  description:
+    "The client declared a tool whose effect is `exec`. In mode `auto` a built-in command runs without a question because the sandbox contains it; the client runs its own tool outside that sandbox, so the decision is told there is none for this call, and it is decided as any command is where there is no sandbox: it needs the user's approval. The user is present and allows it once; the call runs, recorded as not sandboxed, and the client's answer is the result.",
+  provider: "step 1 calls db_migrate; step 2 answers",
+  features: { host: true },
+  approval: { mode: "auto", attended: true },
+  phases: [
+    {
+      label: "the call asks, the user allows it once, and the client runs it",
+      events: [
+        ...opening("Run the migrations on staging."),
+        stepStarted("a1"),
+        called("a1", "call_1", "db_migrate", MIGRATE),
+        approvalRequested("a1", "call_1", MIGRATING),
+        approvalAnswered("a1", "call_1", MIGRATING, "once", 9),
+        event("tool.started", { messageId: m("a1"), callId: c("call_1"), effect: "exec", run: hostRun("auto") }),
+        hostSettled("a1", "call_1", "success", "Migrated 3 tables on staging.", false),
+        stepEnded("a1", "tool_calls"),
+        stepStarted("a2"),
+        say("a2", "The migrations ran on staging."),
+        stepEnded("a2"),
+        executionSucceeded(),
+      ],
+      expect: { ui: [{ id: "u1" }, { id: "a1", calls: ["call_1 db_migrate success"] }, { id: "a2" }], execution: null },
+    },
+  ],
+}
+
+export const hostExecDenied: Scenario = {
+  title: "A client's tool that runs programs is refused in mode auto when nobody is there to approve it",
+  description:
+    "The same call in a run nobody attends. It needs the user's approval, as a command without the sandbox does, and nobody can give it: it is refused at once with what it needed, the client is never asked, and the model is told and goes on.",
+  provider: "step 1 calls db_migrate; step 2 answers",
+  features: { host: true },
+  approval: { mode: "auto" },
+  phases: [
+    {
+      label: "the call is refused without a question, and the model answers",
+      events: [
+        ...opening("Run the migrations on staging."),
+        stepStarted("a1"),
+        called("a1", "call_1", "db_migrate", MIGRATE),
+        approvalDenied("a1", "call_1", MIGRATING, "unattended"),
+        settled("a1", "call_1", "error", refusal(MIGRATING)),
+        stepEnded("a1", "tool_calls"),
+        stepStarted("a2"),
+        say("a2", "I could not run the migrations: nobody was there to allow it."),
+        stepEnded("a2"),
+        executionSucceeded(),
+      ],
+      expect: { ui: [{ id: "u1" }, { id: "a1", calls: ["call_1 db_migrate error"] }, { id: "a2" }], execution: null },
+    },
+  ],
+}
+
+export const featureScenarios = [skillIndexFollowsTheFiles, lateServerAndTaintedCall, wakeWhileIdle, wakeWhileWorking, wakeDeliveredTwice, untrustedFiring, clientAdmitsTwice, clientAdmitsUntrusted, hostToolRoundTrip, hostToolTimesOut, hostExecAsked, hostExecDenied]

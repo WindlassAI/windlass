@@ -913,12 +913,25 @@ a deploy, a way to ask a person) declares them when it opens a session, in `_met
   model at a compaction; a changed `inputSchema` applies to the next call at once. A subagent is not offered
   them, and a program (`run_code`) cannot call them.
 - **How a call is approved.** By its declared `effect`, through the same decision as every tool, with the same
-  modes, remembered approvals, taint and `attended`/`unattended` rules: in mode `auto` a `read` runs, a `write`
-  asks (it names no path the agent could check), and a `network` asks, as a built-in network tool would. An
-  `exec` is decided as a command is, which in mode `auto` runs without a question where commands are sandboxed:
-  that decision counts on the sandbox, and the client runs the call itself, outside it, so a tool that must be
-  asked about is declared `network`. A question about a host tool is the usual `session/request_permission`.
-  Nothing about a host tool is approved by a second path.
+  modes, remembered approvals, taint and `attended`/`unattended` rules. The client runs the call, so no sandbox
+  contains it: the decision is told so, and a host tool is decided as any tool is on a machine without a sandbox,
+  wherever this one has one. Declare the effect the tool has; what the call is asked about follows from it:
+
+  | `effect`  | `ask`   | `auto`  | `full`                         |
+  | --------- | ------- | ------- | ------------------------------ |
+  | `read`    | runs    | runs    | runs                           |
+  | `write`   | asks    | asks    | runs                           |
+  | `exec`    | asks    | asks    | runs; asks once the session is tainted |
+  | `network` | asks    | asks    | runs; asks once the session is tainted |
+
+  "Asks" is the usual `session/request_permission` when the client attends, and a refusal the model reads when
+  nobody is there (`attended: false`), or the end of the turn with `unattended: "stop"`; an approval remembered
+  for the session or the project covers what it says, as for any tool. A `write` names no path the agent could
+  check, so it is asked about in `auto` too. An `exec` is asked about as a command without the sandbox ("Allow
+  the client's tool … to run outside the sandbox?"); allowed for the session, that is remembered as allowing
+  commands without the sandbox, built-in ones included, which on a machine with a sandbox ask for that only in a
+  tainted `full`. The `command` and `sandbox` arguments the built-in shell tool reads are not read from a host
+  tool's input: its fields are the client's.
 - **The call.** Once approved, the agent sends the client `_windlass/host_call` (a request) and the answer is the
   call's result, capped and stored once, as any tool's output is:
 

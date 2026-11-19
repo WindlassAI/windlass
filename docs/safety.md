@@ -440,7 +440,7 @@ counts a conversation as tainted once it holds content from a source it does not
 - the result of a tool such a program declared and runs itself, when its declaration says its results are
   untrusted (`untrustedResult`). Any other answer of such a tool is the program's own, like your messages: the
   program that started Windlass is one you chose. Its calls are approved by the effect it declares, as any
-  tool's are;
+  tool's are, and never as contained by the sandbox, since the program runs them itself;
 - later: the result of a web tool (there is none yet).
 
 You are told once, with the source. From then on anything that can send data out (network access for a command, a

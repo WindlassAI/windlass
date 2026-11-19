@@ -58,7 +58,7 @@ import { type BuiltinCommand, type CommandListing, type CommandLookup, listComma
 import { NO_AGENT, NO_RESTRICTIONS } from "../agents/definition.ts"
 import { type CallVerdict, checkAgentCall, effectiveApprovalMode, unknownToolNames } from "../agents/restrictions.ts"
 import { AGENT_KEY, type AgentRecord, agentRecordOf, agentSettings, agentSource, agentSwitch, childAgent, findAgent, resolveStartAgent } from "../agents/use.ts"
-import { type Decision, type RunDecision, type SandboxState, decide } from "../approval/decide.ts"
+import { type CallFacts, type Decision, type RunDecision, type SandboxState, decide } from "../approval/decide.ts"
 import { type Grant, stampGrants } from "../approval/grants.ts"
 import type { McpRegistry } from "../mcp/registry.ts"
 import type { SkillSet } from "../skills/discover.ts"
@@ -5064,7 +5064,7 @@ class LiveSession implements EngineSession {
     const workspace = realWorkspace(context.cwd)
     const decideNow = (present = this.attended) => {
       const policy = this.policy().policy
-      const decision = decide({ policy, call: facts, sandbox: this.sandboxState(), taint: this.taint(policy), grants: this.grants(workspace), present, now: this.core.clock.now(), workspace, home: approvals.home })
+      const decision = decide({ policy, call: facts, sandbox: this.sandboxState(facts), taint: this.taint(policy), grants: this.grants(workspace), present, now: this.core.clock.now(), workspace, home: approvals.home })
       return { policy, decision }
     }
     const allow = (policy: ApprovalPolicy, how: RunDecision, note?: string): Authorization => {
@@ -5175,7 +5175,12 @@ class LiveSession implements EngineSession {
     return this.config
   }
 
-  private sandboxState(): SandboxState {
+  /**
+   * Whether the sandbox can contain this call, as the decision is told it. A tool the client declared runs in the
+   * client, outside it, wherever a sandbox exists: it is decided as every call is where there is none.
+   */
+  private sandboxState(facts: CallFacts): SandboxState {
+    if (facts.origin === "host") return { available: false, reason: "the client runs this tool itself, outside the sandbox" }
     const state = this.core.approvals!.sandbox().state
     return state.available ? { available: true } : { available: false, reason: state.reason }
   }

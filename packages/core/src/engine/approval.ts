@@ -180,8 +180,11 @@ export function callFacts(tool: AnyTool, input: Json, context: FactContext): { r
     }
   })()
   const paths = touched.filter((path) => typeof path === "string" && path !== "").map((path) => classify(path, context))
+  // The `sandbox` and `command` arguments are the harness's own command tools' conventions. A tool the client declared
+  // runs outside the sandbox whatever its input says, and its fields mean what the client says they mean.
+  const harnessCommand = tool.effect === "exec" && tool.origin !== "host"
   let escalation: Escalation | null = null
-  if (tool.effect === "exec") {
+  if (harnessCommand) {
     const asked = safeDecode(escalationRequest, record.sandbox)
     if (!asked.ok) return { invalid: `the \`sandbox\` argument is not valid: ${asked.error.message}` }
     if (asked.value !== null) escalation = escalationFacts({ network: asked.value.network, write: asked.value.write.map((path) => tempPath(context.temp, path, context.cwd)) }, pathContext(context))
@@ -206,7 +209,7 @@ export function callFacts(tool: AnyTool, input: Json, context: FactContext): { r
       effect: tool.effect,
       origin: tool.origin ?? "builtin",
       paths,
-      command: tool.effect === "exec" && !records && typeof record.command === "string" ? record.command : null,
+      command: harnessCommand && !records && typeof record.command === "string" ? record.command : null,
       escalation: records ? null : escalation,
       ...(records ? { changes: "records" as const } : {}),
       ...(cautions.length === 0 ? {} : { cautions }),
