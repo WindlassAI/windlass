@@ -6,6 +6,8 @@ All notable changes to Windlass are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-19
+
 ### Added
 
 - **A client can hand a session a message of its own, once.** `_windlass/admit` admits a message under an ID the
@@ -215,7 +217,8 @@ The first release: a coding agent for the terminal that signs in with a ChatGPT 
 - **Executables** for Linux and macOS, x64 and arm64, with SHA-256 checksums and an install script, and on npm:
   `npm install -g windlass-agent` installs the one for your machine.
 
-[Unreleased]: https://github.com/parthg1901/windlass/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/parthg1901/windlass/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/parthg1901/windlass/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/parthg1901/windlass/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/parthg1901/windlass/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/parthg1901/windlass/compare/v0.1.0...v0.1.1
