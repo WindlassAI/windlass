@@ -59,7 +59,7 @@ every command the agent started is stopped, and the session resumes later where 
 | --- | --- |
 | `initialize` | Protocol version 1. Capabilities: `loadSession`, embedded text context in prompts, `sessionCapabilities` `list`, `resume`, `close`, `delete`. One auth method, "Sign in with ChatGPT". |
 | `authenticate` | Checks the saved sign-in, or the access token handed in through `WINDLASS_ACCESS_TOKEN_FILE`; succeeds if it is usable, otherwise answers auth-required with how to sign in, or that a new token must be handed in. There is no in-client browser flow. |
-| `session/new` | A session in the client's `cwd` (an absolute directory). The response carries the config options below. `_meta["windlass"] = { model, effort }` starts it with those settings, checked against the account's models first (an unknown model is refused with `-32602` and the list of valid ones, an effort the model does not take with the ones it accepts). `agent` in the same object is the agent it starts as, by name (`"none"`: no agent; absent: the default of the user's configuration); a name that is no agent is refused with `-32602` and a sentence that suggests the near ones, and no session is created. `approval` (`ask`, `auto`, `full`), `unattended` (`deny`, `stop`), `attended` (default `true`) and `children` (default: as `attended`) in the same object say how tool calls are approved (see "Approval" below), `sandboxHome` (`user`, `session`) what sandboxed commands find at the home directory's path (see "The session's home" below), `withholdEnv` and `passEnv` (lists of environment variable names) what of the server's environment the session's commands get (see "A command's environment" below), and `requiredChecks` (a list of checks) which checks run and gate the session's turns whatever the project's file says (see "Required checks" below); they are read on `session/load` and `session/resume` too. |
+| `session/new` | A session in the client's `cwd` (an absolute directory). The response carries the config options below. `_meta["windlass"] = { model, effort }` starts it with those settings, checked against the account's models first (an unknown model is refused with `-32602` and the list of valid ones, an effort the model does not take with the ones it accepts). `agent` in the same object is the agent it starts as, by name (`"none"`: no agent; absent: the default of the user's configuration); a name that is no agent is refused with `-32602` and a sentence that suggests the near ones, and no session is created. `approval` (`ask`, `auto`, `full`), `unattended` (`deny`, `stop`), `attended` (default `true`) and `children` (default: as `attended`) in the same object say how tool calls are approved (see "Approval" below), `sandboxHome` (`user`, `session`) what sandboxed commands find at the home directory's path (see "The session's home" below), `withholdEnv` and `passEnv` (lists of environment variable names) what of the server's environment the session's commands get (see "A command's environment" below), `requiredChecks` (a list of checks) which checks run and gate the session's turns whatever the project's file says (see "Required checks" below), and `hostTools` (a list of tools) the tools the client runs itself (see "Tools the client runs" under Extensions); they are read on `session/load` and `session/resume` too. |
 | `session/load` | Replays the whole stored conversation as `session/update`s (user messages, reasoning, text, tool calls with their final status), then reports the title (`session_info_update`), the context use (`usage_update`), and the session's state (the `_windlass/state` notification below), then answers. The `cwd` must be the session's own. |
 | `session/resume` | The same without the replay. On load and resume, `_meta["windlass"] = { model, effort }` switches the session to them (checked first, recorded as `settings.changed`), `agent` switches it to that agent (recorded as `agent.switched`; a refusal leaves the session closed), and `archived: true` opens an archived session too. |
 | `session/list` | Sessions (not deleted), newest first, filtered by `cwd`, 100 per page. Each has `_meta["windlass"] = { model, effort, archived?, forkedFrom?, forkedThroughSeq? }` (a fork names the session it was forked from and the last event it inherited). With `_meta["windlass"] = { archived: true }` archived sessions are listed too. The `title` is the session's own, or else derived from its first prompt (below). Each page is read from the engine: `nextCursor` is a place in the order (when a session was last updated, then its ID), so the server keeps nothing between two pages, a session that arrives meanwhile is in no later page, and none is listed twice; a new listing has it at the front. A cursor the server did not give is refused with `-32602`. |
@@ -159,8 +159,9 @@ Before every tool call the harness decides whether it runs, runs in the sandbox,
   would ask is then refused at once and the model is told (`unattended: "deny"`, the default), or the turn ends
   (`"stop"`): the prompt is answered with an error whose `data["windlass"].reason` is `approval_required`.
   Nothing waits either way.
-- **Taint.** When content from outside (a file outside the workspace, a command that ran with the network, later a
-  web or MCP tool) enters the conversation, `_windlass/taint` `{ sessionId, tainted: true, text, source }` is
+- **Taint.** When content from outside (a file outside the workspace, a command that ran with the network, an MCP
+  tool, text the client admitted as untrusted with `_windlass/admit`, the result of a client's tool declared with
+  `untrustedResult`) enters the conversation, `_windlass/taint` `{ sessionId, tainted: true, text, source }` is
   sent once, and a `notice` to clients that show them. From then on anything that can send data out asks again.
   `_windlass/clear_taint` is the user's "I trust what is there"; it is answered `{ cleared }` and followed by
   `_windlass/taint` `{ tainted: false }`.
@@ -859,6 +860,95 @@ is reported by `_windlass/state` and `_windlass/turn`.
 // result
 { messageId: string }                           // the ID the message has once delivered
 ```
+
+**`_windlass/admit`** (request): a message the client makes itself (a task handed to the session, a note from
+another system) admitted under an ID the client chooses, so that sending it twice is safe. It is admitted as the
+harness's own components admit theirs: a queued item that waits behind the turn in progress and never steers it,
+shown to the model in an envelope that names `origin` (`<harness origin="tracker">`), not as the user's words.
+With `start` and the session idle, it starts a turn, reported like any other; that turn is unattended unless the
+client said it attends. The session must be open on this connection.
+
+```ts
+// params
+{
+  sessionId: string,
+  messageId: string,        // 1 to 128 letters, digits, _ - . or :; the admission's idempotency key
+  origin: string,           // 1 to 32 lowercase letters, digits, _ or -, beginning with a letter; not an origin of
+                            //   the harness's own (wake, interrupt, ...), which is refused with -32602
+  text: string,             // not blank; stored as given, never rendered again
+  start: boolean,           // start work when the session is idle
+  untrusted?: { source: string }   // the text is not the user's own: source (at most 200 characters) says where it
+                                   //   came from, in the words the user is shown
+}
+// result
+{ outcome: "admitted" | "duplicate" }   // duplicate: the session already has a message or an admission under
+                                         //   that ID (delivered, waiting or withdrawn), and nothing was written
+```
+
+With `untrusted`, the admission records it (`inbox.enqueued`'s `untrusted`: `{ kind: "client", source }`), and
+the session is tainted from that event on: `taint.noticed` with a source of kind `client-input` whose `tool` is
+`source`, and `_windlass/taint`, before the turn the message starts, so every call of that turn is decided with
+untrusted content in the conversation (see "Approval" above and `docs/safety.md`). A withdrawn admission
+(`_windlass/withdraw`) still counts as admitted for its ID. A server that has the method lists it in
+`agentCapabilities._meta["windlass"].methods`.
+
+**Tools the client runs: `hostTools` and `_windlass/host_call`.** A client that has tools of its own (a tracker,
+a deploy, a way to ask a person) declares them when it opens a session, in `_meta["windlass"].hostTools` of
+`session/new`, `session/load` and `session/resume`:
+
+```ts
+{
+  name: string,             // 1 to 64 letters, digits, _ or -
+  description: string,
+  inputSchema: object,      // a JSON Schema of type "object"; the arguments are checked against it first
+  effect: "read" | "write" | "exec" | "network",   // the strongest thing a call does
+  untrustedResult: boolean  // what the tool answers is content the client does not vouch for
+}[]
+```
+
+- **What the model sees.** Each declared tool is a tool of the session, beside the built-in ones, in the tool list
+  frozen with the session's first baseline. The list changes only when a compaction rebuilds the baseline: a tool
+  declared after that first baseline is not offered, and one the client stops declaring stays in the list until
+  then, and a call of it is answered as a call of a tool that does not exist. A changed description reaches the
+  model at a compaction; a changed `inputSchema` applies to the next call at once. A subagent is not offered
+  them, and a program (`run_code`) cannot call them.
+- **How a call is approved.** By its declared `effect`, through the same decision as every tool, with the same
+  modes, remembered approvals, taint and `attended`/`unattended` rules: in mode `auto` a `read` runs, a `write`
+  asks (it names no path the agent could check), and a `network` asks, as a built-in network tool would. An
+  `exec` is decided as a command is, which in mode `auto` runs without a question where commands are sandboxed:
+  that decision counts on the sandbox, and the client runs the call itself, outside it, so a tool that must be
+  asked about is declared `network`. A question about a host tool is the usual `session/request_permission`.
+  Nothing about a host tool is approved by a second path.
+- **The call.** Once approved, the agent sends the client `_windlass/host_call` (a request) and the answer is the
+  call's result, capped and stored once, as any tool's output is:
+
+  ```ts
+  // params
+  { sessionId: string, toolCallId: string, name: string, input: unknown }   // toolCallId as in the tool_call update
+  // result
+  { status: "success" | "error", output: string }   // error: the model reads output as the tool's error
+  ```
+
+  An answer of another shape, an error response, or a client that has gone is an error result that says so. A
+  call not answered within the MCP call limit (60 s) is cancelled (`$/cancel_request`) and ends as an error the
+  model reads, which says the client did not answer and, for a tool that is not `read`, that it may or may not
+  have taken effect. A call the user stops or an interrupt reaches is cancelled the same way.
+- **Taint.** With `untrustedResult: true`, each answer is a taint source (`host-tool`); the result's `display`
+  records it as `{ host: { untrusted } }`. Without it, the answer is the client's own, whatever the `effect`.
+- **Refused at open.** A declaration the agent cannot use refuses `session/new`, `session/load` or
+  `session/resume` with `-32602` and a sentence that names it, and nothing is created or opened: a missing or
+  mistyped field, a name given twice, an `inputSchema` that is not an object's, and a name of one of the agent's
+  own tools (built-in, `mcp_search`, `mcp_call`, the history, subagent and feature tools), for example
+  `the host tool "read" has the name of one of this agent's own tools; give it another name`.
+- **Not stored.** The declarations live with the connection that opened the session: a client declares them
+  again each time it opens it, and the calls reach the connection that opened it last. A wake-up that fires
+  while no client has the session open runs without them. A server that takes them
+  lists `hostTools` in `agentCapabilities._meta["windlass"].openMeta`; one that does not ignores the key, so a
+  client looks there before it relies on it.
+- **Older versions.** A session in which a host tool ran under the approval layer, or that took in untrusted
+  admitted text, holds records an earlier version does not read (`tool.started`'s `run.origin: "host"`, the
+  `client` kind of `untrusted`, the new taint source kinds): that version refuses to open it with
+  `unreadable_session` rather than open it without its taint.
 
 **`_windlass/models`** (request): the models and efforts the account offers, asked for afresh; when they cannot
 be listed, an error with the reason (`auth_required` or `model_list_failed`).

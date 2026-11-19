@@ -40,6 +40,11 @@ ended without an answer comes back as an error that says so.
 - **Checks.** The project's checks run for the parent's turn, once the children's work is in; children do not run
   them.
 - **Stopping.** Ctrl-C (or closing the session) stops the parent and everything it started.
+- **A client's own tools.** A session opened by a client that declares tools it runs itself (`hostTools`,
+  `docs/acp.md`, "Tools the client runs") offers them to its model; its subagents are not offered them. A
+  subagent has no client to send a call to, so its tool list is the built-in one, and a call of a client's tool
+  is the parent's to make with what the subagent found. A message the client admits (`_windlass/admit`) goes to
+  the session it names, never to its subagents.
 
 While a subagent works in the foreground, the status line of `windlass` says what it is running (`⋯ subagent ses_3ebb35c4:
 running read a.txt · 1 step, 1 tool`), as `windlass tui` does. When a background subagent's answer reaches the agent
