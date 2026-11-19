@@ -3910,7 +3910,7 @@ The client declared a tool whose effect is `exec`. In mode `auto` a built-in com
 1-5  opening: session.created, inbox.enqueued u1, execution.started exe_1, baseline.set, inbox.delivered u1
   6  step.started a1 attempt=1
   7  tool.called a1/call_1 db_migrate {"target":"staging"}
-  8  approval.requested a1/call_1 "Allow the client's tool db_migrate to run outside the san..." choices=once,session,project,deny
+  8  approval.requested a1/call_1 "Allow the client's tool db_migrate to run outside the san..." choices=once,session,deny
   9  approval.answered a1/call_1 once
  10  tool.started a1/call_1 effect=exec mode=auto
  11  tool.settled a1/call_1 success "Migrated 3 tables on staging."
@@ -3968,7 +3968,7 @@ The user allows the client's `db_migrate` for the rest of the session. What is r
 1-5  opening: session.created, inbox.enqueued u1, execution.started exe_1, baseline.set, inbox.delivered u1
   6  step.started a1 attempt=1
   7  tool.called a1/call_1 db_migrate {"target":"staging"}
-  8  approval.requested a1/call_1 "Allow the client's tool db_migrate to run outside the san..." choices=once,session,project,deny
+  8  approval.requested a1/call_1 "Allow the client's tool db_migrate to run outside the san..." choices=once,session,deny
   9  approval.answered a1/call_1 session remembers=session:tool
  10  tool.started a1/call_1 effect=exec mode=auto
  11  tool.settled a1/call_1 success "Migrated 3 tables."

@@ -927,11 +927,14 @@ a deploy, a way to ask a person) declares them when it opens a session, in `_met
 
   "Asks" is the usual `session/request_permission` when the client attends, and a refusal the model reads when
   nobody is there (`attended: false`), or the end of the turn with `unattended: "stop"`; an approval remembered
-  for the session or the project covers what it says, as for any tool. A `write` names no path the agent could
+  for the session covers what it says, as for any tool. A client's tool can be allowed for a session, never for
+  a project: its name is the one this client gave it for this session, so an approval kept for the project would
+  cover whatever tool another client later gives that name, and a project's approval of a tool by that name does
+  not cover it either. A `write` names no path the agent could
   check, so it is asked about in `auto` too. An `exec` is asked about as a call no sandbox contains ("Allow the
   client's tool … to run outside the sandbox?"). What an answer remembers is that tool, by name, as for an MCP or
-  a network tool: "Allow for this session" (or "Always allow in this project") covers later calls of the same
-  tool, whatever effect it is declared with, and nothing else. It does not let the agent's own commands run
+  a network tool: "Allow for this session" covers later calls of the same tool in this session, whatever effect
+  it is declared with, and nothing else. It does not let the agent's own commands run
   without the sandbox, and an approval of commands without the sandbox, given on a question about one of them,
   does not cover the client's tools. The `command` and `sandbox` arguments the built-in shell tool reads are not read from a host
   tool's input: its fields are the client's.

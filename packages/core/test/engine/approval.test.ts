@@ -11,7 +11,7 @@
 import { afterAll, describe, expect, test } from "bun:test"
 import { existsSync, readdirSync, realpathSync } from "node:fs"
 import { join } from "node:path"
-import type { ApprovalSetup } from "../../src/engine/approval.ts"
+import { type ApprovalSetup, addProjectGrants } from "../../src/engine/approval.ts"
 import { FAILURE_TEXT, TOOL_TEXT } from "../../src/engine/constants.ts"
 import type { StoredEvent } from "../../src/event/durable.ts"
 import type { CallId, MessageId } from "../../src/id.ts"
@@ -81,6 +81,23 @@ describe("a tool the client declared, in mode auto with a sandbox", () => {
         expect(of(h, "tool.started").map((item) => item.data.run)).toEqual([{ mode: "auto", origin: "host", paths: [], sandbox: null }])
       },
       { attended: true, host },
+    ))
+})
+
+describe("a tool the client declared, and approvals remembered for the project", () => {
+  test("a project's approval of the tool's name, written in the project's grants, does not let its call through, and its question offers no project choice", () =>
+    withHarness(
+      async (h) => {
+        addProjectGrants(join(h.dataDir, "approvals"), "/repo", [{ scope: "project", rule: { kind: "tool", tool: "ticket_comment" }, at: null, grantedAt: h.clock.now() }], h.clock.now())
+        h.provider.enqueue([script.toolCall("call_1", "ticket_comment", { id: 7 })], [script.text("Done.")])
+        h.create().send("Comment on ticket 7.")
+        const question = await asked(h)
+        expect(question.needs).toEqual([{ kind: "tool", tool: "ticket_comment" }])
+        expect(question.question.choices.map((choice) => choice.id)).toEqual(["once", "session", "deny"])
+        expect(h.session.answer(target(question), { choice: "once" })).toBe(true)
+        await h.settled()
+      },
+      { attended: true, host: { tools: [{ name: "ticket_comment", description: "Comment on a ticket.", inputSchema: { type: "object" }, effect: "network", untrustedResult: false }], call: async () => ({ status: "success", output: "Commented." }) } },
     ))
 })
 
