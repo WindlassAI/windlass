@@ -20,6 +20,7 @@ import { script } from "../../src/testing/fake-provider.ts"
 import { redactPieces } from "../../src/approval/redact.ts"
 import { redactingStream } from "../../src/tool/redact-stream.ts"
 import type { SandboxRun, ToolContext } from "../../src/tool/tool.ts"
+import type { HostToolDeclaration, HostTools } from "../../src/tools/host.ts"
 import { CHECKS_CONFIG } from "../scenarios/script.ts"
 import { FakeWorkspace, Harness, type HarnessOptions, ScriptedTools, failed, removeHarnessDirectories, untilAbort } from "./harness.ts"
 
@@ -59,6 +60,29 @@ const types = (h: Harness) => h.log().map((item) => item.type)
 const settled = (h: Harness) => of(h, "tool.settled").map((item) => [String(item.data.callId), item.data.outcome, item.data.output])
 const asked = (h: Harness) => h.seen((item) => item.type === "approval.requested").then((item) => (item as StoredEvent<"approval.requested">).data)
 const target = (data: { messageId: MessageId; callId: CallId }) => ({ messageId: data.messageId, callId: data.callId })
+
+describe("a tool the client declared, in mode auto with a sandbox", () => {
+  const migrate: HostToolDeclaration = { name: "db_migrate", description: "Run migrations.", inputSchema: { type: "object", properties: { command: { type: "string" }, sandbox: { type: "object" } } }, effect: "exec", untrustedResult: false }
+  const host: HostTools = { tools: [migrate], call: async () => ({ status: "success", output: "Migrated." }) }
+
+  test("an exec is asked about as a command without the sandbox, and its own command and sandbox fields are the client's, not the shell's", () =>
+    withHarness(
+      async (h) => {
+        h.provider.enqueue([script.toolCall("call_1", "db_migrate", { command: "up", sandbox: { network: true } })], [script.text("Done.")])
+        h.create().send("Migrate.")
+        const question = await asked(h)
+        // Not an escalation request, and not a command: the question names the tool and asks only what an unsandboxed call needs.
+        expect(question.escalation).toBeNull()
+        expect(question.question.subject).toBe("db_migrate")
+        expect(question.needs).toEqual([{ kind: "exec-unsandboxed" }])
+        expect(h.session.answer(target(question), { choice: "once" })).toBe(true)
+        await h.settled()
+        // It ran as it is: the client runs it, and the log does not say a sandbox contained it.
+        expect(of(h, "tool.started").map((item) => item.data.run)).toEqual([{ mode: "auto", origin: "host", paths: [], sandbox: null }])
+      },
+      { attended: true, host },
+    ))
+})
 
 describe("mode auto with a sandbox", () => {
   test("a workspace edit runs and a command runs in the sandbox, without a question, and the log says how each ran", () =>

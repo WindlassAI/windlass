@@ -356,3 +356,43 @@ describe("unattended", () => {
     expect(decide(input({ call: secret, present: false, policy: { mode: "auto", unattended: "stop", taint: "enforce" } }))).toMatchObject({ stop: false })
   })
 })
+
+describe("a tool the client declared", () => {
+  // The engine tells the decision that no sandbox contains such a call (the client runs it), whatever this machine has.
+  const NONE = { available: false, reason: "the client runs this tool itself, outside the sandbox" } as const
+  const HOST: Record<string, CallFacts> = {
+    read: call({ tool: "ticket_read", effect: "read", origin: "host" }),
+    write: call({ tool: "ticket_edit", effect: "write", origin: "host" }),
+    exec: call({ tool: "db_migrate", effect: "exec", origin: "host" }),
+    network: call({ tool: "ticket_comment", effect: "network", origin: "host" }),
+  }
+  // effect   taint  | ask: present absent | auto: present absent | full: present absent
+  const HOST_TABLE = `
+read     clean | R R | R R | R R
+read     taint | R R | R R | R R
+write    clean | A D | A D | R R
+write    taint | A D | A D | R R
+exec     clean | A D | A D | R R
+exec     taint | A D | A D | A D
+network  clean | A D | A D | R R
+network  taint | A D | A D | A D
+`
+  for (const row of HOST_TABLE.trim().split("\n")) {
+    const [head, ...columns] = row.split("|").map((part) => part.trim())
+    const [name, taint] = head!.split(/\s+/) as [string, string]
+    test(row, () => {
+      const actual = MODES.flatMap((mode) =>
+        [true, false].map((present) => code(decide(input({ policy: { mode, unattended: "deny", taint: "enforce" }, call: HOST[name]!, sandbox: NONE, taint: taint === "taint" ? TAINTED : CLEAN, present })))),
+      )
+      expect(actual).toEqual(columns.flatMap((column) => column.split(" ")))
+    })
+  }
+
+  test("the question about an exec says the client runs it outside the sandbox, and nothing about this machine", () => {
+    const asked = ask(decide(input({ policy: { mode: "auto", unattended: "deny", taint: "enforce" }, call: HOST.exec!, sandbox: NONE })))
+    expect(asked.question.title).toBe("Allow the client's tool db_migrate to run outside the sandbox?")
+    expect(asked.question.subject).toBe("db_migrate")
+    expect(asked.question.details).toEqual(["The client runs db_migrate itself, outside the sandbox, with whatever access the client has: nothing here contains what it does."])
+    expect(asked.needs).toEqual([{ kind: "exec-unsandboxed" }])
+  })
+})

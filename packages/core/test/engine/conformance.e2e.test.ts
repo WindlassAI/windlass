@@ -50,7 +50,7 @@ import {
   measured,
   usage,
 } from "../scenarios/script.ts"
-import { ADMITTED, ADMITTED_ORIGIN, ADMITTED_TEXT, FIRING, HOST_TOOLS, MCP_CALL_INPUT, OUTSIDE_SOURCE, SKILL_EDITED, SKILL_FIRST, TICKET, TICKET_COMMENT, TICKET_READ, WAKE_TEXT, WEBHOOK_BODY, WEBHOOK_TEXT } from "../scenarios/features.ts"
+import { ADMITTED, ADMITTED_ORIGIN, ADMITTED_TEXT, FIRING, HOST_TOOLS, MCP_CALL_INPUT, MIGRATE, OUTSIDE_SOURCE, SKILL_EDITED, SKILL_FIRST, TICKET, TICKET_COMMENT, TICKET_READ, WAKE_TEXT, WEBHOOK_BODY, WEBHOOK_TEXT } from "../scenarios/features.ts"
 import type { HostAnswer, HostCallRequest, HostTools } from "../../src/tools/host.ts"
 import { EngineError } from "../../src/engine/engine.ts"
 import { EDIT } from "../scenarios/revert.ts"
@@ -1786,6 +1786,24 @@ Object.assign(PLAYS, {
     expect(hostCalls).toHaveLength(1)
   },
 
+  "A client's tool that runs programs is asked about in mode auto, though commands here run in the sandbox": async (h, say) => {
+    hostAnswers = { db_migrate: { status: "success", output: "Migrated 3 tables on staging." } }
+    h.provider.enqueue([call("call_1", "db_migrate", JSON.parse(MIGRATE) as Json), U], answer("The migrations ran on staging."))
+    h.create().send(say[0]!)
+    await answerNext(h, "once")
+    await h.settled()
+    expect(hostCalls.map(({ name }) => name)).toEqual(["db_migrate"])
+  },
+
+  "A client's tool that runs programs is refused in mode auto when nobody is there to approve it": async (h, say) => {
+    hostAnswers = { db_migrate: { status: "success", output: "Migrated 3 tables on staging." } }
+    h.provider.enqueue([call("call_1", "db_migrate", JSON.parse(MIGRATE) as Json), U], answer("I could not run the migrations: nobody was there to allow it."))
+    h.create().send(say[0]!)
+    await h.settled()
+    // Refused before the client heard of it.
+    expect(hostCalls).toEqual([])
+  },
+
   // ---------------------------------------------------------------- agents
 
   "A session starts as a read-only agent, and a write is refused with the reason": async (h, say) => {
@@ -2117,7 +2135,7 @@ describe("the loop writes each scenario's events", () => {
 
   test("every scenario has a play and every play a scenario", () => {
     expect(Object.keys(PLAYS).sort()).toEqual(scenarios.map(({ scenario }) => scenario.title).sort())
-    expect(scenarios).toHaveLength(124)
+    expect(scenarios).toHaveLength(126)
     for (const title of Object.keys(DEVIATIONS)) expect(Object.keys(PLAYS)).toContain(title)
   })
 })

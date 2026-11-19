@@ -39,7 +39,7 @@ export const families: Record<string, readonly Scenario[]> = {
   Compaction: compactionScenarios,
   "Approval and the sandbox": approvalScenarios,
   "Replays, subagents and background work": lineageScenarios,
-  "Skills, MCP servers and wake-ups": featureScenarios,
+  "Skills, MCP servers, wake-ups and what a client brings": featureScenarios,
   Agents: agentScenarios,
   "Hooks and diagnostics": hookScenarios,
   "Slash commands and telemetry": commandScenarios,
