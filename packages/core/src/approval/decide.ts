@@ -146,7 +146,9 @@ function planWrite(input: DecisionInput): Plan {
 function planExec(input: DecisionInput, tainted: boolean): Plan {
   const mode = input.policy.mode
   if (mode === "full" && !tainted) return { run: RUN, needs: [] }
-  if (!input.sandbox.available) return { run: RUN, needs: [{ kind: "exec-unsandboxed" }] }
+  // Without the sandbox, the harness's commands are approved as one capability. A tool the client declared is approved
+  // as that tool alone: an answer about it covers it and nothing else, and an answer about commands does not cover it.
+  if (!input.sandbox.available) return { run: RUN, needs: [input.call.origin === "host" ? { kind: "tool", tool: input.call.tool } : { kind: "exec-unsandboxed" }] }
   const escalation = input.call.escalation
   const bad = escalation?.write.map((path) => refusedRoot(path, input)).find((reason) => reason !== null)
   if (bad) return { deny: bad }
@@ -203,7 +205,7 @@ function question(input: DecisionInput, needs: readonly Need[], then: RunDecisio
 function titleFor(input: DecisionInput, needs: readonly Need[], has: (kind: Need["kind"]) => boolean): string {
   const call = input.call
   if (call.origin === "mcp") return `Allow the MCP tool ${call.tool}?`
-  if (call.origin === "host" && has("exec-unsandboxed")) return `Allow the client's tool ${call.tool} to run outside the sandbox?`
+  if (call.origin === "host" && call.effect === "exec") return `Allow the client's tool ${call.tool} to run outside the sandbox?`
   if (call.effect === "network") return `Allow ${call.tool} to use the network?`
   if (has("exec-unsandboxed")) return "Run this command without the sandbox?"
   if (call.effect === "exec" && call.changes !== "records") {
@@ -223,7 +225,7 @@ function subjectFor(call: CallFacts): string {
 
 function detailsFor(input: DecisionInput, needs: readonly Need[], then: RunDecision): string[] {
   return needs.flatMap((need): string[] => {
-    if (need.kind === "exec-unsandboxed" && input.call.origin === "host")
+    if (need.kind === "tool" && input.call.origin === "host" && input.call.effect === "exec")
       return [`The client runs ${input.call.tool} itself, outside the sandbox, with whatever access the client has: nothing here contains what it does.`]
     if (need.kind === "exec-unsandboxed")
       return [

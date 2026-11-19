@@ -393,6 +393,24 @@ network  taint | A D | A D | A D
     expect(asked.question.title).toBe("Allow the client's tool db_migrate to run outside the sandbox?")
     expect(asked.question.subject).toBe("db_migrate")
     expect(asked.question.details).toEqual(["The client runs db_migrate itself, outside the sandbox, with whatever access the client has: nothing here contains what it does."])
-    expect(asked.needs).toEqual([{ kind: "exec-unsandboxed" }])
+    expect(asked.needs).toEqual([{ kind: "tool", tool: "db_migrate" }])
+    expect(asked.question.choices.map((choice) => [choice.id, choice.remembers])).toEqual([
+      ["once", null],
+      ["session", "the tool db_migrate, for the rest of this session"],
+      ["project", "the tool db_migrate, in this project for 30 days"],
+      ["deny", null],
+    ])
+  })
+
+  test("what is remembered for it covers that tool, whatever effect it declares, and neither another tool nor the harness's commands", () => {
+    const decided = (facts: CallFacts, grants: Grant[]) => code(decide(input({ policy: { mode: "auto", unattended: "deny", taint: "enforce" }, call: facts, sandbox: NONE, grants })))
+    const forMigrate = [sessionGrant({ kind: "tool", tool: "db_migrate" }, 5)]
+    expect(decided(HOST.exec!, forMigrate)).toBe("R")
+    expect(decided({ ...HOST.exec!, effect: "network" }, forMigrate)).toBe("R")
+    expect(decided({ ...HOST.exec!, tool: "db_reset" }, forMigrate)).toBe("A")
+    // The harness's own command without the sandbox is still asked about, and an answer about commands is not one about the client's tool.
+    const command = call({ tool: "shell", effect: "exec", command: "bun test" })
+    expect(code(decide(input({ call: command, sandbox: { available: false, reason: "bwrap is not installed." }, grants: forMigrate })))).toBe("A")
+    expect(decided(HOST.exec!, [sessionGrant({ kind: "exec-unsandboxed" }, 5)])).toBe("A")
   })
 })

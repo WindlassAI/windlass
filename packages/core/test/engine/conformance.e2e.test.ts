@@ -1805,6 +1805,24 @@ Object.assign(PLAYS, {
     expect(hostCalls.map(({ name }) => name)).toEqual(["ask_reviewer"])
   },
 
+  "A client's tool allowed for the session runs again without a question, and the harness's own commands still ask": async (h, say) => {
+    hostAnswers = { db_migrate: { status: "success", output: "Migrated 3 tables." } }
+    h.provider.enqueue(
+      [call("call_1", "db_migrate", { target: "staging" }), U],
+      [call("call_1", "db_migrate", { target: "review" }), U],
+      [call("call_1", "shell", { command: "bun test" }), U],
+      answer("Both environments are migrated and the tests pass."),
+    )
+    h.tools.on("shell", "1 pass")
+    h.create().send(say[0]!)
+    await answerNext(h, "session")
+    // The second call of the tool asks nothing (the scenario's events say so); the next question is the command's.
+    await answerNext(h, "once", h.seenEvents.findIndex((item) => item.type === "approval.answered") + 1)
+    await h.settled()
+    expect(hostCalls.map(({ input }) => input)).toEqual([{ target: "staging" }, { target: "review" }])
+    expect(h.log().filter((item) => item.type === "approval.requested").map((item) => (item as StoredEvent<"approval.requested">).data.needs)).toEqual([[{ kind: "tool", tool: "db_migrate" }], [{ kind: "exec-unsandboxed" }]])
+  },
+
   "A client's tool that runs programs is asked about in mode auto, though commands here run in the sandbox": async (h, say) => {
     hostAnswers = { db_migrate: { status: "success", output: "Migrated 3 tables on staging." } }
     h.provider.enqueue([call("call_1", "db_migrate", JSON.parse(MIGRATE) as Json), U], answer("The migrations ran on staging."))
@@ -2154,7 +2172,7 @@ describe("the loop writes each scenario's events", () => {
 
   test("every scenario has a play and every play a scenario", () => {
     expect(Object.keys(PLAYS).sort()).toEqual(scenarios.map(({ scenario }) => scenario.title).sort())
-    expect(scenarios).toHaveLength(127)
+    expect(scenarios).toHaveLength(128)
     for (const title of Object.keys(DEVIATIONS)) expect(Object.keys(PLAYS)).toContain(title)
   })
 })

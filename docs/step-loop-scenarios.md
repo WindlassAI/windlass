@@ -3910,7 +3910,7 @@ The client declared a tool whose effect is `exec`. In mode `auto` a built-in com
 1-5  opening: session.created, inbox.enqueued u1, execution.started exe_1, baseline.set, inbox.delivered u1
   6  step.started a1 attempt=1
   7  tool.called a1/call_1 db_migrate {"target":"staging"}
-  8  approval.requested a1/call_1 "Allow the client's tool db_migrate to run outside the san..." choices=once,session,deny
+  8  approval.requested a1/call_1 "Allow the client's tool db_migrate to run outside the san..." choices=once,session,project,deny
   9  approval.answered a1/call_1 once
  10  tool.started a1/call_1 effect=exec mode=auto
  11  tool.settled a1/call_1 success "Migrated 3 tables on staging."
@@ -3940,8 +3940,8 @@ The same call in a run nobody attends. It needs the user's approval, as a comman
 1-5  opening: session.created, inbox.enqueued u1, execution.started exe_1, baseline.set, inbox.delivered u1
   6  step.started a1 attempt=1
   7  tool.called a1/call_1 db_migrate {"target":"staging"}
-  8  approval.denied a1/call_1 unattended needs=exec-unsandboxed
-  9  tool.settled a1/call_1 error "Not run: this call needs the user's approval for running ..."
+  8  approval.denied a1/call_1 unattended needs=tool
+  9  tool.settled a1/call_1 error "Not run: this call needs the user's approval for using db..."
  10  step.ended a1 finish=tool_calls
  11  step.started a2 attempt=1
  12  text.ended a2 "I could not run the migrations: nobody was there to allow..."
@@ -3953,9 +3953,52 @@ The same call in a run nobody attends. It needs the user's approval, as a comman
 
 *Model sees next:* u1, a1, a2.
 
+#### 114. A client's tool allowed for the session runs again without a question, and the harness's own commands still ask
+
+The user allows the client's `db_migrate` for the rest of the session. What is remembered is that tool, by name (`tool: db_migrate`), as for an MCP tool or a network tool: the question was about it, so the answer covers it and nothing else. The next call of it runs without a question. Then the agent runs the tests; this machine has no sandbox, so a command of the harness's own needs the user's approval to run without one, and the answer about the client's tool does not give it: the command asks, as it would have without that answer.
+
+*Provider:* step 1 calls db_migrate; step 2 calls it again; step 3 runs the tests; step 4 answers.
+
+*Approval:* mode auto; no sandbox on the machine; a person is present.
+
+*Engine:* offers .
+
+```
+-- the user allows the client's tool for the session
+1-5  opening: session.created, inbox.enqueued u1, execution.started exe_1, baseline.set, inbox.delivered u1
+  6  step.started a1 attempt=1
+  7  tool.called a1/call_1 db_migrate {"target":"staging"}
+  8  approval.requested a1/call_1 "Allow the client's tool db_migrate to run outside the san..." choices=once,session,project,deny
+  9  approval.answered a1/call_1 session remembers=session:tool
+ 10  tool.started a1/call_1 effect=exec mode=auto
+ 11  tool.settled a1/call_1 success "Migrated 3 tables."
+ 12  step.ended a1 finish=tool_calls
+-- the tool runs again on what was remembered; the harness's command still asks
+ 13  step.started a2 attempt=1
+ 14  tool.called a2/call_1 db_migrate {"target":"review"}
+ 15  tool.started a2/call_1 effect=exec mode=auto
+ 16  tool.settled a2/call_1 success "Migrated 3 tables."
+ 17  step.ended a2 finish=tool_calls
+ 18  step.started a3 attempt=1
+ 19  tool.called a3/call_1 shell {"command":"bun test"}
+ 20  approval.requested a3/call_1 "Run this command without the sandbox?" choices=once,session,deny
+ 21  approval.answered a3/call_1 once
+ 22  tool.started a3/call_1 effect=exec mode=auto
+ 23  tool.settled a3/call_1 success "1 pass"
+ 24  step.ended a3 finish=tool_calls
+ 25  step.started a4 attempt=1
+ 26  text.ended a4 "Both environments are migrated and the tests pass."
+ 27  step.ended a4 finish=stop
+ 28  execution.succeeded exe_1
+```
+
+*UI:* u1 user · a1 completed [db_migrate success] · a2 completed [db_migrate success] · a3 completed [shell success] · a4 completed. *Claim:* released.
+
+*Model sees next:* u1, a1, a2, a3, a4.
+
 ### Agents
 
-#### 114. A session starts as a read-only agent, and a write is refused with the reason
+#### 115. A session starts as a read-only agent, and a write is refused with the reason
 
 The user starts the session as the agent `reviewer`, whose definition allows only tools that read. The definition is read once, when the session is created: `agent.switched` records it right after `session.created` (its instructions, its restrictions, the fingerprint of the file), and the session never reads the file again. The first baseline carries the agent's instructions as its last section, so nothing about this differs in cache terms from a session without an agent, and the tool list is the same as every other session's: every tool stays offered. When the model calls `write`, the loop refuses the call before the approval layer looks at it: `approval.denied` names the agent whose restrictions refused it, with which of its rules it was, the call's effect class and a sentence a client shows the user, and the call's result is the sentence that tells the model so and what to do instead. The model reads it and answers.
 
@@ -3992,7 +4035,7 @@ The user starts the session as the agent `reviewer`, whose definition allows onl
 - after "the session is created as the agent, and its first baseline carries the agent's instructions": `approval.denied a1/call_1 policy` (invalid_transition). A call is refused by the restrictions of the agent the session runs as, and that is the reviewer.
 - after "the session is created as the agent, and its first baseline carries the agent's instructions": `approval.denied a1/call_1 policy` (invalid_transition). An agent's refusal says which of its rules refused the call, the call's effect class and a sentence for the user.
 
-#### 115. The user switches the agent in the middle of a session: an appended message, never a new baseline
+#### 116. The user switches the agent in the middle of a session: an appended message, never a new baseline
 
 The session has run a turn without an agent. The user selects `reviewer`. The baseline is frozen, so nothing is rewritten: the switch is appended as an instruction message (source `agent`) that carries the agent's instructions, and `agent.switched` follows it in the same append, naming that message. The session is idle, so both are recorded the moment the user selects the agent, before any turn: a process that dies afterwards has not lost the choice. (They are the one kind of message that enters history without a running execution. A switch asked for while a turn runs is made at that turn's next step boundary.) The next request is the previous one plus that message and the user's: the whole cached prefix is kept. From the switch on every call is checked against the agent's restrictions. Then the user selects `captain`, which names another model and effort: the message says that its instructions replace the reviewer's, and `settings.changed` follows at the same boundary, which is the one thing here that costs the cache (once, as a model change always does). Switching the agent off is a one-line message whose fingerprint is `null`.
 
@@ -4061,7 +4104,7 @@ The session has run a turn without an agent. The user selects `reviewer`. The ba
 - after "the next turn runs as the reviewer, and a write is refused": `agent.switched i1` (invalid_transition). A switch follows at once the instruction message that announces it.
 - after "the user switched the agent off: one line, and its restrictions no longer apply": `agent.switched null` (invalid_transition). The baseline is frozen: a switch is announced by an instruction message.
 
-#### 116. A subagent is run as an agent the list of agents names
+#### 117. A subagent is run as an agent the list of agents names
 
 The `subagent` tool has an optional `agent` argument in every session: its spec is a constant that names no agent, so the tool list never depends on which agents exist. Which ones do is told in a message: a session that is offered `subagent` gets the list of agents (name, a tag for its restrictions, one line of description) appended after its baseline, and again when the list changes. The model runs a subagent as `reviewer`. The name is checked when the call runs (a wrong one is an error result with close names, and starts nothing); `spawn.started` names the agent, and the child session is created as it. The child's result comes back like any subagent's.
 
@@ -4095,7 +4138,7 @@ The `subagent` tool has an optional `agent` argument in every session: its spec 
 
 *Model sees next:* i1, u1, a1, a2.
 
-#### 117. The log of a subagent that runs as an agent
+#### 118. The log of a subagent that runs as an agent
 
 The same situation from the child's side. The child is created as the agent: `agent.switched` follows its `session.created` in the same append, and its own fresh baseline carries the agent's instructions. Its restrictions are the agent's combined with its parent's (the stricter of each), and a child started without `agent` by a parent that runs as an agent runs as the parent's agent, so a restricted session cannot get around its restrictions by handing the work to a child. Here the child tries to edit a file: the call is refused with the sentence, in its own log, and it answers. At the depth limit it is not offered `subagent`, so it is not given the list of agents.
 
@@ -4128,7 +4171,7 @@ The same situation from the child's side. The child is created as the agent: `ag
 
 ### Hooks and diagnostics
 
-#### 118. A before hook refuses a call, and the model reads why
+#### 119. A before hook refuses a call, and the model reads why
 
 The user's configuration has a hook that runs before every `shell` call and refuses `git push`. The hook is asked after the call's arguments were accepted and before anything else is decided about it: no approval is looked at, no question is asked, nothing starts. The call settles from `pending` as an error whose text is the hook's reason, word for word, and the hook's record (`hook.ran`: which hook, how it ran, what it answered, the text that reached the model) is written right before that result, in the same append. A hook that does not object would have left the call to the approval layer unchanged: it approves nothing. Nothing about hooks is in the request's prefix: the model learns of the hook from the result of the call it refused.
 
@@ -4164,7 +4207,7 @@ The user's configuration has a hook that runs before every `shell` call and refu
 - after "the model asks to push": `hook.ran beforeTool a1/call_1 no-push (user) yes "Looks fine."` (invalid_transition). Only a hook that answered no has text that reached the model.
 - after "the hook refuses: its record and the call's result are one append, and the call never starts": `hook.ran beforeTool a1/call_1 no-push (user) yes` (invalid_transition). A hook's record comes before the result of its call, in the step that made the call.
 
-#### 119. An after hook adds a note to a result, stored once with it
+#### 120. An after hook adds a note to a result, stored once with it
 
 The user's configuration has a hook that runs after every `write` of a TypeScript file. The tool runs as always (`tool.started`, then the tool). After it returned and before its result is capped and stored, the hook is run with the result and answers with a note. The note is appended after the tool's own output, which stays first, byte for byte; the whole text is then capped once and stored once in `tool.settled`, and replayed as stored from then on. The hook's record is written right before the result, in the same append. A hook can only add: it cannot change the call's arguments, the tool's output, or a result that is already in the log.
 
@@ -4192,7 +4235,7 @@ The user's configuration has a hook that runs after every `write` of a TypeScrip
 
 *Model sees next:* u1, a1, a2.
 
-#### 120. A stop hook sends the model back, and at its bound the turn ends with the hook unsatisfied
+#### 121. A stop hook sends the model back, and at its bound the turn ends with the hook unsatisfied
 
 The user's configuration has a stop hook and allows it one round per turn (`maxStopRounds: 1`). When the model has answered and the verification gate says the turn may end, the stop hooks are asked. The hook objects: its message is appended as a harness message (origin `stop_hook`), with the hook's record, in one append, and the model is sent back, exactly as a check report sends it back. The message must be answered: the execution cannot end on it. When the model stops again the hook is asked again and still objects, but the turn has been sent back as often as it may be (the rounds are counted from the stop messages in the log, so a restart counts the same): the turn ends, and its ending says which hooks were not satisfied (`hooks.unsatisfied`) and what each of them said this last time (`hooks.objections`), next to what the gate found. The hook's second answer sent nobody back, so it reached the user and not the model: its record has no text for the model, and the ending is where a client reads the hook's words. A stop hook never loops, and one that cannot answer lets the turn end.
 
@@ -4229,7 +4272,7 @@ The user's configuration has a stop hook and allows it one round per turn (`maxS
 - after "the model stops again": `execution.succeeded exe_1 hooks unsatisfied=no-scratch` (invalid_transition). An ending carries the words of the unsatisfied stop hooks only.
 - after "the hook still objects, at its bound: the turn ends and says so": `hook.ran stop no-scratch (user) yes` (invalid_transition). A hook runs under an execution: there is none.
 
-#### 121. A language server's diagnostics follow the result of the edit that made something worse
+#### 122. A language server's diagnostics follow the result of the edit that made something worse
 
 The user's configuration names a language server for the files the model works on. When the model reads such a file the server is started in the background and shown the file; nothing waits for it. When the model then writes the file, the tool runs as always, and after it returned the server is asked what the edit made worse, for at most the configured wait. The edit adds a call to a name that does not exist: the server's one new error is appended to the tool's own output as a short note (the error the file already had is counted, not listed), before the result is capped and stored. What the server said is recorded with the result as fields (`diagnostics`: whether a note was added, how many diagnostics it lists, and per server whose configuration it is from, how it came out and the counts), never read back out of the text. The note gates nothing: the project's checks remain the authority, and a server that is slow, starting or gone adds nothing and costs at most the wait. Nothing about the server is in the request's prefix.
 
@@ -4264,7 +4307,7 @@ The user's configuration names a language server for the files the model works o
 
 ### Slash commands and telemetry
 
-#### 122. The user sends a slash command: the expanded text is the message, and the log says which command produced it
+#### 123. The user sends a slash command: the expanded text is the message, and the log says which command produced it
 
 The project has a command file, `.claude/commands/release-notes.md`: a prompt template with `$1` and `$2`. The user types `/release-notes 1.4`. The file is read once, then: its template is expanded with what was typed, and the result is admitted as the user's message, like any prompt. In the same append `command.expanded` records where that text came from: the command's name and file, the fingerprint of the file as it was read (so the version that was used is known after the file changes), the arguments as typed, and that position 2 was used by the template and not given (it became empty text). The template also holds a command in backticks after `!` and an `@path`, which other harnesses run and read at this moment. Here nothing in a command file runs anything or reads anything: both stay in the text exactly as written, and the record lists them, for the user. The model is sent the expanded text and nothing else: there is no tool for commands, no list of them, and the request is the one a typed prompt of the same words would have made. The model can run `git log` and read the file itself, with its tools, which are decided like any call.
 
@@ -4296,7 +4339,7 @@ The project has a command file, `.claude/commands/release-notes.md`: a prompt te
 - after "the command is expanded and admitted: the message and the record of where it came from, in one append": `command.expanded u9 "/release-notes 1.4" (project) missing=$2 left as text: !`git log --oneline`, @docs/CHANGES.md` (not_found). A command's record names a message that waits in the inbox.
 - after "the turn runs on the expanded text": `command.expanded u1 "/release-notes 1.4" (project) missing=$2 left as text: !`git log --oneline`, @docs/CHANGES.md` (not_found). A delivered message is history: nothing is recorded about it afterwards.
 
-#### 123. A command that names an agent: the session switches to it where the command's message is delivered
+#### 124. A command that names an agent: the session switches to it where the command's message is delivered
 
 A command file may name an agent (`agent: reviewer`). The first thing the user types in a new session is `/review focus on the tests`. The command's text is admitted with its record, and the agent's definition is read then, once. Where the message is delivered, right before it, the session switches to the agent: no baseline is set yet, so `agent.switched` is the record alone and the first baseline carries the reviewer's instructions as its last section, exactly as for a session that was started as the reviewer. Later, while the model is answering a question, the user queues `/ship 1.4`, a command that runs under `captain`. A queued message waits for the turn in progress, and so does its switch: the reviewer answers the question as the reviewer. The switch waits in the log: `command.expanded` carries the agent's record as it was read when the command was sent, so a process that dies before the delivery and starts again makes the same switch. At the boundary where the queued message is delivered the switch is made first, as an appended instruction message and `agent.switched` (the baseline is frozen), then `settings.changed` because the captain names another model, then the turn's ending and the delivery. A command whose agent cannot be found sends nothing at all.
 
@@ -4342,7 +4385,7 @@ A command file may name an agent (`agent: reviewer`). The first thing the user t
 
 *Model sees next:* u1, a1, u2, a2, i1, u3, a3.
 
-#### 124. Live telemetry is on: the turn's log is the log it would be without, and its spans are sent as it runs
+#### 125. Live telemetry is on: the turn's log is the log it would be without, and its spans are sent as it runs
 
 The user's own configuration turns `telemetry` on and names a collector. Nothing about the turn changes: no event is written for telemetry, no request carries anything of it, and the log is event for event the log of the same turn without it (this scenario's events are those of "One tool call, then an answer"). Beside the loop, the session's log and its request ledger are mapped to spans at the events where a span closes, with the mapping an export after the fact uses, so both give the same spans with the same IDs: the tool call when it has settled, each model call when its step has ended, the turn when the execution has. Each span is queued once and sent in the background. A collector that is slow, down or wrong costs the queue's memory and nothing else, and a project's configuration can turn the export off but never on. Message text, tool arguments and tool output are not in the spans unless the user's file asks for content.
 
@@ -4371,7 +4414,7 @@ The user's own configuration turns `telemetry` on and names a collector. Nothing
 
 ### Code mode
 
-#### 125. A program's calls are calls of the step, nested under the program's call
+#### 126. A program's calls are calls of the step, nested under the program's call
 
 The model writes one program instead of three calls: it reads two files and writes a third. The program's call starts like any (it needs no question of its own: it can change nothing by itself), and each call the program makes is recorded with `parent`, the program's call, before anything about it is decided; it is then started and settled like a call of the model's, by the same approval layer, schedule and runtime. The program's call settles last, with what the program printed. The next request shows the model the program's call and its result, and nothing of the three calls it made. A call is nested only under a program's call that is running, one level deep, and the program's call cannot settle while one of its calls has no result.
 
@@ -4413,7 +4456,7 @@ The model writes one program instead of three calls: it reads two files and writ
 - after "the program runs and makes its calls": `tool.called a1/call_1.1.1 read {"path":"a.ts"} parent=call_1.1` (invalid_transition). A program's calls are not nested further: one level of programs.
 - after "the write is done, then the program; the model reads the program's result": `tool.called a1/call_1.4 read {"path":"a.ts"} parent=call_1` (invalid_transition). A program makes its calls while its call runs, within the open step.
 
-#### 126. The process dies while a program's command runs
+#### 127. The process dies while a program's command runs
 
 A program wrote a file and then started the tests, and the process died while they ran. At the next start recovery settles the calls of the open step from what the log says, the program's calls first: the command started and nobody saw it finish, so it is `effect_unknown`; then the program's own call, which had started too. Nothing is run again: the resumed step tells the model that the program was cut off, and the model looks before repeating anything. The write that had its result keeps it.
 
@@ -4451,7 +4494,7 @@ A program wrote a file and then started the tests, and the process died while th
 
 ### Forks
 
-#### 127. A fork continues from its parent's history
+#### 128. A fork continues from its parent's history
 
 A session is forked at a step boundary. The fork is a session of its own (its own file, its own events from here on) whose history is the parent's up to the fork point: the first event of its own names the parent and the last inherited seq. It starts idle with an empty inbox, with the parent's baseline, settings and taint and the root session's cache key, so its first request is the parent's last request plus the new prompt. The parent is only read and may be working elsewhere meanwhile.
 
