@@ -50,7 +50,7 @@ import {
   measured,
   usage,
 } from "../scenarios/script.ts"
-import { ADMITTED, ADMITTED_ORIGIN, ADMITTED_TEXT, FIRING, HOST_TOOLS, MCP_CALL_INPUT, MIGRATE, OUTSIDE_SOURCE, SKILL_EDITED, SKILL_FIRST, TICKET, TICKET_COMMENT, TICKET_READ, WAKE_TEXT, WEBHOOK_BODY, WEBHOOK_TEXT } from "../scenarios/features.ts"
+import { ADMITTED, ADMITTED_ORIGIN, ADMITTED_TEXT, FIRING, ASK_REVIEWER, HOST_TOOLS, MCP_CALL_INPUT, MIGRATE, OUTSIDE_SOURCE, SKILL_EDITED, SKILL_FIRST, TICKET, TICKET_COMMENT, TICKET_READ, WAKE_TEXT, WEBHOOK_BODY, WEBHOOK_TEXT } from "../scenarios/features.ts"
 import type { HostAnswer, HostCallRequest, HostTools } from "../../src/tools/host.ts"
 import { EngineError } from "../../src/engine/engine.ts"
 import { EDIT } from "../scenarios/revert.ts"
@@ -139,7 +139,7 @@ const scriptedHooks: HookRunner = async (request) => {
  * tool name, and every call it was sent. A play says it before it sends the
  * prompt; a tool with no answer is one the client never answers.
  */
-let hostAnswers: Record<string, HostAnswer> = {}
+let hostAnswers: Record<string, HostAnswer | Promise<HostAnswer>> = {}
 const hostCalls: HostCallRequest[] = []
 const scriptedHost: HostTools = {
   tools: HOST_TOOLS,
@@ -1786,6 +1786,25 @@ Object.assign(PLAYS, {
     expect(hostCalls).toHaveLength(1)
   },
 
+  "A tool the client declared with a longer time limit waits past the default one for its answer": async (h, say) => {
+    // Time moves only when the play moves it.
+    h.clock.auto = false
+    let reply: (value: HostAnswer) => void = () => {}
+    hostAnswers = { ask_reviewer: new Promise<HostAnswer>((resolve) => (reply = resolve)) }
+    h.provider.enqueue([call("call_1", "ask_reviewer", JSON.parse(ASK_REVIEWER) as Json), U], answer("The reviewer said 2.1 may go out today."))
+    h.create().send(say[0]!)
+    await h.seen((item) => item.type === "tool.started")
+    await h.clock.waiting()
+    // The wait is the declared limit, and five minutes later, well past the MCP call limit, the call still waits.
+    expect(h.clock.slept).toContain(1_800_000)
+    h.clock.advance(5 * 60_000)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(h.log().some((item) => item.type === "tool.settled")).toBe(false)
+    reply({ status: "success", output: "Yes, ship it." })
+    await h.settled()
+    expect(hostCalls.map(({ name }) => name)).toEqual(["ask_reviewer"])
+  },
+
   "A client's tool that runs programs is asked about in mode auto, though commands here run in the sandbox": async (h, say) => {
     hostAnswers = { db_migrate: { status: "success", output: "Migrated 3 tables on staging." } }
     h.provider.enqueue([call("call_1", "db_migrate", JSON.parse(MIGRATE) as Json), U], answer("The migrations ran on staging."))
@@ -2135,7 +2154,7 @@ describe("the loop writes each scenario's events", () => {
 
   test("every scenario has a play and every play a scenario", () => {
     expect(Object.keys(PLAYS).sort()).toEqual(scenarios.map(({ scenario }) => scenario.title).sort())
-    expect(scenarios).toHaveLength(126)
+    expect(scenarios).toHaveLength(127)
     for (const title of Object.keys(DEVIATIONS)) expect(Object.keys(PLAYS)).toContain(title)
   })
 })

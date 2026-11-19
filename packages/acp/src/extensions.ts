@@ -252,6 +252,8 @@ export interface HostToolDeclaration {
   readonly effect: "read" | "write" | "exec" | "network"
   /** Whether what the tool answers is content the client does not vouch for: such a result taints the session (`host-tool`). */
   readonly untrustedResult: boolean
+  /** How long a call waits for the answer, in whole seconds from 1 to 3600. Absent: the MCP call limit, 60 s. */
+  readonly timeoutSeconds?: number
 }
 
 /** `_<ns>/admit`. */

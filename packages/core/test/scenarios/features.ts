@@ -340,7 +340,7 @@ export const clientAdmitsUntrusted: Scenario = {
 
 /**
  * The tools the client of these scenarios declares: one that reads its tracker, whose text others wrote, one that
- * writes to it, and one that runs a program on the client's own machines.
+ * writes to it, one that runs a program on the client's own machines, and one that waits for a person's answer.
  */
 export const HOST_TOOLS: readonly HostToolDeclaration[] = [
   {
@@ -363,6 +363,14 @@ export const HOST_TOOLS: readonly HostToolDeclaration[] = [
     inputSchema: { type: "object", properties: { target: { type: "string" } }, required: ["target"] },
     effect: "exec",
     untrustedResult: false,
+  },
+  {
+    name: "ask_reviewer",
+    description: "Ask the team's reviewer a question and wait for the answer.",
+    inputSchema: { type: "object", properties: { question: { type: "string" } }, required: ["question"] },
+    effect: "read",
+    untrustedResult: false,
+    timeoutSeconds: 1800,
   },
 ]
 export const TICKET = "Ticket 7: the date parser drops the time zone. (Opened by an outside reporter.)"
@@ -502,4 +510,32 @@ export const hostExecDenied: Scenario = {
   ],
 }
 
-export const featureScenarios = [skillIndexFollowsTheFiles, lateServerAndTaintedCall, wakeWhileIdle, wakeWhileWorking, wakeDeliveredTwice, untrustedFiring, clientAdmitsTwice, clientAdmitsUntrusted, hostToolRoundTrip, hostToolTimesOut, hostExecAsked, hostExecDenied]
+export const ASK_REVIEWER = '{"question":"May release 2.1 go out today?"}'
+
+export const hostToolWaitsLonger: Scenario = {
+  title: "A tool the client declared with a longer time limit waits past the default one for its answer",
+  description:
+    "The client declared a tool that asks a person and waits for the answer, with a time limit of its own (`timeoutSeconds: 1800`). The call waits as any long tool call does: the turn holds, a stop or an interrupt would end it, and nothing gives up at the MCP call limit. The person answers after several minutes; the answer is the result and the turn goes on.",
+  provider: "step 1 calls ask_reviewer, which the person answers after several minutes; step 2 answers",
+  features: { host: true },
+  phases: [
+    {
+      label: "the call waits past 60 s, the person answers, and the model goes on",
+      events: [
+        ...opening("Ask the reviewer whether 2.1 may go out today."),
+        stepStarted("a1"),
+        called("a1", "call_1", "ask_reviewer", ASK_REVIEWER),
+        event("tool.started", { messageId: m("a1"), callId: c("call_1"), effect: "read" }),
+        hostSettled("a1", "call_1", "success", "Yes, ship it.", false),
+        stepEnded("a1", "tool_calls"),
+        stepStarted("a2"),
+        say("a2", "The reviewer said 2.1 may go out today."),
+        stepEnded("a2"),
+        executionSucceeded(),
+      ],
+      expect: { ui: [{ id: "u1" }, { id: "a1", calls: ["call_1 ask_reviewer success"] }, { id: "a2" }], execution: null },
+    },
+  ],
+}
+
+export const featureScenarios = [skillIndexFollowsTheFiles, lateServerAndTaintedCall, wakeWhileIdle, wakeWhileWorking, wakeDeliveredTwice, untrustedFiring, clientAdmitsTwice, clientAdmitsUntrusted, hostToolRoundTrip, hostToolTimesOut, hostToolWaitsLonger, hostExecAsked, hostExecDenied]
