@@ -114,3 +114,37 @@ describe("hooks and language servers", () => {
     expect(describeTaint(taint)).toContain('the language server "python" of this project\'s configuration, which is marked untrusted,')
   })
 })
+
+describe("what a client brings", () => {
+  const run = { mode: "auto", origin: "host", paths: [], sandbox: null } as const
+  /** A call of a tool the client declared, folded from its stored events; `display` is what the call recorded about its result. */
+  const hostCall = (history: TaintHistory, seq: number, effect: "read" | "network", display: unknown) => {
+    history.add({ type: "tool.called", data: { messageId: "m1", callId: `c${seq}`, name: "ticket_read" } })
+    history.add({ type: "tool.started", data: { messageId: "m1", callId: `c${seq}`, effect, run } })
+    history.add({ type: "tool.settled", seq, data: { messageId: "m1", callId: `c${seq}`, display } })
+  }
+
+  test("an admission the client marked untrusted is a source from its position on, named by what the client said", () => {
+    const history = new TaintHistory()
+    history.add({ type: "inbox.enqueued", seq: 3, data: {} })
+    expect(deriveTaint(history.entries, none)).toEqual(CLEAN)
+    history.add({ type: "inbox.enqueued", seq: 6, data: { untrusted: { kind: "client", source: "ticket 7" } } })
+    const taint = deriveTaint(history.entries, none)
+    expect(taint).toEqual({ tainted: true, since: 6, sources: [{ at: 6, tool: "ticket 7", kind: "client-input", path: null }] })
+    expect(describeTaint(taint)).toBe('Content from "ticket 7", which the client admitted as not its user\'s own words, is in this conversation and may contain instructions aimed at the model.')
+    expect(inheritableTaint(history.entries)).toEqual(history.entries)
+  })
+
+  test("a declared tool's result is a source exactly when its declaration says so, whatever effect it declares", () => {
+    const history = new TaintHistory()
+    hostCall(history, 4, "network", { host: { untrusted: false } })
+    expect(deriveTaint(history.entries, none)).toEqual(CLEAN)
+    // Nothing a fork needs to carry: under no policy is such a result a source.
+    expect(inheritableTaint(history.entries)).toEqual([])
+    hostCall(history, 8, "read", { host: { untrusted: true } })
+    const taint = deriveTaint(history.entries, none)
+    expect(taint.sources).toEqual([{ at: 8, tool: "ticket_read", kind: "host-tool", path: null }])
+    expect(describeTaint(taint)).toContain("the client's tool ticket_read, whose results the client marked as untrusted,")
+    expect(deriveTaint(inheritableTaint(history.entries), none)).toEqual(taint)
+  })
+})

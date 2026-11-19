@@ -58,7 +58,7 @@ export const storedQuestion = object({ title: string, subject: string, details: 
 export const storedTaintSource = object({
   at: integer(0),
   tool: nonEmptyString,
-  kind: oneOf(["network-tool", "mcp-tool", "outside-file", "untrusted-file", "network-command", "subagent", "wake-up", "hook-network", "hook-untrusted-project", "lsp-untrusted-project"]),
+  kind: oneOf(["network-tool", "mcp-tool", "outside-file", "untrusted-file", "network-command", "subagent", "wake-up", "client-input", "host-tool", "hook-network", "hook-untrusted-project", "lsp-untrusted-project"]),
   path: nullable(string),
 }) satisfies Validator<TaintSource>
 
@@ -74,7 +74,7 @@ export type SandboxRunRecord = Infer<typeof sandboxRun>
  */
 export const callRun = object({
   mode: approvalMode,
-  origin: oneOf(["builtin", "mcp"]),
+  origin: oneOf(["builtin", "mcp", "host"]),
   paths: array(storedPathFact),
   sandbox: nullable(sandboxRun),
 })
@@ -91,13 +91,14 @@ export const storedHistoryEntry = variant("kind", {
     at: integer(0),
     tool: nonEmptyString,
     effect: toolEffect,
-    origin: oneOf(["builtin", "mcp"]),
+    origin: oneOf(["builtin", "mcp", "host"]),
     paths: array(storedPathFact),
     networkGranted: boolean,
     untrusted: optional(nullable(boolean)),
   }),
   subagent_result: object({ kind: literal("subagent_result"), at: integer(0), session: nonEmptyString }),
   untrusted_input: object({ kind: literal("untrusted_input"), at: integer(0), wakeId: nonEmptyString, carries: oneOf(["webhook_body", "check_output"]) }),
+  client_input: object({ kind: literal("client_input"), at: integer(0), source: nonEmptyString }),
   hook_output: object({ kind: literal("hook_output"), at: integer(0), hook: nonEmptyString, taint: oneOf(["hook-network", "hook-untrusted-project"]) }),
   diagnostics_note: object({ kind: literal("diagnostics_note"), at: integer(0), server: nonEmptyString }),
   taint_cleared: object({ kind: literal("taint_cleared"), at: integer(0) }),
@@ -132,7 +133,7 @@ export type TaintEvent =
   | { readonly type: "tool.started"; readonly data: { readonly messageId: string; readonly callId: string; readonly effect: Infer<typeof toolEffect>; readonly run?: CallRun } }
   | { readonly type: "tool.settled"; readonly seq: number; readonly data: { readonly messageId: string; readonly callId: string; readonly display?: unknown; readonly diagnostics?: { readonly untrusted?: true; readonly noteAdded: boolean; readonly servers: readonly { readonly name: string; readonly origin: "user" | "project"; readonly new: number }[] } } }
   | { readonly type: "hook.ran"; readonly seq: number; readonly data: { readonly name: string; readonly taint: "hook-network" | "hook-untrusted-project" | null } }
-  | { readonly type: "inbox.enqueued"; readonly seq: number; readonly data: { readonly untrusted?: { readonly wakeId: string; readonly carries: "webhook_body" | "check_output" } } }
+  | { readonly type: "inbox.enqueued"; readonly seq: number; readonly data: { readonly untrusted?: { readonly kind: "wake"; readonly wakeId: string; readonly carries: "webhook_body" | "check_output" } | { readonly kind: "client"; readonly source: string } } }
   | { readonly type: "taint.cleared"; readonly seq: number }
   | { readonly type: "spawn.started"; readonly data: { readonly spawnId: string; readonly work: { readonly kind: string; readonly sessionId?: string } } }
   | { readonly type: "spawn.ended"; readonly seq: number; readonly data: { readonly spawnId: string; readonly tainted: boolean } }
@@ -175,6 +176,7 @@ export class TaintHistory {
         this.names.delete(id)
         if (began === undefined || tool === undefined) return
         const bridge = bridgeResult(event.data.display)
+        const host = hostResult(event.data.display)
         // A running subagent's words, shown while its own conversation holds untrusted content: a source like its answer.
         const relayed = relayedSubagent(event.data.display)
         if (relayed !== null) this.entries.push({ kind: "subagent_result", at: event.seq, session: relayed })
@@ -193,7 +195,7 @@ export class TaintHistory {
           // count, a line number), so writing outside the workspace brings nothing into the conversation; reading does.
           paths: began.effect === "read" ? (began.run?.paths ?? []) : [],
           networkGranted: began.run?.sandbox?.network ?? false,
-          untrusted: bridge?.untrusted ?? null,
+          untrusted: bridge?.untrusted ?? host?.untrusted ?? null,
         })
         return
       }
@@ -202,7 +204,9 @@ export class TaintHistory {
         if (event.data.taint !== null) this.entries.push({ kind: "hook_output", at: event.seq, hook: event.data.name, taint: event.data.taint })
         return
       case "inbox.enqueued":
-        if (event.data.untrusted !== undefined) this.entries.push({ kind: "untrusted_input", at: event.seq, wakeId: event.data.untrusted.wakeId, carries: event.data.untrusted.carries })
+        const untrusted = event.data.untrusted
+        if (untrusted?.kind === "wake") this.entries.push({ kind: "untrusted_input", at: event.seq, wakeId: untrusted.wakeId, carries: untrusted.carries })
+        if (untrusted?.kind === "client") this.entries.push({ kind: "client_input", at: event.seq, source: untrusted.source })
         return
       case "taint.cleared":
         this.entries.push({ kind: "taint_cleared", at: event.seq })
@@ -239,6 +243,20 @@ export function bridgeResult(display: unknown): { readonly untrusted: boolean; r
   if (typeof untrusted !== "boolean") return null
   const server = Array.isArray(servers) && typeof servers[0] === "string" ? servers[0] : null
   return { untrusted, tool: kind === "call" && server !== null && typeof tool === "string" ? `${server}/${tool}` : null }
+}
+
+/**
+ * What a call of a tool the client declared recorded about its result in the
+ * result's `display` (`host`; see `tools/host.ts`): whether it holds content
+ * the harness does not control, as the tool's declaration says. `null` for a
+ * result that carries no such record.
+ */
+export function hostResult(display: unknown): { readonly untrusted: boolean } | null {
+  if (typeof display !== "object" || display === null || Array.isArray(display)) return null
+  const source = (display as { readonly host?: unknown }).host
+  if (typeof source !== "object" || source === null || Array.isArray(source)) return null
+  const { untrusted } = source as { readonly untrusted?: unknown }
+  return typeof untrusted === "boolean" ? { untrusted } : null
 }
 
 /**

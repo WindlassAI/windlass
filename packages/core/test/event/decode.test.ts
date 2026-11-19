@@ -397,6 +397,14 @@ describe("decodeEvent", () => {
     expect(unreadableSession(null)).toBeNull()
   })
 
+  test("an admission's untrusted mark decodes as a wake-up's, as earlier versions wrote it, and as a client's; a kind it does not know is refused", () => {
+    const admitted = (untrusted: unknown) => row(examples["inbox.enqueued"], { data: JSON.stringify({ messageId, origin: "tracker", delivery: "queue", content: text("Ticket 7."), untrusted }) })
+    expect(reasonOf(admitted({ kind: "wake", wakeId: "wk_1", carries: "webhook_body" }))).toBe("decoded")
+    expect(reasonOf(admitted({ kind: "client", source: "ticket 7" }))).toBe("decoded")
+    expect(reasonOf(admitted({ kind: "client", source: "" }))).toBe("invalid_data")
+    expect(reasonOf(admitted({ kind: "mail", source: "x" }))).toBe("invalid_data")
+  })
+
   test("validateEvent returns a value detached from its input", () => {
     const input = { type: "session.renamed", v: 1, data: { title: "a" } }
     const validated = validateEvent(input)

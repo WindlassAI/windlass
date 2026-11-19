@@ -50,7 +50,9 @@ import {
   measured,
   usage,
 } from "../scenarios/script.ts"
-import { FIRING, MCP_CALL_INPUT, SKILL_EDITED, SKILL_FIRST, WAKE_TEXT, WEBHOOK_BODY, WEBHOOK_TEXT } from "../scenarios/features.ts"
+import { ADMITTED, ADMITTED_ORIGIN, ADMITTED_TEXT, FIRING, HOST_TOOLS, MCP_CALL_INPUT, OUTSIDE_SOURCE, SKILL_EDITED, SKILL_FIRST, TICKET, TICKET_COMMENT, TICKET_READ, WAKE_TEXT, WEBHOOK_BODY, WEBHOOK_TEXT } from "../scenarios/features.ts"
+import type { HostAnswer, HostCallRequest, HostTools } from "../../src/tools/host.ts"
+import { EngineError } from "../../src/engine/engine.ts"
 import { EDIT } from "../scenarios/revert.ts"
 import { CHILD_WORDS, INTERRUPTED_LINT, STOPPED_TESTS } from "../scenarios/call-stop.ts"
 import { FIX_PROGRAM, JOIN_PROGRAM } from "../scenarios/codemode.ts"
@@ -130,6 +132,22 @@ const scriptedHooks: HookRunner = async (request) => {
   const answer = hookAnswers[request.hook.name]
   if (answer === undefined) throw new Error(`the play scripted no answer for the hook ${request.hook.name}`)
   return answer
+}
+
+/**
+ * How the client of the scenario being played answers its tools' calls, by
+ * tool name, and every call it was sent. A play says it before it sends the
+ * prompt; a tool with no answer is one the client never answers.
+ */
+let hostAnswers: Record<string, HostAnswer> = {}
+const hostCalls: HostCallRequest[] = []
+const scriptedHost: HostTools = {
+  tools: HOST_TOOLS,
+  call: (request) => {
+    hostCalls.push(request)
+    const answer = hostAnswers[request.name]
+    return answer === undefined ? new Promise<HostAnswer>(() => {}) : Promise.resolve(answer)
+  },
 }
 
 /** The log with the scenario's stand-in for the working directory. */
@@ -1713,6 +1731,61 @@ Object.assign(PLAYS, {
     expect(h.provider.prefixBreaks()).toEqual([])
   },
 
+  "A client admits a message under its own ID, twice: it is one message": async (h, say) => {
+    h.provider.enqueue(answer("2"), answer("I will look at the date parser."))
+    h.create().send(say[0]!)
+    await h.settled()
+    const admission = { messageId: ADMITTED as MessageId, origin: ADMITTED_ORIGIN, text: ADMITTED_TEXT, start: true }
+    expect(h.session.admit(admission)).toBe("admitted")
+    await h.settled()
+    const before = h.log().length
+    expect(h.session.admit(admission)).toBe("duplicate")
+    await h.settled()
+    // One message: nothing was written for the second admission, and the model was shown the first once, in its envelope.
+    expect(h.log()).toHaveLength(before)
+    expect(JSON.stringify(h.provider.requests[1]!.input.at(-1))).toContain('<harness origin=\\"tracker\\">')
+    expect(h.provider.prefixBreaks()).toEqual([])
+  },
+
+  "A client admits text that is not its user's own: the session is tainted before its turn starts": async (h, say) => {
+    h.provider.enqueue(answer("2"), answer("I will look at the date parser."))
+    h.create().send(say[0]!)
+    await h.settled()
+    expect(h.session.approval()!.taint.tainted).toBe(false)
+    expect(h.session.admit({ messageId: ADMITTED as MessageId, origin: ADMITTED_ORIGIN, text: ADMITTED_TEXT, start: true, untrusted: { kind: "client", source: OUTSIDE_SOURCE } })).toBe("admitted")
+    await h.settled()
+    expect(h.session.approval()!.taint).toMatchObject({ tainted: true, sources: [{ kind: "client-input", tool: OUTSIDE_SOURCE }] })
+    expect(h.provider.prefixBreaks()).toEqual([])
+  },
+
+  "A tool the client declared is called: the client's answer is its result, and its effect is approved like any other tool's": async (h, say) => {
+    hostAnswers = { ticket_read: { status: "success", output: TICKET }, ticket_comment: { status: "success", output: "Commented." } }
+    h.provider.enqueue(
+      [call("call_1", "ticket_read", JSON.parse(TICKET_READ) as Json), U],
+      [call("call_2", "ticket_comment", JSON.parse(TICKET_COMMENT) as Json), U],
+      answer("Ticket 7 is about the time zone; I could not comment on it, as nobody was there to allow it."),
+    )
+    h.create().send(say[0]!)
+    await h.settled()
+    // Offered beside the built-in tools from the first request, and never changed.
+    expect(h.provider.requests[0]!.tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(["read", "ticket_read", "ticket_comment"]))
+    for (const request of h.provider.requests) expect(request.tools).toEqual(h.provider.requests[0]!.tools)
+    expect(h.provider.prefixBreaks()).toEqual([])
+    // The client was asked once, for the read, with the arguments the model gave; the refused comment never reached it.
+    expect(hostCalls.map(({ name, input, callId }) => ({ name, input, callId }))).toEqual([{ name: "ticket_read", input: { id: 7 }, callId: "call_1" }])
+    expect(h.session.approval()!.taint).toMatchObject({ tainted: true, sources: [{ kind: "host-tool", tool: "ticket_read" }] })
+  },
+
+  "A tool the client declared gets no answer: the call ends at the time limit": async (h, say) => {
+    hostAnswers = {}
+    h.provider.enqueue([call("call_1", "ticket_read", JSON.parse(TICKET_READ) as Json), U], answer("The tracker did not answer; I could not read ticket 7."))
+    h.create().send(say[0]!)
+    await h.settled()
+    // The wait was the MCP call limit, on the engine's clock.
+    expect(h.clock.slept).toContain(60_000)
+    expect(hostCalls).toHaveLength(1)
+  },
+
   // ---------------------------------------------------------------- agents
 
   "A session starts as a read-only agent, and a write is refused with the reason": async (h, say) => {
@@ -1968,6 +2041,8 @@ describe("the loop writes each scenario's events", () => {
       // Skills and MCP servers are read from a real directory, which then stands for the scenarios' `/repo`.
       const cwd = features?.skills === true || features?.mcp === true || features?.agents === true || features?.lsp === true || features?.commands === true ? projectDirectory() : undefined
       hookAnswers = {}
+      hostAnswers = {}
+      hostCalls.length = 0
       exportedSpans = []
       const h = new Harness({
         ...(cwd === undefined ? {} : { cwd }),
@@ -1991,6 +2066,7 @@ describe("the loop writes each scenario's events", () => {
           : {}),
         ...(features?.todo === true ? { extraTools: [todoTool() as unknown as AnyTool] } : {}),
         ...(features?.codeMode === true ? { codeMode: {} } : {}),
+        ...(features?.host === true ? { host: scriptedHost } : {}),
         ...(features?.agents === true ? { agents: { configDir: join(dirname(cwd!), "config") } } : {}),
         ...(features?.commands === true ? { commands: { configDir: join(dirname(cwd!), "config") } } : {}),
         // Telemetry of the user's own configuration, toward a collector that is this test: every closed span, as it closes.
@@ -2041,8 +2117,31 @@ describe("the loop writes each scenario's events", () => {
 
   test("every scenario has a play and every play a scenario", () => {
     expect(Object.keys(PLAYS).sort()).toEqual(scenarios.map(({ scenario }) => scenario.title).sort())
-    expect(scenarios).toHaveLength(120)
+    expect(scenarios).toHaveLength(124)
     for (const title of Object.keys(DEVIATIONS)) expect(Object.keys(PLAYS)).toContain(title)
+  })
+})
+
+describe("the tools a client declares", () => {
+  const declared = (name: string): HostTools => ({ tools: [{ ...HOST_TOOLS[0]!, name }], call: () => Promise.resolve({ status: "success", output: "" }) })
+
+  test("a name of a built-in or an MCP tool is refused at open, with the name, and nothing is created or opened", async () => {
+    const h = new Harness({ mcp: { startWaitMs: 0 } })
+    try {
+      const settings = { model: "gpt-test", reasoningEffort: "medium" }
+      for (const name of ["read", "mcp_call"])
+        expect(() => h.engine.createSession({ cwd: h.cwd, settings, host: declared(name) })).toThrow(
+          new EngineError("invalid_request", `the host tool "${name}" has the name of one of this agent's own tools; give it another name`),
+        )
+      expect(h.engine.listSessions({})).toEqual([])
+      const session = h.create()
+      await session.close()
+      expect(() => h.engine.openSession(session.id, { resume: "wait", host: declared("shell") })).toThrow(EngineError)
+      // Refused before it was opened: the session is not held here, and opens with tools it can offer.
+      expect(h.engine.openSession(session.id, { resume: "wait", host: declared("ticket_read") }).id).toBe(session.id)
+    } finally {
+      await h.dispose()
+    }
   })
 })
 

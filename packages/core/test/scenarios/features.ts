@@ -1,15 +1,19 @@
 /**
- * Skills, MCP servers and wake-ups: what changes during a session and must
- * never touch the frozen prefix. The skill index and the MCP catalogue are
- * appended as instruction messages; a wake-up's firing is admitted into the
- * inbox under its own ID.
+ * Skills, MCP servers, wake-ups and what a client brings: what changes during
+ * a session and must never touch the frozen prefix. The skill index and the
+ * MCP catalogue are appended as instruction messages; a wake-up's firing and
+ * a client's message are admitted into the inbox under their own IDs; the
+ * tools a client declares are in the frozen list from the first baseline.
  */
 import { text } from "../../src/content.ts"
 import { type InstructionDetail, type UntrustedInput, HARNESS_ORIGIN, event } from "../../src/event/durable.ts"
 import { catalogueSource, catalogueUpdate } from "../../src/mcp/catalogue.ts"
 import { skillIndexSource, skillIndexUpdate } from "../../src/skills/skill-index.ts"
+import type { HostToolDeclaration } from "../../src/tools/host.ts"
 import {
+  type Asked,
   type Scenario,
+  approvalDenied,
   baseline,
   c,
   called,
@@ -22,12 +26,14 @@ import {
   opening,
   ran,
   ranUnder,
+  refusal,
   say,
   startedAs,
   settled,
   stepEnded,
   stepStarted,
   taintNoticed,
+  taintedBy,
   toolStarted,
   turnEnded,
 } from "./script.ts"
@@ -277,4 +283,151 @@ export const untrustedFiring: Scenario = {
   ],
 }
 
-export const featureScenarios = [skillIndexFollowsTheFiles, lateServerAndTaintedCall, wakeWhileIdle, wakeWhileWorking, wakeDeliveredTwice, untrustedFiring]
+// ---------------------------------------------------------------- what a client brings
+
+/** The ID a client admits its message under, and the origin it names itself by. */
+export const ADMITTED = "trk_ticket_7_1"
+export const ADMITTED_ORIGIN = "tracker"
+export const ADMITTED_TEXT = "Ticket 7 was assigned to this session: the date parser drops the time zone."
+/** What a client says about text that is not its user's own: where it came from. */
+export const OUTSIDE_SOURCE = "ticket 7, written by someone outside the project"
+
+const admitted = (untrusted?: { readonly source: string }) =>
+  event("inbox.enqueued", { messageId: m(ADMITTED), origin: ADMITTED_ORIGIN, delivery: "queue", content: text(ADMITTED_TEXT), ...(untrusted === undefined ? {} : { untrusted: { kind: "client" as const, ...untrusted } }) })
+
+export const clientAdmitsTwice: Scenario = {
+  title: "A client admits a message under its own ID, twice: it is one message",
+  description:
+    "A client hands the session a message of its own making (a ticket assigned to it) under an ID it chose, with an origin that names it, and asks for it to start work. The engine admits it as a harness component's input: a queued item, delivered as a turn of its own, shown to the model in an envelope that names the origin. The client is not sure the first admission arrived and sends it again with the same ID: the engine finds the ID in the log and answers that it is a duplicate, and nothing is written.",
+  provider: "each turn: one step that finishes with stop",
+  phases: [
+    { label: "a turn, then the session is idle", events: firstTurn, expect: { history: ["u1", "a1"], execution: null } },
+    {
+      label: "the client's message is admitted and starts a turn; sent again, it is a duplicate",
+      events: [admitted(), executionStarted("exe_2"), deliver(ADMITTED), stepStarted("a2"), say("a2", "I will look at the date parser."), stepEnded("a2"), executionSucceeded("exe_2")],
+      expect: { ui: [{ id: "u1" }, { id: "a1" }, { id: ADMITTED, kind: "synthetic" }, { id: "a2" }], history: ["u1", "a1", ADMITTED, "a2"], execution: null, inbox: [] },
+      rejects: [{ event: admitted(), code: "duplicate_id", why: "a message ID is used once: the engine answers the second admission as a duplicate before it writes anything" }],
+    },
+  ],
+}
+
+export const clientAdmitsUntrusted: Scenario = {
+  title: "A client admits text that is not its user's own: the session is tainted before its turn starts",
+  description:
+    "The client's message carries text someone other than its user wrote, and the client says so: `untrusted` names where the text came from. The admission records that in a field of the same event (`untrusted`, of kind `client`), and from its own position on the session is tainted, with a source of kind `client-input` that names what the client said. The user is told once (`taint.noticed`) before the execution starts, and every call of the turn is decided with untrusted content in the conversation.",
+  provider: "each turn: one step that finishes with stop",
+  approval: { mode: "auto" },
+  phases: [
+    { label: "a turn, then the session is idle", events: firstTurn, expect: { history: ["u1", "a1"], execution: null } },
+    {
+      label: "the client's message is admitted with the fact that makes it untrusted, the user is told, and the turn starts",
+      events: [
+        admitted({ source: OUTSIDE_SOURCE }),
+        taintNoticed({ at: 10, tool: OUTSIDE_SOURCE, kind: "client-input", path: null }),
+        executionStarted("exe_2"),
+        deliver(ADMITTED),
+        stepStarted("a2"),
+        say("a2", "I will look at the date parser."),
+        stepEnded("a2"),
+        executionSucceeded("exe_2"),
+      ],
+      expect: { history: ["u1", "a1", ADMITTED, "a2"], execution: null, inbox: [] },
+    },
+  ],
+}
+
+/** The tools the client of these scenarios declares: one that reads its tracker, whose text others wrote, and one that writes to it. */
+export const HOST_TOOLS: readonly HostToolDeclaration[] = [
+  {
+    name: "ticket_read",
+    description: "Read a ticket of the team's tracker.",
+    inputSchema: { type: "object", properties: { id: { type: "integer" } }, required: ["id"] },
+    effect: "read",
+    untrustedResult: true,
+  },
+  {
+    name: "ticket_comment",
+    description: "Comment on a ticket of the team's tracker.",
+    inputSchema: { type: "object", properties: { id: { type: "integer" }, text: { type: "string" } }, required: ["id", "text"] },
+    effect: "network",
+    untrustedResult: false,
+  },
+]
+export const TICKET = "Ticket 7: the date parser drops the time zone. (Opened by an outside reporter.)"
+export const TICKET_READ = '{"id":7}'
+export const TICKET_COMMENT = '{"id":7,"text":"Fixed in the date parser."}'
+/** What a call of a client's tool ran under: decided by its declared effect, as a built-in tool's is. */
+const hostRun = (mode: "auto" | "full") => ({ mode, origin: "host" as const, paths: [], sandbox: null })
+const hostSettled = (id: string, callId: string, outcome: "success" | "error", output: string, untrusted: boolean) =>
+  event("tool.settled", { messageId: m(id), callId: c(callId), outcome, output, truncation: null, attachments: [], display: { host: { untrusted } } })
+const COMMENTING: Asked = { name: "ticket_comment", effect: "network", origin: "host", taint: taintedBy({ at: 9, tool: "ticket_read", kind: "host-tool", path: null }) }
+
+export const hostToolRoundTrip: Scenario = {
+  title: "A tool the client declared is called: the client's answer is its result, and its effect is approved like any other tool's",
+  description:
+    "The client that opened the session declared two tools of its own, and they are in the frozen tool list from the first baseline beside the built-in ones. The model reads a ticket: the call is decided by the declared effect (`read`, which runs), recorded as from the `host` origin, handed to the client, and the client's answer is the result, capped and stored once like any other. The declaration says that tool's results are untrusted, so the result records that (`display.host`) and taints the session (`host-tool`), which the user is told once. The model then comments on the ticket: the declared effect is `network`, which in mode `auto` needs the user's approval, exactly as a built-in network tool would; nobody is present, so it is refused and the client is never asked.",
+  provider: "step 1 calls ticket_read; step 2 calls ticket_comment; step 3 answers",
+  features: { host: true },
+  approval: { mode: "auto" },
+  phases: [
+    {
+      label: "the read runs: the client answers, and the untrusted answer taints the session",
+      events: [
+        ...opening("Read ticket 7 and say on it that it is fixed."),
+        stepStarted("a1"),
+        called("a1", "call_1", "ticket_read", TICKET_READ),
+        event("tool.started", { messageId: m("a1"), callId: c("call_1"), effect: "read", run: hostRun("auto") }),
+        hostSettled("a1", "call_1", "success", TICKET, true),
+        taintNoticed({ at: 9, tool: "ticket_read", kind: "host-tool", path: null }),
+        stepEnded("a1", "tool_calls"),
+      ],
+      expect: { history: ["u1", "a1"], open: null },
+    },
+    {
+      label: "the comment would use the network: nobody is there to approve it, so it is refused",
+      events: [
+        stepStarted("a2"),
+        called("a2", "call_2", "ticket_comment", TICKET_COMMENT),
+        approvalDenied("a2", "call_2", COMMENTING, "unattended"),
+        settled("a2", "call_2", "error", refusal(COMMENTING)),
+        stepEnded("a2", "tool_calls"),
+        stepStarted("a3"),
+        say("a3", "Ticket 7 is about the time zone; I could not comment on it, as nobody was there to allow it."),
+        stepEnded("a3"),
+        executionSucceeded(),
+      ],
+      expect: { ui: [{ id: "u1" }, { id: "a1", calls: ["call_1 ticket_read success"] }, { id: "a2", calls: ["call_2 ticket_comment error"] }, { id: "a3" }], execution: null },
+    },
+  ],
+}
+
+/** What the model reads when the client does not answer within the MCP call limit. */
+export const HOST_TIMED_OUT = "The client did not answer the call to ticket_read within 60 s, and it was cancelled."
+
+export const hostToolTimesOut: Scenario = {
+  title: "A tool the client declared gets no answer: the call ends at the time limit",
+  description:
+    "The model calls a tool the client declared, and the client never answers. The call does not hold the turn for ever: at the MCP call limit the request to the client is cancelled and the call ends as an error the model reads, written by the harness, so it is not untrusted whatever the declaration says. The turn goes on.",
+  provider: "step 1 calls ticket_read, which the client never answers; step 2 answers",
+  features: { host: true },
+  phases: [
+    {
+      label: "the client does not answer: the call ends at the limit, and the model answers",
+      events: [
+        ...opening("Read ticket 7."),
+        stepStarted("a1"),
+        called("a1", "call_1", "ticket_read", TICKET_READ),
+        event("tool.started", { messageId: m("a1"), callId: c("call_1"), effect: "read" }),
+        hostSettled("a1", "call_1", "error", HOST_TIMED_OUT, false),
+        stepEnded("a1", "tool_calls"),
+        stepStarted("a2"),
+        say("a2", "The tracker did not answer; I could not read ticket 7."),
+        stepEnded("a2"),
+        executionSucceeded(),
+      ],
+      expect: { ui: [{ id: "u1" }, { id: "a1", calls: ["call_1 ticket_read error"] }, { id: "a2" }], execution: null },
+    },
+  ],
+}
+
+export const featureScenarios = [skillIndexFollowsTheFiles, lateServerAndTaintedCall, wakeWhileIdle, wakeWhileWorking, wakeDeliveredTwice, untrustedFiring, clientAdmitsTwice, clientAdmitsUntrusted, hostToolRoundTrip, hostToolTimesOut]

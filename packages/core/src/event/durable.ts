@@ -179,13 +179,6 @@ export const instructionDetail = variant("kind", {
 export type InstructionDetail = Infer<typeof instructionDetail>
 
 /**
- * Why an admitted input is content the harness does not control: the firing
- * of a wake-up that carries a webhook's body, or the output of a check that
- * ran with the network or without the sandbox. The session counts as having
- * taken in untrusted content from the admission on (`approval/taint.ts`), so
- * the turn the input starts is decided under that from its first call.
- */
-/**
  * The slash command a user's message was produced by (`commands/`): a
  * Markdown file whose template was expanded with what the user typed after
  * its name. The message's content is the expanded text, stored once; this
@@ -213,7 +206,22 @@ const commandUseFields = {
 export const commandUse = object(commandUseFields)
 export type CommandUse = Infer<typeof commandUse>
 
-export const untrustedInput = object({ kind: literal("wake"), wakeId: nonEmptyString, carries: oneOf(["webhook_body", "check_output"]) })
+/**
+ * Why an admitted input is content the harness does not control. The session
+ * counts as having taken in untrusted content from the admission on
+ * (`approval/taint.ts`), so the turn the input starts is decided under that
+ * from its first call. A kind an older build does not know makes it refuse
+ * the session rather than open it as untainted.
+ * - `wake`: the firing of a wake-up that carries a webhook's body, or the
+ *   output of a check that ran with the network or without the sandbox.
+ * - `client`: text a client admitted (`_<ns>/admit`) and said is not its
+ *   user's own; `source` is the client's name for where it came from, shown
+ *   to the user as it was given.
+ */
+export const untrustedInput = variant("kind", {
+  wake: object({ kind: literal("wake"), wakeId: nonEmptyString, carries: oneOf(["webhook_body", "check_output"]) }),
+  client: object({ kind: literal("client"), source: nonEmptyString }),
+})
 export type UntrustedInput = Infer<typeof untrustedInput>
 
 /** Why a step or a compaction did not complete. */
@@ -622,8 +630,8 @@ export const durableEvents = {
    * wrote it; otherwise it names the harness component that produced it
    * (a finished background command, a wake-up) and the item is synthetic.
    * `untrusted` is set when the content came from outside the harness (a
-   * webhook's body, a networked check's output): a taint source, recorded
-   * with the admission.
+   * webhook's body, a networked check's output, text a client marked as not
+   * its user's): a taint source, recorded with the admission.
    */
   "inbox.enqueued": define(1, object({ messageId, origin: nullable(nonEmptyString), delivery, content, untrusted: optional(untrustedInput) })),
   /**

@@ -6,7 +6,7 @@
  * for. See the README for the rules and why.
  */
 import { isWithin } from "../approval/paths.ts"
-import type { ToolEffect } from "../tool/tool.ts"
+import type { ToolEffect, ToolOrigin } from "../tool/tool.ts"
 
 /** One path a call names: as the tool resolves it, and with every link followed (`null` when that failed). */
 export interface PathKey {
@@ -30,7 +30,7 @@ export type Footprint =
 export interface CallTraits {
   /** `undefined` for a tool nobody knows: the runtime refuses it before it could do anything. */
   readonly effect: ToolEffect | undefined
-  readonly origin: "builtin" | "mcp"
+  readonly origin: ToolOrigin
   /** The call hands its work to a subagent, whose own calls are decided and scheduled in its own session. */
   readonly delegates: boolean
   /** The call runs a program whose own calls are its effects (`Tool.nests`): it changes something and names nothing. */

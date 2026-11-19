@@ -8,6 +8,10 @@
  * Sources (a tool result that ran; a denied call brought nothing in):
  * - any result of a `network` tool (web fetch, search), success or error;
  * - any result of an MCP tool, whatever effect it declares;
+ * - a result of a tool the client declared (`tools/host.ts`) when its
+ *   declaration says its results are untrusted (`untrustedResult`); the
+ *   result of any other declared tool is the client's own answer, whatever
+ *   effect it declares;
  * - a file tool result naming a path outside the workspace or in a hidden path;
  * - a file tool result naming a workspace path that matches `untrustedPaths`;
  * - a shell command that ran with network access the harness granted (an escalation);
@@ -15,7 +19,9 @@
  *   and what a running subagent has said so far, shown to its parent while
  *   the subagent's conversation is tainted;
  * - a wake-up's firing that carries a webhook's body or the output of a check
- *   that ran with the network or without the sandbox, from its admission on.
+ *   that ran with the network or without the sandbox, from its admission on;
+ * - text a client admitted and marked as not its user's own (`client-input`),
+ *   from its admission on;
  * - the text of a hook that reached the model (a refusal's reason, a note, a
  *   stop message) when the hook ran with the network by the user's grant
  *   (`sandbox: false` in the user's own file), or when it is a project's hook
@@ -53,7 +59,7 @@
  * acted on them). A new session starts clean; a fork inherits its parent's
  * taint with its history. An explicit user action (`taint_cleared`) clears it.
  */
-import type { ToolEffect } from "../tool/tool.ts"
+import type { ToolEffect, ToolOrigin } from "../tool/tool.ts"
 import type { PathFact } from "./paths.ts"
 
 export type HistoryEntry =
@@ -63,7 +69,7 @@ export type HistoryEntry =
       readonly at: number
       readonly tool: string
       readonly effect: ToolEffect
-      readonly origin: "builtin" | "mcp"
+      readonly origin: ToolOrigin
       /**
        * The paths whose content the output may show, classified when the call
        * was decided: the path a file tool was given, and for a search tool the
@@ -73,9 +79,10 @@ export type HistoryEntry =
       /** A shell command that ran in the sandbox with the network on. */
       readonly networkGranted: boolean
       /**
-       * What an MCP bridge call recorded about its own result: whether it
-       * holds content an untrusted server wrote. Absent or `null` for every
-       * other tool, which is then judged by its class and origin alone.
+       * What an MCP bridge call, or a call of a tool the client declared,
+       * recorded about its own result: whether it holds content the harness
+       * does not control. Absent or `null` for every other tool, which is then
+       * judged by its class and origin alone.
        */
       readonly untrusted?: boolean | null
     }
@@ -83,6 +90,8 @@ export type HistoryEntry =
   | { readonly kind: "subagent_result"; readonly at: number; readonly session: string }
   /** Input admitted from outside the harness: a wake-up's firing with a webhook's body or a networked check's output. */
   | { readonly kind: "untrusted_input"; readonly at: number; readonly wakeId: string; readonly carries: "webhook_body" | "check_output" }
+  /** Text a client admitted and said is not its user's own, from the source it named. */
+  | { readonly kind: "client_input"; readonly at: number; readonly source: string }
   /** A hook's own text reached the model, and the hook's record says it is content the harness does not control. */
   | { readonly kind: "hook_output"; readonly at: number; readonly hook: string; readonly taint: "hook-network" | "hook-untrusted-project" }
   /** The diagnostics note of a language server this project's configuration chose, in a repository marked untrusted. */
@@ -92,11 +101,11 @@ export type HistoryEntry =
   /** Recorded for completeness; changes nothing. */
   | { readonly kind: "compaction"; readonly at: number }
 
-export type TaintSourceKind = "network-tool" | "mcp-tool" | "outside-file" | "untrusted-file" | "network-command" | "subagent" | "wake-up" | "hook-network" | "hook-untrusted-project" | "lsp-untrusted-project"
+export type TaintSourceKind = "network-tool" | "mcp-tool" | "outside-file" | "untrusted-file" | "network-command" | "subagent" | "wake-up" | "client-input" | "host-tool" | "hook-network" | "hook-untrusted-project" | "lsp-untrusted-project"
 
 export interface TaintSource {
   readonly at: number
-  /** The tool whose result it was; for a wake-up's firing, the wake-up's ID; for a hook, its name; for a diagnostics note, the language server's name. */
+  /** The tool whose result it was; for a wake-up's firing, the wake-up's ID; for a client's admission, the source it named; for a hook, its name; for a diagnostics note, the language server's name. */
   readonly tool: string
   readonly kind: TaintSourceKind
   /** The path, for file sources; the child session, for a subagent; what the firing carried (`webhook_body`, `check_output`), for a wake-up. */
@@ -124,6 +133,8 @@ export function deriveTaint(history: readonly HistoryEntry[], options: { readonl
         ? [{ at: entry.at, tool: "subagent", kind: "subagent", path: entry.session }]
         : entry.kind === "untrusted_input"
           ? [{ at: entry.at, tool: entry.wakeId, kind: "wake-up", path: entry.carries }]
+          : entry.kind === "client_input"
+            ? [{ at: entry.at, tool: entry.source, kind: "client-input", path: null }]
           : entry.kind === "hook_output"
             ? [{ at: entry.at, tool: entry.hook, kind: entry.taint, path: null }]
             : entry.kind === "diagnostics_note"
@@ -136,6 +147,8 @@ export function deriveTaint(history: readonly HistoryEntry[], options: { readonl
 
 function sourcesOf(entry: Extract<HistoryEntry, { kind: "tool_result" }>, globs: readonly Bun.Glob[]): TaintSource[] {
   const source = (kind: TaintSourceKind, path: string | null = null): TaintSource => ({ at: entry.at, tool: entry.tool, kind, path })
+  // The client's declaration says what its tool's results hold; the effect it declares is what approval decides by.
+  if (entry.origin === "host") return entry.untrusted === true ? [source("host-tool")] : []
   // A bridge call knows what its result holds; any other MCP tool is a source whatever it declares.
   if (entry.untrusted != null) return entry.untrusted ? [source("mcp-tool")] : []
   if (entry.origin === "mcp") return [source("mcp-tool")]
@@ -163,6 +176,10 @@ export function describeTaint(taint: TaintState): string {
             ? `subagent ${first.path}, whose own conversation holds untrusted content,`
           : first.kind === "wake-up"
             ? `the wake-up ${first.tool} (${first.path === "webhook_body" ? "the body of a webhook request" : "the output of a check that could use the network"})`
+          : first.kind === "client-input"
+            ? `${JSON.stringify(first.tool)}, which the client admitted as not its user's own words,`
+          : first.kind === "host-tool"
+            ? `the client's tool ${first.tool}, whose results the client marked as untrusted,`
           : first.kind === "hook-network"
             ? `the hook "${first.tool}", which runs outside the sandbox with the network,`
           : first.kind === "hook-untrusted-project"
