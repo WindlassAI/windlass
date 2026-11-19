@@ -54,6 +54,7 @@ import { type SqliteStore, openSqliteStore } from "../../src/store/sqlite.ts"
 import { FakeProvider } from "../../src/testing/fake-provider.ts"
 import { waitFor } from "../../src/testing/wait.ts"
 import type { AnyTool, ToolContext, ToolEffect, ToolResult } from "../../src/tool/tool.ts"
+import type { HostTools } from "../../src/tools/host.ts"
 import type { VerificationEvidence } from "../../src/verify/evidence.ts"
 import type { CheckResult, CheckStatus, RunCheckOptions } from "../../src/verify/run.ts"
 import { expectRebuildEqualsLive } from "../store/consistency.ts"
@@ -387,6 +388,8 @@ export interface HarnessOptions {
   readonly lsp?: LspSetup
   /** The models the provider lists, with the efforts each accepts, for the tests about settings. Without it nothing is checked. */
   readonly models?: readonly (string | ModelOffer)[]
+  /** The tools the client declares when it creates and opens the session, and how it answers them. Without it there are none. */
+  readonly host?: HostTools
 }
 
 export class Harness {
@@ -512,14 +515,14 @@ export class Harness {
 
   /** Creates the session every test works in. */
   create(settings: SessionSettings = this.options.settings ?? { model: "gpt-test", reasoningEffort: "medium" }, agent?: string | null): EngineSession {
-    return this.adopt(this.engine.createSession({ cwd: this.cwd, settings, ...(agent === undefined ? {} : { agent }) }))
+    return this.adopt(this.engine.createSession({ cwd: this.cwd, settings, ...(agent === undefined ? {} : { agent }), host: this.options.host ?? null }))
   }
 
   /** Opens the session again, in the running process or after `boot`. */
   open(resume: ResumeMode = "start"): EngineSession {
     const id = this.session.id
     const before = this.store.getSession(id)!.lastSeq
-    const session = this.engine.openSession(id, { resume })
+    const session = this.engine.openSession(id, { resume, host: this.options.host ?? null })
     // What recovery appended while opening was published before anyone could subscribe.
     this.seenEvents.push(...this.store.readEvents(id, { afterSeq: before }))
     return this.adopt(session)

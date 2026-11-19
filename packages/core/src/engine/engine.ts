@@ -135,8 +135,9 @@ import { StoreLockedError } from "../store/sqlite-lock.ts"
 import { type AppendOptions, type RequestPurpose, type SessionQuery, type SessionStores, type SessionSummary, type Store, StoreError, sharedSessionStores } from "../store/store.ts"
 import { resolvePath } from "../tools/common.ts"
 import { currentTodos, renderTodos } from "../tools/todo.ts"
+import { type HostTools, hostTool, hostToolsProblem } from "../tools/host.ts"
 import { type Authorization, type ToolCall, type ToolCallOutcome, type ToolRuntime, createToolRuntime } from "../tool/runtime.ts"
-import type { AnyTool, BackgroundCommand, TempDirectory, ToolContext, ToolEffect, ToolResult } from "../tool/tool.ts"
+import type { AnyTool, BackgroundCommand, TempDirectory, ToolContext, ToolEffect, ToolOrigin, ToolResult } from "../tool/tool.ts"
 import { ACKNOWLEDGE_TOOL_NAME, acknowledgeTool } from "../verify/acknowledge.ts"
 import { type VerificationEvidence, type VerifiedState, buildEvidence } from "../verify/evidence.ts"
 import { fingerprintCheck, reusablePass } from "../verify/fingerprint.ts"
@@ -1200,8 +1201,15 @@ export interface Engine {
    * when the agent cannot be found or used (`invalid_request`, with a message
    * that suggests close names), or when the provider's listing is known and
    * does not offer the model or the effort (`unknown_model`, `unknown_effort`).
+   *
+   * `host` are the tools the client declares and runs (`tools/host.ts`): the
+   * session offers them from its first baseline and hands their calls to
+   * `host.call`. Not stored: a client declares them again when it opens the
+   * session. Throws `invalid_request` and creates nothing when one cannot be
+   * used (a name of the engine's own tools, a name twice, a schema that is
+   * not an object's).
    */
-  readonly createSession: (input: { readonly cwd: string; readonly settings: SessionSettings; readonly title?: string | null; readonly agent?: string | null }) => EngineSession
+  readonly createSession: (input: { readonly cwd: string; readonly settings: SessionSettings; readonly title?: string | null; readonly agent?: string | null; readonly host?: HostTools | null }) => EngineSession
   /**
    * The agents a session in `cwd` could run as, as they are now: the
    * definitions, what could not be used (skipped, shadowed, warnings) and
@@ -1219,8 +1227,9 @@ export interface Engine {
   /**
    * Opens an existing session. If it holds a claim from a process that died
    * or shut down, it is recovered here, and what happens next is `resume`.
+   * `host`: the tools the client that opens it declares, as for `createSession`.
    */
-  readonly openSession: (id: SessionId, options?: { readonly resume?: ResumeMode }) => EngineSession
+  readonly openSession: (id: SessionId, options?: { readonly resume?: ResumeMode; readonly host?: HostTools | null }) => EngineSession
   /**
    * Forks a session at a step boundary into a new session with a file of
    * its own: the parent's history up to that point is its history, and it
@@ -1408,7 +1417,7 @@ interface Core {
   /** Slash commands: where the user's own command files are kept. `null` when the build offers none. */
   readonly commands: { readonly configDir: string; readonly home: string | undefined } | null
   /** By tool name: the tools that come from an MCP server (`Tool.origin`), whose declared effect an agent's restrictions do not trust. */
-  readonly origins: ReadonlyMap<string, "builtin" | "mcp">
+  readonly origins: ReadonlyMap<string, ToolOrigin>
   /** Reads the configuration that applies in a directory without waiting; `null` when nothing can be read that way. */
   readonly loadConfigSync: ((cwd: string) => SessionConfig) | null
   /** The provider's models as they were last listed; `null` before the first listing, or without one. */
@@ -1651,9 +1660,11 @@ export function createEngine(options: EngineOptions): Engine {
   }
 
   /** Opens a session that is not open here, repairing what a dead process left (see `recover`). */
-  const open = (id: SessionId, resume: ResumeMode): LiveSession => {
+  const open = (id: SessionId, resume: ResumeMode, host: HostTools | null = null): LiveSession => {
     const store = storeErrors(() => core.stores.open(id))
     const session = new LiveSession(core, id, store)
+    // Before recovery, which may take the interrupted turn up at once: its calls of the client's tools reach the client.
+    session.useHost(host)
     core.sessions.set(id, session)
     try {
       session.recover(resume)
@@ -1712,6 +1723,7 @@ export function createEngine(options: EngineOptions): Engine {
     createSession: (input) => {
       assertOpen()
       // Decided before anything exists: an agent that cannot be used, or settings the provider does not offer, create nothing.
+      checkHost(core, input.host ?? null)
       const start = startAs(core, input)
       const id = core.ids.session()
       const store = storeErrors(() => core.stores.create(id))
@@ -1727,6 +1739,7 @@ export function createEngine(options: EngineOptions): Engine {
         throw error
       }
       session.agentDecided = start.decided
+      session.useHost(input.host ?? null)
       core.sessions.set(id, session)
       for (const warning of start.warnings) session.say("agents", warning)
       return session
@@ -1742,10 +1755,14 @@ export function createEngine(options: EngineOptions): Engine {
     },
     openSession: (id, options$ = {}) => {
       assertOpen()
+      checkHost(core, options$.host ?? null)
       const live = core.sessions.get(id)
-      // A session the scheduler opened to deliver a firing is the caller's from here on.
-      if (live !== undefined) return live.keep()
-      return open(id, options$.resume ?? "start")
+      // A session the scheduler opened to deliver a firing is the caller's from here on, with the caller's tools.
+      if (live !== undefined) {
+        live.useHost(options$.host ?? null)
+        return live.keep()
+      }
+      return open(id, options$.resume ?? "start", options$.host ?? null)
     },
     forkSession: async (id, fork = {}) => {
       assertOpen()
@@ -2063,6 +2080,11 @@ class LiveSession implements EngineSession {
   private override: ApprovalSection | null = null
   /** The home the user chose for this session's sandboxed commands, as a client gave it; `null`: the files decide. */
   private homeChoice: SandboxHomeChoice | null = null
+  /**
+   * The tools the client that opened this session declared (`tools/host.ts`), and the engine's tools with them: what
+   * this session's calls run with. `null`: none were declared, and the engine's own are used as they are.
+   */
+  private host: { readonly tools: readonly AnyTool[]; readonly runtime: ToolRuntime; readonly effects: ReadonlyMap<string, ToolEffect> } | null = null
   /** Whether the sandbox was told to give this session a home of its own, and whether its commands get one (`applyHome`). */
   private home = { on: false, used: false }
   /** The environment variables a client named for this session's commands; `null`: the user's file decides. */
@@ -2394,6 +2416,36 @@ class LiveSession implements EngineSession {
   setApproval = (section: ApprovalSection): void => {
     this.override = { ...this.override, ...section }
     for (const child of this.children) child.setApproval(section)
+  }
+
+  /**
+   * The tools the client that opens this session declares, already checked (`checkHost`): from now on its calls of
+   * them reach `host.call`. Which of them the model is offered is the frozen list's to say (`offeredTools`).
+   */
+  useHost(host: HostTools | null): void {
+    if (host === null || host.tools.length === 0) {
+      this.host = null
+      return
+    }
+    const tools = host.tools.map((declaration) => hostTool(declaration, host.call, this.core.clock.sleep))
+    this.host = {
+      tools,
+      runtime: createToolRuntime({ tools: [...this.core.runtime.tools, ...tools], spillDir: this.core.spillDir, putBlob: this.core.stores.putBlob }),
+      effects: new Map([...this.core.effects, ...tools.map((tool) => [tool.name, tool.effect] as const)]),
+    }
+  }
+
+  /** What this session's calls run with: the engine's tools, and its client's when it declared some. */
+  private get runtime(): ToolRuntime {
+    return this.host?.runtime ?? this.core.runtime
+  }
+
+  private get effects(): ReadonlyMap<string, ToolEffect> {
+    return this.host?.effects ?? this.core.effects
+  }
+
+  private originOf(name: string): ToolOrigin {
+    return this.core.origins.get(name) ?? (this.host?.tools.some((tool) => tool.name === name) ? "host" : "builtin")
   }
 
   setSandboxHome = (home: SandboxHomeChoice | null): void => {
@@ -3800,7 +3852,8 @@ class LiveSession implements EngineSession {
    * fast the provider streams.
    */
   private beginTools(run: Run, messageId: MessageId, toolChoice: ModelRequest["toolChoice"]): StepTools {
-    const { runtime, limits, clock, effects } = this.core
+    const { limits, clock } = this.core
+    const { runtime, effects } = this
     const approvals = this.core.approvals
     const signal = run.interrupt.signal
     const unsettled = new Set<CallId>()
@@ -4032,7 +4085,7 @@ class LiveSession implements EngineSession {
         this.callStops.set(callKey(messageId, part.callId), () => cancel(part))
         const effect = effects.get(name)
         if (runsAs !== null && effect !== undefined) {
-          const verdict = checkAgentCall(runsAs, { name, effect, origin: this.core.origins.get(name) ?? "builtin" }, { exempt: [ACKNOWLEDGE_TOOL_NAME] })
+          const verdict = checkAgentCall(runsAs, { name, effect, origin: this.originOf(name) }, { exempt: [ACKNOWLEDGE_TOOL_NAME] })
           if (verdict.kind === "refuse") {
             refuseAsAgent(part, runsAs, verdict)
             return resultOf(part.callId)
@@ -4105,7 +4158,7 @@ class LiveSession implements EngineSession {
       // decided exactly as without an agent. (A tool nobody knows is answered by the runtime, as always.)
       if (runsAs !== null && effect !== undefined) {
         // A program does nothing by itself: an agent's limits on effects apply to each call it makes, and its list of tools to it.
-        const verdict = checkAgentCall(runsAs, { name: call.name, effect: this.core.nesting.has(call.name) ? "read" : effect, origin: this.core.origins.get(call.name) ?? "builtin" }, { exempt: [ACKNOWLEDGE_TOOL_NAME] })
+        const verdict = checkAgentCall(runsAs, { name: call.name, effect: this.core.nesting.has(call.name) ? "read" : effect, origin: this.originOf(call.name) }, { exempt: [ACKNOWLEDGE_TOOL_NAME] })
         if (verdict.kind === "refuse") return void refuseAsAgent(call, runsAs, verdict)
       }
       const admitted = new Promise<void>((resolve) => admissions.set(call.callId, resolve))
@@ -4184,7 +4237,7 @@ class LiveSession implements EngineSession {
         paths = []
       }
     }
-    return footprintOf({ effect, origin: this.core.origins.get(call.name) ?? "builtin", delegates: this.core.delegating.has(call.name), nests: this.core.nesting.has(call.name), paths })
+    return footprintOf({ effect, origin: this.originOf(call.name), delegates: this.core.delegating.has(call.name), nests: this.core.nesting.has(call.name), paths })
   }
 
   // ---- code mode ----
@@ -5671,6 +5724,10 @@ class LiveSession implements EngineSession {
       ...kept(this.core.wake?.tools ?? [], depth === 0 && (this.wakeConfig()?.enabled ?? false)),
       // Memory is behind its flag: off unless the configuration read for this execution turns it on.
       ...kept(this.core.memory?.tools ?? [], depth === 0 && this.memoryConfig().enabled),
+      // The client's tools, as it declares them now: all of them in a first baseline, and in a baseline after that
+      // the ones the list already had, so a tool declared later is never offered and one no longer declared goes at
+      // a compaction. (A subagent has no client: it is offered none.)
+      ...kept(this.host?.tools ?? [], true),
     ]
     // The history tools are in every list this build freezes: see `history.ts` for why they are there from the start.
     const own = new Set(
@@ -6586,7 +6643,7 @@ class LiveSession implements EngineSession {
       selected: selected.map((check) => check.name),
       latest: latest?.evidence.checks ?? [],
       changedSinceLatest:
-        latest !== null && (current !== null && latest.snapshot !== null ? current !== latest.snapshot : ranSideEffectsSince(state, latest.seq, this.core.effects)),
+        latest !== null && (current !== null && latest.snapshot !== null ? current !== latest.snapshot : ranSideEffectsSince(state, latest.seq, this.effects)),
       reportsSent: reportsThisTurn(state).length,
       acknowledgement: acknowledgementThisTurn(state),
     }
@@ -6864,7 +6921,7 @@ class LiveSession implements EngineSession {
       const delivery = snapshotsSinceDelivery(this.store.readEvents(this.id, { afterSeq: claim.startedSeq }), began).target
       if (delivery !== null) return delivery !== current
     }
-    return ranSideEffectsSince(projection, began, this.core.effects)
+    return ranSideEffectsSince(projection, began, this.effects)
   }
 
   /**
@@ -6885,7 +6942,7 @@ class LiveSession implements EngineSession {
       })().catch(() => null)
       if (files !== null) return { files, any: files.length > 0 }
     }
-    return { files: null, any: ranSideEffectsSince(projection, verified?.seq ?? 0, this.core.effects) }
+    return { files: null, any: ranSideEffectsSince(projection, verified?.seq ?? 0, this.effects) }
   }
 
   // ---- revert and its undo ----
@@ -7077,7 +7134,7 @@ class LiveSession implements EngineSession {
       let delegated = false
       for (const part of message.parts) {
         if (part.type !== "tool_call" || part.state.status === "pending" || (part.state.status === "settled" && part.state.outcome === "not_started")) continue
-        const effect = part.state.status === "running" ? part.state.effect : this.core.effects.get(part.name)
+        const effect = part.state.status === "running" ? part.state.effect : this.effects.get(part.name)
         if (effect === "read") continue
         if (this.core.delegating.has(part.name)) delegated = true
         const touches = this.core.touches.get(part.name)
@@ -7277,6 +7334,12 @@ function configFilesNow(core: Core, cwd: string): { readonly files: ConfigFiles 
   } catch (error) {
     return { files: null, error: describe(error) }
   }
+}
+
+/** Refuses tools a client declares that cannot be used, before anything is created or opened with them. */
+function checkHost(core: Core, host: HostTools | null): void {
+  const problem = host === null ? null : hostToolsProblem(host.tools, new Set(core.runtime.tools.map((tool) => tool.name)))
+  if (problem !== null) throw new EngineError("invalid_request", problem)
 }
 
 /** What the user should know about an agent that was selected: restrictions that name tools this build does not have. */

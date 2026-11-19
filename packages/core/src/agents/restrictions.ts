@@ -12,7 +12,7 @@
  * comes from, can only take away from what the user's approval mode allows.
  * The approval mode itself can only be tightened (`effectiveApprovalMode`).
  */
-import { type ToolEffect, toolEffect } from "../tool/tool.ts"
+import { type ToolEffect, type ToolOrigin, toolEffect } from "../tool/tool.ts"
 import { type Infer, nonEmptyString, object, oneOf } from "../validate.ts"
 import { APPROVAL_MODES, type AgentApprovalMode, type AgentRestrictions, EFFECTS } from "./definition.ts"
 
@@ -21,7 +21,7 @@ export interface CallFacts {
   readonly name: string
   readonly effect: ToolEffect
   /** `mcp`: an MCP server provides the tool, so its declared effect is not trusted. Absent: built in. */
-  readonly origin?: "builtin" | "mcp"
+  readonly origin?: ToolOrigin
 }
 
 /**

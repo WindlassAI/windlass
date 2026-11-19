@@ -30,6 +30,9 @@ export type ToolSpec = Infer<typeof toolSpec>
 export const toolEffect = oneOf(["read", "write", "exec", "network"])
 export type ToolEffect = Infer<typeof toolEffect>
 
+/** Where a tool comes from (`Tool.origin`). */
+export type ToolOrigin = "builtin" | "mcp" | "host"
+
 /** Recorded when the model-facing output is shorter than what the tool produced. */
 export const truncation = object({
   /** Size of the full output before capping. */
@@ -220,9 +223,11 @@ export interface Tool<Input = Json> extends ToolSpec {
   /**
    * Where the tool comes from. `mcp`: an MCP server provides it, so it runs
    * outside the sandbox and its declared effect is not trusted: approval
-   * asks about it by name and its results taint the session. Absent: built in.
+   * asks about it by name and its results taint the session. `host`: the
+   * client that opened the session declared it and runs it (`tools/host.ts`);
+   * it is decided by its declared effect, as a built-in tool is. Absent: built in.
    */
-  readonly origin?: "builtin" | "mcp"
+  readonly origin?: ToolOrigin
   /**
    * Runs the tool. Expected failures are returned as `status: "error"`. A
    * thrown exception is a bug in the tool; the runtime settles the call as

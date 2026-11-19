@@ -41,7 +41,7 @@ import { selectModelHistory } from "../../src/message/history.ts"
 import type { Exclusion, Message, Projection } from "../../src/message/message.ts"
 import { type ReduceErrorCode, reduce } from "../../src/message/reducer.ts"
 import { type ProviderError, type ProviderErrorKind, makeProviderError } from "../../src/provider/error.ts"
-import type { ToolEffect } from "../../src/tool/tool.ts"
+import type { ToolEffect, ToolOrigin } from "../../src/tool/tool.ts"
 import type { Acknowledgement } from "../../src/verify/acknowledge.ts"
 import { type VerificationEvidence, outputTailOf } from "../../src/verify/evidence.ts"
 import { renderReport } from "../../src/verify/report.ts"
@@ -106,6 +106,8 @@ export interface FeatureSetting {
   readonly telemetry?: boolean
   /** The engine offers code mode: `run_code`, whose programs call the scenario's tools. */
   readonly codeMode?: boolean
+  /** The client that opens the session declares the scenarios' host tools (`HOST_TOOLS` in `features.ts`) and answers their calls as the play says. */
+  readonly host?: boolean
 }
 
 export interface SpawnSetting {
@@ -515,7 +517,10 @@ export const taintedBy = (...sources: TaintSource[]): TaintState => (sources.len
 
 export interface Asked {
   readonly mode?: ApprovalMode
-  readonly name: ToolName
+  readonly name: ToolName | (string & {})
+  /** For a tool outside `TOOLS` (one the client declared): its effect class and origin. */
+  readonly effect?: ToolEffect
+  readonly origin?: ToolOrigin
   /** The call's path arguments. */
   readonly paths?: readonly string[]
   /** A shell call's command. */
@@ -530,8 +535,8 @@ export interface Asked {
 export function decision(asked: Asked): Decision {
   const call: CallFacts = {
     tool: asked.name,
-    effect: TOOLS[asked.name],
-    origin: "builtin",
+    effect: asked.effect ?? TOOLS[asked.name as ToolName],
+    origin: asked.origin ?? "builtin",
     paths: (asked.paths ?? []).map(fact),
     command: asked.command ?? null,
     escalation: asked.escalation ?? null,
@@ -598,7 +603,7 @@ export const approvalDenied = (id: string, callId: string, asked: Asked, reason:
 export function refusal(asked: Asked): string {
   const made = decide({
     policy: { mode: asked.mode ?? "auto", unattended: "deny", taint: "enforce" },
-    call: { tool: asked.name, effect: TOOLS[asked.name], origin: "builtin", paths: (asked.paths ?? []).map(fact), command: asked.command ?? null, escalation: asked.escalation ?? null },
+    call: { tool: asked.name, effect: asked.effect ?? TOOLS[asked.name as ToolName], origin: asked.origin ?? "builtin", paths: (asked.paths ?? []).map(fact), command: asked.command ?? null, escalation: asked.escalation ?? null },
     sandbox: asked.sandbox ?? { available: true },
     taint: asked.taint ?? CLEAN,
     grants: asked.grants ?? [],

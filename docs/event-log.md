@@ -256,7 +256,7 @@ Written in two places. With `messageId: null`, before the session's first baseli
 
 Version 1.
 
-Input was admitted and is waiting to be delivered. `messageId` is the ID the message will have once delivered. `origin` is `null` when the user wrote it; otherwise it names the harness component that produced it (a finished background command, a wake-up) and the item is synthetic. `untrusted` is set when the content came from outside the harness (a webhook's body, a networked check's output): a taint source, recorded with the admission.
+Input was admitted and is waiting to be delivered. `messageId` is the ID the message will have once delivered. `origin` is `null` when the user wrote it; otherwise it names the harness component that produced it (a finished background command, a wake-up) and the item is synthetic. `untrusted` is set when the content came from outside the harness (a webhook's body, a networked check's output, text a client marked as not its user's): a taint source, recorded with the admission.
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -1052,7 +1052,7 @@ What a call that started ran under, recorded with `tool.started`: the mode in fo
 | Field | Type | Required |
 | --- | --- | --- |
 | `mode` | one of `"ask"`, `"auto"`, `"full"` | yes |
-| `origin` | one of `"builtin"`, `"mcp"` | yes |
+| `origin` | one of `"builtin"`, `"mcp"`, `"host"` | yes |
 | `paths` | list of [storedPathFact](#storedpathfact) | yes |
 | `sandbox` | [sandboxRun](#sandboxrun), or `null` | yes |
 
@@ -1616,7 +1616,7 @@ One of these, told apart by `kind`:
 | `at` | integer ≥ 0 | yes |
 | `tool` | string, not empty | yes |
 | `effect` | one of `"read"`, `"write"`, `"exec"`, `"network"` | yes |
-| `origin` | one of `"builtin"`, `"mcp"` | yes |
+| `origin` | one of `"builtin"`, `"mcp"`, `"host"` | yes |
 | `paths` | list of [storedPathFact](#storedpathfact) | yes |
 | `networkGranted` | boolean | yes |
 | `untrusted` | boolean, or `null` | may be absent |
@@ -1637,6 +1637,14 @@ One of these, told apart by `kind`:
 | `at` | integer ≥ 0 | yes |
 | `wakeId` | string, not empty | yes |
 | `carries` | one of `"webhook_body"`, `"check_output"` | yes |
+
+`kind: "client_input"`
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `kind` | `"client_input"` | yes |
+| `at` | integer ≥ 0 | yes |
+| `source` | string, not empty | yes |
 
 `kind: "hook_output"`
 
@@ -1780,7 +1788,7 @@ Declared in `packages/core/src/approval/record.ts`.
 | --- | --- | --- |
 | `at` | integer ≥ 0 | yes |
 | `tool` | string, not empty | yes |
-| `kind` | one of `"network-tool"`, `"mcp-tool"`, `"outside-file"`, `"untrusted-file"`, `"network-command"`, `"subagent"`, `"wake-up"`, `"hook-network"`, `"hook-untrusted-project"`, `"lsp-untrusted-project"` | yes |
+| `kind` | one of `"network-tool"`, `"mcp-tool"`, `"outside-file"`, `"untrusted-file"`, `"network-command"`, `"subagent"`, `"wake-up"`, `"client-input"`, `"host-tool"`, `"hook-network"`, `"hook-untrusted-project"`, `"lsp-untrusted-project"` | yes |
 | `path` | string, or `null` | yes |
 
 Declared in `packages/core/src/approval/record.ts`.
@@ -1811,11 +1819,26 @@ Declared in `packages/core/src/tool/tool.ts`.
 
 ### `untrustedInput`
 
+Why an admitted input is content the harness does not control. The session counts as having taken in untrusted content from the admission on (`approval/taint.ts`), so the turn the input starts is decided under that from its first call. A kind an older build does not know makes it refuse the session rather than open it as untainted.
+- `wake`: the firing of a wake-up that carries a webhook's body, or the output of a check that ran with the network or without the sandbox.
+- `client`: text a client admitted (`_<ns>/admit`) and said is not its user's own; `source` is the client's name for where it came from, shown to the user as it was given.
+
+One of these, told apart by `kind`:
+
+`kind: "wake"`
+
 | Field | Type | Required |
 | --- | --- | --- |
 | `kind` | `"wake"` | yes |
 | `wakeId` | string, not empty | yes |
 | `carries` | one of `"webhook_body"`, `"check_output"` | yes |
+
+`kind: "client"`
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `kind` | `"client"` | yes |
+| `source` | string, not empty | yes |
 
 Declared in `packages/core/src/event/durable.ts`.
 

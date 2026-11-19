@@ -14,7 +14,7 @@
  */
 import { dirname } from "node:path"
 import { brand } from "../brand.ts"
-import type { ToolEffect } from "../tool/tool.ts"
+import type { ToolEffect, ToolOrigin } from "../tool/tool.ts"
 import type { Escalation } from "./escalation.ts"
 import { type Grant, type GrantScope, type GrantTemplate, type Need, isCovered, isOutbound, rememberableScopes, ruleFor } from "./grants.ts"
 import { type PathFact, isWithin, protectedRoots } from "./paths.ts"
@@ -25,8 +25,8 @@ import { deniedMessage, describeNeed, describeRemembered, listOf, unattendedMess
 export interface CallFacts {
   readonly tool: string
   readonly effect: ToolEffect
-  /** `mcp`: provided by an MCP server, which runs outside the sandbox; its declared effect is not trusted. */
-  readonly origin: "builtin" | "mcp"
+  /** `mcp`: provided by an MCP server, which runs outside the sandbox; its declared effect is not trusted. `host`: declared by the client, and decided by its effect as a built-in tool is. */
+  readonly origin: ToolOrigin
   /** Classified path arguments (`Tool.touches`). A tool that defaults to the working directory passes it. */
   readonly paths: readonly PathFact[]
   /** A shell call's command, shown in the question. */
