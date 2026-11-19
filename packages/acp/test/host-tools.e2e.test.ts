@@ -89,11 +89,13 @@ test("a declared tool's call goes to the client after approval by its effect, an
   expect(JSON.stringify(request.input)).toContain("the date parser drops the time zone")
 })
 
-test("a declaration with the name of one of the agent's own tools is refused at open with a sentence that names it", async () => {
+test("a declaration with the name of one of the agent's own tools, or a time limit out of range, is refused at open with a sentence that names it", async () => {
   h = await startHarness()
   await h.initialize()
   await expect(open(h, { hostTools: [{ ...TICKET_READ, name: "read" }] })).rejects.toMatchObject({ code: -32602, message: `the host tool "read" has the name of one of this agent's own tools; give it another name` })
   await expect(open(h, { hostTools: [{ ...TICKET_READ, effect: "everything" }] })).rejects.toMatchObject({ code: -32602 })
+  await expect(open(h, { hostTools: [{ ...TICKET_READ, timeoutSeconds: 7200 }] })).rejects.toMatchObject({ code: -32602, message: `the timeoutSeconds of the host tool "ticket_read" is not a whole number of seconds from 1 to 3600` })
+  await expect(open(h, { hostTools: [{ ...TICKET_READ, timeoutSeconds: "long" }] })).rejects.toMatchObject({ code: -32602 })
   // Nothing was created by the refused opens.
   const listed = await h.connection.agent.request(methods.agent.session.list, {})
   expect(listed.sessions).toEqual([])

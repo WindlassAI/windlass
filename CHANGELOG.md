@@ -21,7 +21,8 @@ All notable changes to Windlass are recorded here. The format follows
   approved by its declared effect through the same decision as every tool, which is told that no sandbox contains
   it (the client runs it), so an `exec` or a `write` asks in modes `ask` and `auto`; then it is sent to the client as
   `_windlass/host_call`, and the answer (`{ status, output }`) is the call's result. A call the client does not
-  answer within the MCP call limit (60 s) is cancelled and ends as an error the model reads. With
+  answer within its time limit is cancelled and ends as an error the model reads; the limit is the MCP call limit
+  (60 s) unless the declaration's `timeoutSeconds` names another, at most an hour, so a tool can wait for a person. With
   `untrustedResult: true` each answer taints the session (`host-tool`). A declaration with the name of one of the
   agent's own tools, or one it cannot use otherwise, refuses the open with a sentence that names it. A subagent is
   not offered them. The key is listed in `agentCapabilities._meta["windlass"].openMeta`; `docs/acp.md`, "Tools the

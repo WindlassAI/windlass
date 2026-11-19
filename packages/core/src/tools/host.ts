@@ -12,9 +12,13 @@
  * - **Names.** A declared name may not be one of the engine's own tools
  *   (built-in, MCP bridge, features): the session is refused at open rather
  *   than have one tool shadow another.
- * - **Time.** A call the client does not answer within the MCP call limit
- *   (`DEFAULT_CALL_TIMEOUT_SECONDS`) ends with an error result that says so;
- *   the request to the client is aborted.
+ * - **Time.** A call the client does not answer within its time limit ends
+ *   with an error result that says so, and the request to the client is
+ *   aborted. The limit is the MCP call limit (`DEFAULT_CALL_TIMEOUT_SECONDS`)
+ *   unless the declaration names its own (`timeoutSeconds`), at most the MCP
+ *   ceiling (`MAX_CALL_TIMEOUT_SECONDS`): a call holds its turn, and the
+ *   session with it, for as long as it waits, and a client that is gone
+ *   without closing the connection would hold them that long.
  * - **Taint.** `untrustedResult` says the client's answers carry content it
  *   does not vouch for: the result records that in its `display` (`host`,
  *   read by `approval/record.ts`, `hostResult`), and such a result is a taint
@@ -22,7 +26,7 @@
  */
 import type { MessageId, SessionId } from "../id.ts"
 import type { Json } from "../json.ts"
-import { DEFAULT_CALL_TIMEOUT_SECONDS } from "../mcp/config.ts"
+import { DEFAULT_CALL_TIMEOUT_SECONDS, MAX_CALL_TIMEOUT_SECONDS } from "../mcp/config.ts"
 import { SchemaError, compileSchema } from "../tool/schema.ts"
 import type { AnyTool, ToolEffect, ToolResult } from "../tool/tool.ts"
 
@@ -36,6 +40,8 @@ export interface HostToolDeclaration {
   readonly effect: ToolEffect
   /** Whether what the client answers is content the harness does not control (a taint source). */
   readonly untrustedResult: boolean
+  /** How long a call may wait for the client's answer, in whole seconds, 1 to `MAX_CALL_TIMEOUT_SECONDS`. Absent: the MCP call limit. */
+  readonly timeoutSeconds?: number
 }
 
 /** One call, as the client is asked to run it. */
@@ -65,8 +71,6 @@ export interface HostTools {
   readonly call: (request: HostCallRequest, signal: AbortSignal) => Promise<HostAnswer>
 }
 
-/** How long a host call may take: the MCP call limit. */
-export const HOST_CALL_TIMEOUT_MS = DEFAULT_CALL_TIMEOUT_SECONDS * 1000
 
 /** What a provider takes as a tool's name. */
 const NAME = /^[A-Za-z0-9_-]{1,64}$/
@@ -82,6 +86,9 @@ export function hostToolsProblem(tools: readonly HostToolDeclaration[], taken: R
     if (taken.has(tool.name)) return `the host tool ${JSON.stringify(tool.name)} has the name of one of this agent's own tools; give it another name`
     if (seen.has(tool.name)) return `the host tool ${JSON.stringify(tool.name)} is declared twice`
     seen.add(tool.name)
+    const timeout = tool.timeoutSeconds
+    if (timeout !== undefined && (!Number.isInteger(timeout) || timeout < 1 || timeout > MAX_CALL_TIMEOUT_SECONDS))
+      return `the timeoutSeconds of the host tool ${JSON.stringify(tool.name)} is not a whole number of seconds from 1 to ${MAX_CALL_TIMEOUT_SECONDS}`
     const schema = tool.inputSchema
     if (typeof schema !== "object" || schema === null || Array.isArray(schema) || (schema as { readonly type?: Json }).type !== "object")
       return `the inputSchema of the host tool ${JSON.stringify(tool.name)} is not a JSON Schema of type "object"`
@@ -101,6 +108,7 @@ export function hostToolsProblem(tools: readonly HostToolDeclaration[], taken: R
  */
 export function hostTool(declaration: HostToolDeclaration, call: HostTools["call"], sleep: (ms: number, signal: AbortSignal) => Promise<void>): AnyTool {
   const { name, description, inputSchema, effect, untrustedResult } = declaration
+  const seconds = declaration.timeoutSeconds ?? DEFAULT_CALL_TIMEOUT_SECONDS
   // What the client wrote is marked as the declaration says; a sentence of the harness's own never is.
   const result = (status: ToolResult["status"], output: string, fromClient: boolean): ToolResult => ({
     status,
@@ -122,14 +130,14 @@ export function hostTool(declaration: HostToolDeclaration, call: HostTools["call
         (value) => ({ kind: "answered" as const, value }),
         (error: unknown) => ({ kind: "failed" as const, message: error instanceof Error ? error.message : String(error) }),
       )
-      const late = sleep(HOST_CALL_TIMEOUT_MS, signal).then(() => ({ kind: "timed_out" as const }))
+      const late = sleep(seconds * 1000, signal).then(() => ({ kind: "timed_out" as const }))
       const first = await Promise.race([answer, late])
       // A stop ends the wait and may also make the request fail: either way the call was stopped, not answered.
       const settled = first.kind !== "answered" && context.signal.aborted ? { kind: "stopped" as const } : first
       // Whichever came first, the other is let go of: the sleep ends, and an answer that comes later is dropped.
       timeout.abort()
       const unknown = effect === "read" ? "" : " It may or may not have taken effect; check before calling it again."
-      if (settled.kind === "timed_out") return result("error", `The client did not answer the call to ${name} within ${DEFAULT_CALL_TIMEOUT_SECONDS} s, and it was cancelled.${unknown}`, false)
+      if (settled.kind === "timed_out") return result("error", `The client did not answer the call to ${name} within ${seconds} s, and it was cancelled.${unknown}`, false)
       if (settled.kind === "stopped") return result("error", `The call to ${name} was stopped before the client answered.${unknown}`, false)
       if (settled.kind === "failed") return result("error", `The client could not run ${name}: ${settled.message}`, true)
       return result(settled.value.status, settled.value.output, true)

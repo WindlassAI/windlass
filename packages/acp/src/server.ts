@@ -1845,11 +1845,13 @@ function hostToolsOrNull(value: unknown, name: string): readonly HostToolDeclara
     const effect = oneOfOrNull(tool.effect, HOST_EFFECTS, `${at}.effect`)
     if (effect === null) throw RequestError.invalidParams({ field: `${at}.effect` }, `${at}.effect must be one of: ${HOST_EFFECTS.join(", ")}`)
     if (typeof tool.untrustedResult !== "boolean") throw RequestError.invalidParams({ field: `${at}.untrustedResult` }, `${at}.untrustedResult must be a boolean`)
-    return { name: tool.name, description: tool.description, inputSchema: tool.inputSchema as Json, effect, untrustedResult: tool.untrustedResult }
+    // Its range is the engine's to check, with the other limits of a declaration.
+    if (tool.timeoutSeconds !== undefined && typeof tool.timeoutSeconds !== "number") throw RequestError.invalidParams({ field: `${at}.timeoutSeconds` }, `${at}.timeoutSeconds must be a number of seconds`)
+    return { name: tool.name, description: tool.description, inputSchema: tool.inputSchema as Json, effect, untrustedResult: tool.untrustedResult, ...(tool.timeoutSeconds === undefined ? {} : { timeoutSeconds: tool.timeoutSeconds }) }
   })
 }
 
-const HOST_TOOL_KEYS = ["name", "description", "inputSchema", "effect", "untrustedResult"]
+const HOST_TOOL_KEYS = ["name", "description", "inputSchema", "effect", "untrustedResult", "timeoutSeconds"]
 const HOST_EFFECTS = ["read", "write", "exec", "network"] as const
 /** What `_<ns>/admit` takes as a message ID and as an origin. */
 const ADMITTED_ID = /^[A-Za-z0-9_.:-]{1,128}$/

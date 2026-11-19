@@ -3,7 +3,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { join } from "node:path"
 import { createToolRuntime } from "../../src/tool/runtime.ts"
 import { noBlobStore } from "../../src/tool/tool.ts"
-import { HOST_CALL_TIMEOUT_MS, type HostAnswer, type HostToolDeclaration, type HostTools, hostTool, hostToolsProblem } from "../../src/tools/host.ts"
+import { type HostAnswer, type HostToolDeclaration, type HostTools, hostTool, hostToolsProblem } from "../../src/tools/host.ts"
 import { context, removeTempDirs, tempDir } from "./helpers.ts"
 
 afterEach(removeTempDirs)
@@ -22,6 +22,12 @@ describe("declarations", () => {
     expect(hostToolsProblem([READ, READ], taken)).toBe(`the host tool "ticket_read" is declared twice`)
     expect(hostToolsProblem([{ ...READ, name: "ticket/read" }], taken)).toContain("is not 1 to 64 letters")
     expect(hostToolsProblem([{ ...READ, inputSchema: { type: "string" } }], taken)).toContain('is not a JSON Schema of type "object"')
+  })
+
+  test("a time limit of its own is whole seconds from 1 to an hour", () => {
+    expect(hostToolsProblem([{ ...READ, timeoutSeconds: 1 }, { ...POST, timeoutSeconds: 3600 }], taken)).toBeNull()
+    for (const timeoutSeconds of [0, -5, 1.5, 3601, Number.NaN])
+      expect(hostToolsProblem([{ ...READ, timeoutSeconds }], taken)).toBe(`the timeoutSeconds of the host tool "ticket_read" is not a whole number of seconds from 1 to 3600`)
   })
 })
 
@@ -46,7 +52,14 @@ describe("a call", () => {
     const { outcome, slept } = run(READ, async (request) => (asked.push(request.input), { status: "success", output: "Ticket 7." }))
     expect((await outcome).settlement).toMatchObject({ outcome: "success", output: "Ticket 7.", display: { host: { untrusted: true } } })
     expect(asked).toEqual([{ id: 7 }])
-    expect(slept).toEqual([HOST_CALL_TIMEOUT_MS])
+    // The MCP call limit, as no limit of its own was declared.
+    expect(slept).toEqual([60_000])
+  })
+
+  test("a declared time limit replaces the MCP one, in what it waits and in what the model reads", async () => {
+    const { outcome, slept } = run({ ...READ, timeoutSeconds: 900 }, () => new Promise<HostAnswer>(() => {}), Promise.resolve())
+    expect((await outcome).settlement.output).toBe("The client did not answer the call to ticket_read within 900 s, and it was cancelled.")
+    expect(slept).toEqual([900_000])
   })
 
   test("a client that cannot run it gives an error the model reads", async () => {

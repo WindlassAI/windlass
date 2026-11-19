@@ -902,7 +902,8 @@ a deploy, a way to ask a person) declares them when it opens a session, in `_met
   description: string,
   inputSchema: object,      // a JSON Schema of type "object"; the arguments are checked against it first
   effect: "read" | "write" | "exec" | "network",   // the strongest thing a call does
-  untrustedResult: boolean  // what the tool answers is content the client does not vouch for
+  untrustedResult: boolean, // what the tool answers is content the client does not vouch for
+  timeoutSeconds?: number   // how long a call waits for the answer: whole seconds, 1 to 3600; absent: 60
 }[]
 ```
 
@@ -943,9 +944,18 @@ a deploy, a way to ask a person) declares them when it opens a session, in `_met
   ```
 
   An answer of another shape, an error response, or a client that has gone is an error result that says so. A
-  call not answered within the MCP call limit (60 s) is cancelled (`$/cancel_request`) and ends as an error the
-  model reads, which says the client did not answer and, for a tool that is not `read`, that it may or may not
-  have taken effect. A call the user stops or an interrupt reaches is cancelled the same way.
+  call not answered within its time limit is cancelled (`$/cancel_request`) and ends as an error the model
+  reads, which says the client did not answer within that many seconds and, for a tool that is not `read`, that
+  it may or may not have taken effect. A call the user stops (`_windlass/cancel_call`) or an interrupt reaches is
+  cancelled the same way, at once.
+- **Time.** The limit is the MCP call limit, 60 s, unless the declaration's `timeoutSeconds` names another. A
+  tool that waits for a person (asks for a confirmation, then acts) declares the time that wait may take and
+  answers when it is over, with the real result. While a call waits, the turn waits as it does for any long tool
+  call: it can be stopped or interrupted, and nothing else gives up on it (the model call limit covers the
+  model's response only, and a step limit counts model calls, not time). The ceiling is an hour, the MCP call
+  limit's own ceiling, because a waiting call holds its turn, and with it the session, which takes no other
+  turn meanwhile; a client that is gone without closing the connection would hold them for that long. Outside
+  1 to 3600 whole seconds, the open is refused like any other bad field.
 - **Taint.** With `untrustedResult: true`, each answer is a taint source (`host-tool`); the result's `display`
   records it as `{ host: { untrusted } }`. Without it, the answer is the client's own, whatever the `effect`.
 - **Refused at open.** A declaration the agent cannot use refuses `session/new`, `session/load` or
