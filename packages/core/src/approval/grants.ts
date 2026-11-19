@@ -36,7 +36,7 @@ export type Need =
   | { readonly kind: "write"; readonly path: string | null; readonly root: string | null; readonly protectedRoot: string | null }
   /** A file tool reading inside a hidden path. Never remembered. */
   | { readonly kind: "read-hidden"; readonly path: string }
-  /** A network or MCP tool, by name. */
+  /** A network or MCP tool, or a tool the client declared that would run outside the sandbox, by name. */
   | { readonly kind: "tool"; readonly tool: string }
   /** `ask` mode: a tool that changes only the harness's own records (`Tool.changes`), by name. */
   | { readonly kind: "records"; readonly tool: string }

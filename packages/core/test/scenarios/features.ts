@@ -17,6 +17,7 @@ import {
   approvalDenied,
   approvalRequested,
   baseline,
+  NO_SANDBOX,
   c,
   called,
   created,
@@ -538,4 +539,54 @@ export const hostToolWaitsLonger: Scenario = {
   ],
 }
 
-export const featureScenarios = [skillIndexFollowsTheFiles, lateServerAndTaintedCall, wakeWhileIdle, wakeWhileWorking, wakeDeliveredTwice, untrustedFiring, clientAdmitsTwice, clientAdmitsUntrusted, hostToolRoundTrip, hostToolTimesOut, hostToolWaitsLonger, hostExecAsked, hostExecDenied]
+const MIGRATE_REVIEW = '{"target":"review"}'
+/** The harness's own command where this machine has no sandbox: the question the user is asked about commands. */
+const TESTS_UNSANDBOXED: Asked = { name: "shell", command: "bun test", sandbox: { available: false, reason: NO_SANDBOX } }
+
+export const hostToolAllowedForSession: Scenario = {
+  title: "A client's tool allowed for the session runs again without a question, and the harness's own commands still ask",
+  description:
+    "The user allows the client's `db_migrate` for the rest of the session. What is remembered is that tool, by name (`tool: db_migrate`), as for an MCP tool or a network tool: the question was about it, so the answer covers it and nothing else. The next call of it runs without a question. Then the agent runs the tests; this machine has no sandbox, so a command of the harness's own needs the user's approval to run without one, and the answer about the client's tool does not give it: the command asks, as it would have without that answer.",
+  provider: "step 1 calls db_migrate; step 2 calls it again; step 3 runs the tests; step 4 answers",
+  features: { host: true },
+  approval: { mode: "auto", attended: true, sandbox: "unavailable" },
+  phases: [
+    {
+      label: "the user allows the client's tool for the session",
+      events: [
+        ...opening("Migrate staging and review, then run the tests."),
+        stepStarted("a1"),
+        called("a1", "call_1", "db_migrate", MIGRATE),
+        approvalRequested("a1", "call_1", MIGRATING),
+        approvalAnswered("a1", "call_1", MIGRATING, "session", 9),
+        event("tool.started", { messageId: m("a1"), callId: c("call_1"), effect: "exec", run: hostRun("auto") }),
+        hostSettled("a1", "call_1", "success", "Migrated 3 tables.", false),
+        stepEnded("a1", "tool_calls"),
+      ],
+    },
+    {
+      label: "the tool runs again on what was remembered; the harness's command still asks",
+      events: [
+        stepStarted("a2"),
+        called("a2", "call_1", "db_migrate", MIGRATE_REVIEW),
+        event("tool.started", { messageId: m("a2"), callId: c("call_1"), effect: "exec", run: hostRun("auto") }),
+        hostSettled("a2", "call_1", "success", "Migrated 3 tables.", false),
+        stepEnded("a2", "tool_calls"),
+        stepStarted("a3"),
+        called("a3", "call_1", "shell", '{"command":"bun test"}'),
+        approvalRequested("a3", "call_1", TESTS_UNSANDBOXED),
+        approvalAnswered("a3", "call_1", TESTS_UNSANDBOXED, "once", 21),
+        startedAs("a3", "call_1", "shell", ranUnder("auto", [], null)),
+        settled("a3", "call_1", "success", "1 pass"),
+        stepEnded("a3", "tool_calls"),
+        stepStarted("a4"),
+        say("a4", "Both environments are migrated and the tests pass."),
+        stepEnded("a4"),
+        executionSucceeded(),
+      ],
+      expect: { history: ["u1", "a1", "a2", "a3", "a4"], execution: null },
+    },
+  ],
+}
+
+export const featureScenarios = [skillIndexFollowsTheFiles, lateServerAndTaintedCall, wakeWhileIdle, wakeWhileWorking, wakeDeliveredTwice, untrustedFiring, clientAdmitsTwice, clientAdmitsUntrusted, hostToolRoundTrip, hostToolTimesOut, hostToolWaitsLonger, hostExecAsked, hostExecDenied, hostToolAllowedForSession]

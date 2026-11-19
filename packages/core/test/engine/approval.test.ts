@@ -74,7 +74,7 @@ describe("a tool the client declared, in mode auto with a sandbox", () => {
         // Not an escalation request, and not a command: the question names the tool and asks only what an unsandboxed call needs.
         expect(question.escalation).toBeNull()
         expect(question.question.subject).toBe("db_migrate")
-        expect(question.needs).toEqual([{ kind: "exec-unsandboxed" }])
+        expect(question.needs).toEqual([{ kind: "tool", tool: "db_migrate" }])
         expect(h.session.answer(target(question), { choice: "once" })).toBe(true)
         await h.settled()
         // It ran as it is: the client runs it, and the log does not say a sandbox contained it.

@@ -928,10 +928,12 @@ a deploy, a way to ask a person) declares them when it opens a session, in `_met
   "Asks" is the usual `session/request_permission` when the client attends, and a refusal the model reads when
   nobody is there (`attended: false`), or the end of the turn with `unattended: "stop"`; an approval remembered
   for the session or the project covers what it says, as for any tool. A `write` names no path the agent could
-  check, so it is asked about in `auto` too. An `exec` is asked about as a command without the sandbox ("Allow
-  the client's tool … to run outside the sandbox?"); allowed for the session, that is remembered as allowing
-  commands without the sandbox, built-in ones included, which on a machine with a sandbox ask for that only in a
-  tainted `full`. The `command` and `sandbox` arguments the built-in shell tool reads are not read from a host
+  check, so it is asked about in `auto` too. An `exec` is asked about as a call no sandbox contains ("Allow the
+  client's tool … to run outside the sandbox?"). What an answer remembers is that tool, by name, as for an MCP or
+  a network tool: "Allow for this session" (or "Always allow in this project") covers later calls of the same
+  tool, whatever effect it is declared with, and nothing else. It does not let the agent's own commands run
+  without the sandbox, and an approval of commands without the sandbox, given on a question about one of them,
+  does not cover the client's tools. The `command` and `sandbox` arguments the built-in shell tool reads are not read from a host
   tool's input: its fields are the client's.
 - **The call.** Once approved, the agent sends the client `_windlass/host_call` (a request) and the answer is the
   call's result, capped and stored once, as any tool's output is:

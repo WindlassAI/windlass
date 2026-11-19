@@ -19,7 +19,8 @@ All notable changes to Windlass are recorded here. The format follows
   `session/load` and `session/resume` declares tools by name, description, input schema and `effect`; the model is
   offered them beside the built-in tools, in the tool list frozen with the session's first baseline. A call is
   approved by its declared effect through the same decision as every tool, which is told that no sandbox contains
-  it (the client runs it), so an `exec` or a `write` asks in modes `ask` and `auto`; then it is sent to the client as
+  it (the client runs it), so an `exec` or a `write` asks in modes `ask` and `auto`, and an approval of it
+  remembered for the session or the project covers that tool by name and nothing else; then it is sent to the client as
   `_windlass/host_call`, and the answer (`{ status, output }`) is the call's result. A call the client does not
   answer within its time limit is cancelled and ends as an error the model reads; the limit is the MCP call limit
   (60 s) unless the declaration's `timeoutSeconds` names another, at most an hour, so a tool can wait for a person. With
