@@ -21,6 +21,7 @@ import {
 import { type AnyTool, type EngineOptions, type Harness as CoreHarness, type ModelEntry, type SignInState, createHarness } from "@windlass/core"
 import { FakeProvider, type ScriptedResponse, waitFor } from "@windlass/core/testing"
 import * as schemas from "../node_modules/@agentclientprotocol/sdk/dist/v1/schema/zod.gen.js"
+import { EXT } from "../src/extensions.ts"
 import { silentLogger } from "../src/log.ts"
 import { type Served, serve } from "../src/server.ts"
 
@@ -45,6 +46,8 @@ export interface HarnessOptions {
   readonly dataDir?: string
   /** Answers `session/request_permission`; cancelled when left out. Every request is recorded in `permissions`. */
   readonly onPermission?: (request: RequestPermissionRequest) => RequestPermissionResponse | Promise<RequestPermissionResponse>
+  /** Answers `_<ns>/host_call`, a call of a tool the client declared; left out, the client cannot run any. Every request is recorded in `hostCalls`. */
+  readonly onHostCall?: (params: Message) => unknown
 }
 
 export interface Harness {
@@ -61,6 +64,8 @@ export interface Harness {
   readonly ext: { method: string; params: Message }[]
   /** Every `session/request_permission` the agent sent, in order. */
   readonly permissions: RequestPermissionRequest[]
+  /** Every `_<ns>/host_call` the agent sent, in order. */
+  readonly hostCalls: Message[]
   /** Every message the agent wrote, in order. */
   readonly wire: Message[]
   /** Schema violations found in the agent's messages. */
@@ -122,6 +127,7 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
   const updates: SessionNotification[] = []
   const ext: { method: string; params: Message }[] = []
   const permissions: RequestPermissionRequest[] = []
+  const hostCalls: Message[] = []
   const connection = client({ name: "test-client" })
     .onNotification(methods.client.session.update, ({ params }) => {
       updates.push(params)
@@ -129,6 +135,11 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
     .onRequest(methods.client.session.requestPermission, async ({ params }) => {
       permissions.push(params)
       return options.onPermission === undefined ? { outcome: { outcome: "cancelled" } } : options.onPermission(params)
+    })
+    .onRequest(EXT.hostCall, (raw) => raw as Message, async ({ params }) => {
+      hostCalls.push(params)
+      if (options.onHostCall === undefined) throw new Error("this client runs no tools")
+      return options.onHostCall(params)
     })
     .onNotification("*", ({ method, params }) => {
       ext.push({ method, params: params as Message })
@@ -145,6 +156,7 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
     updates,
     ext,
     permissions,
+    hostCalls,
     wire,
     violations,
     initialize: () =>

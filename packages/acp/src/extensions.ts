@@ -15,6 +15,13 @@ export const EXT = {
   steer: `${prefix}/steer`,
   /** Request `{ sessionId, prompt: ContentBlock[] }` → `{ messageId }`: delivered once the session would otherwise go idle. */
   queue: `${prefix}/queue`,
+  /**
+   * Request `AdmitParams` → `{ outcome: "admitted" | "duplicate" }`: a message the client admits under an ID of its
+   * own, as a queued item with an origin; an ID the session already admitted is a duplicate and nothing is written.
+   */
+  admit: `${prefix}/admit`,
+  /** Request from the agent to the client, `HostCallParams` → `HostCallResult`: a call of a tool the client declared (`OpenMeta.hostTools`). */
+  hostCall: `${prefix}/host_call`,
   /** Request `{}` → `{ models: [...], defaultModel }`: the models and reasoning efforts the account offers. */
   models: `${prefix}/models`,
   /** Notification `{ sessionId, messageId, model, usage }` after every model call that reported usage. */
@@ -212,6 +219,14 @@ export interface OpenMeta {
    */
   readonly requiredChecks?: readonly OpenCheck[] | null
   /**
+   * Tools the client runs itself, offered to the model as tools of the session's own (`HostToolDeclaration`). A
+   * call is decided by its `effect` like any other tool's, then sent to the client as `_<ns>/host_call`, and the
+   * answer is the call's result. The list is frozen with the session's first baseline: declared later, they change
+   * what a call runs, not what the model was offered, until a compaction. A name of one of the agent's own tools,
+   * or a name given twice, refuses the open. Not stored: say them again on every load and resume.
+   */
+  readonly hostTools?: readonly HostToolDeclaration[] | null
+  /**
    * Whether a person is there to answer `session/request_permission`. Default
    * `true`: an ACP client can answer. A client that runs unattended (a
    * script, an eval) says `false`, and nothing ever waits for it.
@@ -224,6 +239,48 @@ export interface OpenMeta {
    * is refused, as for nobody present.
    */
   readonly children?: boolean
+}
+
+/** One tool a client declares in `OpenMeta.hostTools`. */
+export interface HostToolDeclaration {
+  /** 1 to 64 letters, digits, `_` or `-`. */
+  readonly name: string
+  readonly description: string
+  /** A JSON Schema of `type: "object"`: the arguments are checked against it before the client is asked. */
+  readonly inputSchema: Record<string, unknown>
+  /** The strongest thing a call does (`read`, `write`, `exec`, `network`): how it is approved, as for any tool. */
+  readonly effect: "read" | "write" | "exec" | "network"
+  /** Whether what the tool answers is content the client does not vouch for: such a result taints the session (`host-tool`). */
+  readonly untrustedResult: boolean
+}
+
+/** `_<ns>/admit`. */
+export interface AdmitParams {
+  readonly sessionId: string
+  /** The message's ID and the admission's idempotency key: 1 to 128 letters, digits, `_`, `-`, `.` or `:`. */
+  readonly messageId: string
+  /** Who it comes from, shown to the model in the envelope that names it: lowercase letters, digits, `_` or `-`, not an origin of the harness's own. */
+  readonly origin: string
+  readonly text: string
+  /** Whether it starts work when the session is idle; either way it waits behind the turn in progress. */
+  readonly start: boolean
+  /** Set when the text is not the user's own: `source` (at most 200 characters) names where it came from, for the user. The session is tainted from the admission on (`client-input`). */
+  readonly untrusted?: { readonly source: string } | null
+}
+
+/** `_<ns>/host_call`: the call the client is asked to run. `toolCallId` is the call's ID in `tool_call` updates. */
+export interface HostCallParams {
+  readonly sessionId: string
+  readonly toolCallId: string
+  readonly name: string
+  /** The arguments, already checked against the declared `inputSchema`. */
+  readonly input: unknown
+}
+
+/** The answer to `_<ns>/host_call`: `output` is what the model reads, as an error when `status` is `error`. */
+export interface HostCallResult {
+  readonly status: "success" | "error"
+  readonly output: string
 }
 
 /** The `_meta[<ns>]` of the permission request that asks about a tool call (`APPROVAL_META`). */

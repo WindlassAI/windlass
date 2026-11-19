@@ -79,6 +79,12 @@ import {
   sandboxHomeChoices,
   sessionChecks,
   unreadableSession,
+  HARNESS_ORIGIN,
+  type HostAnswer,
+  type HostCallRequest,
+  type HostToolDeclaration,
+  type HostTools,
+  type Json,
   brand,
   currentTodos,
   describeRestrictions,
@@ -98,6 +104,7 @@ import {
   type AgentsResult,
   APPROVAL_META,
   type CancelCallResult,
+  type HostCallParams,
   type ApprovalRequestMeta,
   type ApprovalStateResult,
   type ClientCommand,
@@ -192,7 +199,7 @@ async function snapshotOfCopy(copy: string, dataDir: string, session: string): P
 
 /** Advertised in `initialize` under `agentCapabilities._meta[<ns>]`. */
 export const EXTENSION_CAPABILITIES = {
-  methods: [EXT.steer, EXT.queue, EXT.models, EXT.revert, EXT.undoRevert, EXT.withdraw, EXT.unarchive, EXT.session, EXT.events, EXT.resolve, EXT.approval, EXT.clearTaint, EXT.diff, EXT.fork, EXT.replay, EXT.mcp, EXT.mcpApprove, EXT.hooks, EXT.hookApprove, EXT.lsp, EXT.lspApprove, EXT.skills, EXT.wakeups, EXT.wakeCreate, EXT.wakeCancel, EXT.wakeSecret, EXT.memory, EXT.memoryChange, EXT.agents, EXT.rename, EXT.compact, EXT.commands, EXT.expandCommand, EXT.sendCommand, EXT.cancelCall, EXT.watch, EXT.unwatch, EXT.watches],
+  methods: [EXT.steer, EXT.queue, EXT.admit, EXT.models, EXT.revert, EXT.undoRevert, EXT.withdraw, EXT.unarchive, EXT.session, EXT.events, EXT.resolve, EXT.approval, EXT.clearTaint, EXT.diff, EXT.fork, EXT.replay, EXT.mcp, EXT.mcpApprove, EXT.hooks, EXT.hookApprove, EXT.lsp, EXT.lspApprove, EXT.skills, EXT.wakeups, EXT.wakeCreate, EXT.wakeCancel, EXT.wakeSecret, EXT.memory, EXT.memoryChange, EXT.agents, EXT.rename, EXT.compact, EXT.commands, EXT.expandCommand, EXT.sendCommand, EXT.cancelCall, EXT.watch, EXT.unwatch, EXT.watches],
   notifications: [EXT.usage, EXT.state, EXT.turn, EXT.diagnostic, EXT.event, EXT.taint, EXT.notice, EXT.replayStarted, EXT.child, EXT.mcpChanged, EXT.hooksChanged, EXT.lspChanged],
   promptMeta: [META.delivery, META.maxSteps],
   /**
@@ -202,8 +209,8 @@ export const EXTENSION_CAPABILITIES = {
   commands: true,
   /** Keys of `clientCapabilities._meta[<ns>]` this server reads (`ClientMeta`). */
   clientMeta: ["events", "updates"],
-  /** Keys of `_meta[<ns>]` on `session/new`, `session/load` and `session/resume` (`OpenMeta`). */
-  openMeta: ["model", "effort", "agent", "approval", "unattended", "sandboxHome", "withholdEnv", "passEnv", "requiredChecks", "attended", "children"],
+  /** Keys of `_meta[<ns>]` on `session/new`, `session/load` and `session/resume` (`OpenMeta`). With `hostTools`, this server sends `_<ns>/host_call`. */
+  openMeta: ["model", "effort", "agent", "approval", "unattended", "sandboxHome", "withholdEnv", "passEnv", "requiredChecks", "hostTools", "attended", "children"],
   /** The permission requests this server sends: the hand-edit question of an undo, and the approval of a tool call (the session's own, or a subagent's). */
   permissionRequests: ["revert", APPROVAL_META],
 } as const
@@ -229,6 +236,7 @@ function buildAgent(state: ConnectionState): AgentApp {
     .onNotification(methods.agent.session.cancel, ({ params }) => state.cancel(params.sessionId))
     .onRequest(EXT.steer, parseInputParams, ({ params }) => state.admit(params.sessionId, params.prompt, "steer", params.maxSteps))
     .onRequest(EXT.queue, parseInputParams, ({ params }) => state.admit(params.sessionId, params.prompt, "queue", params.maxSteps))
+    .onRequest(EXT.admit, parseObject, ({ params }) => state.admitMessage(params))
     .onRequest(EXT.models, (params) => params, () => state.models())
     .onRequest(EXT.revert, parseRevertParams, ({ params }) => state.revert(params, false))
     .onRequest(EXT.undoRevert, parseRevertParams, ({ params }) => state.revert(params, true))
@@ -404,7 +412,7 @@ class ConnectionState {
     const settings = await this.harness.settingsFor(cwd, asked)
     // As the agent the client names; without one, as the default of the user's configuration, if any.
     const agent = meta?.agent ?? null
-    const session = this.engineErrors(() => this.harness.engine.createSession({ cwd, settings, ...(agent === null ? {} : { agent }) }))
+    const session = this.engineErrors(() => this.harness.engine.createSession({ cwd, settings, ...(agent === null ? {} : { agent }), host: this.host(meta) }))
     applyApproval(session, meta)
     const view = this.attach(session, cwd, session.projection().lastSeq, new Map())
     view.children = meta?.children !== false
@@ -442,7 +450,7 @@ class ConnectionState {
     // A claim left by a process that died is repaired here; a suspended one (a clean shutdown in the middle of a
     // turn) stays suspended until the user says something, so their words are in front of the model in the first
     // step after the restart. A session another process holds is refused, with that process named.
-    const session = this.engineErrors(() => this.harness.engine.openSession(sessionId as SessionId, { resume: "wait" }), sessionId)
+    const session = this.engineErrors(() => this.harness.engine.openSession(sessionId as SessionId, { resume: "wait", host: this.host(meta) }), sessionId)
     applyApproval(session, meta)
     // Read, translate and queue the stored log before listening, all in this synchronous block, so that a live
     // event either is in the log read here or arrives after it, never both and never neither.
@@ -710,6 +718,57 @@ class ConnectionState {
           })),
         })),
     }
+  }
+
+  /**
+   * `_<ns>/admit`: a message the client admits under its own ID, as a harness component does (`EngineSession.admit`):
+   * queued, with its origin, and with `untrusted` a taint source from the admission on.
+   */
+  admitMessage(params: Record<string, unknown>): { outcome: "admitted" | "duplicate" } {
+    const view = this.requireView(requireString(params, "sessionId"))
+    const messageId = requireString(params, "messageId")
+    if (!ADMITTED_ID.test(messageId)) throw RequestError.invalidParams({ messageId }, "messageId must be 1 to 128 letters, digits, _, -, . or :")
+    const origin = requireString(params, "origin")
+    // The model reads the origin in the harness's envelope: a name of the harness's own would pass the text off as the harness's.
+    if (!ADMITTED_ORIGIN.test(origin) || HARNESS_ORIGINS.has(origin))
+      throw RequestError.invalidParams({ origin }, `origin must be 1 to 32 lowercase letters, digits, _ or - beginning with a letter, and not one of the agent's own (${[...HARNESS_ORIGINS].sort().join(", ")})`)
+    if (typeof params.text !== "string" || params.text.trim() === "") throw RequestError.invalidParams(undefined, "text must be a string that is not blank")
+    if (typeof params.start !== "boolean") throw RequestError.invalidParams(undefined, "start must be a boolean")
+    const untrusted = params.untrusted === undefined || params.untrusted === null ? null : parseObject(params.untrusted)
+    const source = untrusted === null ? null : requireString(untrusted, "source")
+    if (untrusted !== null && Object.keys(untrusted).some((key) => key !== "source")) throw RequestError.invalidParams(undefined, "untrusted takes only source")
+    // It is shown to the user in the sentence that says where untrusted content came from.
+    if (source !== null && source.length > MAX_SOURCE) throw RequestError.invalidParams(undefined, `untrusted.source must be at most ${MAX_SOURCE} characters`)
+    const outcome = this.engineErrors(
+      () =>
+        view.session.admit({
+          messageId: messageId as MessageId,
+          origin,
+          text: params.text as string,
+          start: params.start as boolean,
+          ...(source === null ? {} : { untrusted: { kind: "client" as const, source } }),
+        }),
+      view.session.id,
+    )
+    return { outcome }
+  }
+
+  /** The tools a client declared when it opened a session, and how a call of one reaches it: `_<ns>/host_call`. */
+  private host(meta: Opened | null): HostTools | null {
+    const tools = meta?.hostTools ?? null
+    return tools === null ? null : { tools, call: (request, signal) => this.hostCall(request, signal) }
+  }
+
+  /** One call of a tool the client declared, sent to the client; the answer is checked before the model reads it. */
+  private async hostCall(request: HostCallRequest, signal: AbortSignal): Promise<HostAnswer> {
+    const client = this.client
+    if (client === null || this.connectionClosed) throw new Error("the client is not connected")
+    const params: HostCallParams = { sessionId: request.sessionId, toolCallId: `${request.messageId}/${request.callId}`, name: request.name, input: request.input }
+    // A stop or the time limit cancels the request and stops waiting for it: an answer after that is dropped.
+    const answer = await client.request<unknown>(EXT.hostCall, params, { cancellationSignal: signal, stopWaitingOnCancel: true })
+    const value = typeof answer === "object" && answer !== null ? (answer as Record<string, unknown>) : {}
+    if ((value.status !== "success" && value.status !== "error") || typeof value.output !== "string") throw new Error(`its answer is not { status: "success" | "error", output: string }`)
+    return { status: value.status, output: value.output }
   }
 
   /** `_<ns>/steer` and `_<ns>/queue`: admit input without waiting for the turn. */
@@ -1724,7 +1783,7 @@ function namespaced(meta: unknown): Record<string, unknown> | null {
 }
 
 /** What a client said when it opened a session, checked: its required checks are the ones the engine runs, with the defaults. */
-type Opened = Omit<OpenMeta, "requiredChecks"> & { readonly requiredChecks: readonly CheckConfig[] | null }
+type Opened = Omit<OpenMeta, "requiredChecks" | "hostTools"> & { readonly requiredChecks: readonly CheckConfig[] | null; readonly hostTools: readonly HostToolDeclaration[] | null }
 
 function openMeta(meta: unknown): Opened | null {
   const value = namespaced(meta)
@@ -1746,6 +1805,7 @@ function openMeta(meta: unknown): Opened | null {
     withholdEnv: envNamesOrNull(value.withholdEnv, `_meta.${META.capabilities}.withholdEnv`),
     passEnv: envNamesOrNull(value.passEnv, `_meta.${META.capabilities}.passEnv`),
     requiredChecks: requiredChecksOrNull(value.requiredChecks, `_meta.${META.capabilities}.requiredChecks`),
+    hostTools: hostToolsOrNull(value.hostTools, `_meta.${META.capabilities}.hostTools`),
     ...(typeof value.attended === "boolean" ? { attended: value.attended } : {}),
     ...(typeof value.children === "boolean" ? { children: value.children } : {}),
   }
@@ -1765,6 +1825,38 @@ function envNamesOrNull(value: unknown, name: string): readonly string[] | null 
   if (names === null) throw RequestError.invalidParams({ field: name }, `${name} must be a list of at most ${MAX_ENV_NAMES} environment variable names (letters, digits and _)`)
   return names
 }
+
+/**
+ * The tools a client declares (`OpenMeta.hostTools`), or `null` when it declares none. A field missing or of the
+ * wrong kind is a bad request that names it; the engine then refuses names it cannot offer.
+ */
+function hostToolsOrNull(value: unknown, name: string): readonly HostToolDeclaration[] | null {
+  if (value === undefined || value === null) return null
+  if (!Array.isArray(value)) throw RequestError.invalidParams({ field: name }, `${name} must be a list of tools`)
+  return value.map((item: unknown, index) => {
+    const at = `${name}[${index}]`
+    if (typeof item !== "object" || item === null || Array.isArray(item)) throw RequestError.invalidParams({ field: at }, `${at} must be an object`)
+    const tool = item as Record<string, unknown>
+    const unknown = Object.keys(tool).find((key) => !HOST_TOOL_KEYS.includes(key))
+    if (unknown !== undefined) throw RequestError.invalidParams({ field: `${at}.${unknown}` }, `${at} has a key this agent does not read: ${unknown}`)
+    if (typeof tool.name !== "string" || tool.name === "") throw RequestError.invalidParams({ field: `${at}.name` }, `${at}.name must be a non-empty string`)
+    if (typeof tool.description !== "string") throw RequestError.invalidParams({ field: `${at}.description` }, `${at}.description must be a string`)
+    if (typeof tool.inputSchema !== "object" || tool.inputSchema === null || Array.isArray(tool.inputSchema)) throw RequestError.invalidParams({ field: `${at}.inputSchema` }, `${at}.inputSchema must be a JSON Schema object`)
+    const effect = oneOfOrNull(tool.effect, HOST_EFFECTS, `${at}.effect`)
+    if (effect === null) throw RequestError.invalidParams({ field: `${at}.effect` }, `${at}.effect must be one of: ${HOST_EFFECTS.join(", ")}`)
+    if (typeof tool.untrustedResult !== "boolean") throw RequestError.invalidParams({ field: `${at}.untrustedResult` }, `${at}.untrustedResult must be a boolean`)
+    return { name: tool.name, description: tool.description, inputSchema: tool.inputSchema as Json, effect, untrustedResult: tool.untrustedResult }
+  })
+}
+
+const HOST_TOOL_KEYS = ["name", "description", "inputSchema", "effect", "untrustedResult"]
+const HOST_EFFECTS = ["read", "write", "exec", "network"] as const
+/** What `_<ns>/admit` takes as a message ID and as an origin. */
+const ADMITTED_ID = /^[A-Za-z0-9_.:-]{1,128}$/
+const ADMITTED_ORIGIN = /^[a-z][a-z0-9_-]{0,31}$/
+const MAX_SOURCE = 200
+/** The origins the harness's own messages carry, which a client may not admit under; `compaction` is the checkpoint's. */
+const HARNESS_ORIGINS: ReadonlySet<string> = new Set([...Object.values(HARNESS_ORIGIN), "compaction"])
 
 /** A list of checks written as `requiredChecks` is in a configuration file, or `null` when it is absent. Anything else is a bad request that names the value at fault. */
 function requiredChecksOrNull(value: unknown, name: string): readonly CheckConfig[] | null {
