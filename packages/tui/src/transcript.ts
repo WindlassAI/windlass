@@ -210,7 +210,7 @@ export interface CallUsage {
   readonly n: number
   readonly messageId: string
   readonly model: string | null
-  readonly kind: "step" | "compaction"
+  readonly kind: "step" | "compaction" | "title"
   /** The model requests this entry stands for: 1 for a step; a compaction's summary calls, retries and the repair included. */
   readonly requests: number
   readonly usage: Usage
@@ -566,6 +566,9 @@ export class Transcript {
         // A fork's log starts with its parent's: the model calls before this point were the parent's.
         this.session.forkedFrom = event.data.lineage?.kind === "fork" ? event.data.lineage.parentSessionId : null
         this.session.inheritedCalls = event.data.lineage?.kind === "fork" ? this.calls.length : 0
+        return
+      case "session.title_usage":
+        this.record(event.data.messageId, event.data.usage, "title", "ok", event.data.model)
         return
       case "session.renamed":
         this.session.title = event.data.title

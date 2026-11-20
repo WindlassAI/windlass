@@ -834,6 +834,10 @@ export function describeEvent(item: NewEvent): string {
       const changed = [...(lineage.changed.instructions ? ["the system prompt"] : []), ...lineage.changed.tools.map((tool) => `the description of ${tool}`), ...(lineage.changed.settings ? ["the model settings"] : [])]
       return `session.created replay of ${lineage.sourceSessionId} through seq ${lineage.throughSeq}, policy ${lineage.policy}, changed: ${changed.join(", ") || "nothing"}`
     }
+    case "session.renamed":
+      return `session.renamed ${d.generated ? "generated " : ""}${quote(d.title)}`
+    case "session.title_usage":
+      return `session.title_usage ${d.messageId} model=${d.model}`
     case "spawn.started": {
       const work = item.data.work
       return `spawn.started ${d.spawnId} by ${d.messageId}/${d.callId} ${work.kind === "subagent" ? `subagent ${work.sessionId}` : `command ${quote(work.command)}`}${d.background ? " background" : ""}`

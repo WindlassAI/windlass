@@ -44,6 +44,7 @@ const examples: { [T in EventType]: NewEvent<T> } = {
   }),
   "settings.changed": event("settings.changed", { model: "gpt-other", reasoningEffort: null }),
   "session.renamed": event("session.renamed", { title: "Fix the bug" }),
+  "session.title_usage": event("session.title_usage", { messageId, model: "gpt-test", usage }),
   "session.archived": event("session.archived", {}),
   "session.unarchived": event("session.unarchived", {}),
   "baseline.set": event("baseline.set", {

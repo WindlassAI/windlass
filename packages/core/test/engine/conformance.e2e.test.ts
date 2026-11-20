@@ -26,6 +26,7 @@ import { E2E_TIMEOUT_MS, waitFor as waitUntil } from "../../src/testing/wait.ts"
 import type { CommandSandbox } from "../../src/sandbox/command.ts"
 import { createToolRuntime } from "../../src/tool/runtime.ts"
 import { noBlobStore } from "../../src/tool/tool.ts"
+import { SIGNED_IN_PROVIDER } from "../../src/provider/provider.ts"
 import { allFamilies as families } from "../scenarios/index.ts"
 import {
   ATTEMPT_BUDGET,
@@ -201,6 +202,19 @@ const PLAYS: Record<string, Play> = {
     h.provider.enqueue([script.reasoning("Look at the README.", ENCRYPTED), script.text("It is a coding-agent harness."), U])
     h.create().send(say[0]!)
     await h.settled()
+  },
+
+  "A title arrives after the turn and the user replaces it": async (h, say) => {
+    Object.assign(h.provider, { id: SIGNED_IN_PROVIDER })
+    const stream = h.provider.stream
+    h.provider.stream = async function* (request, signal) {
+      if (request.tools.length === 0) await h.seen((event) => event.type === "execution.succeeded")
+      yield* stream(request, signal)
+    }
+    h.provider.enqueue(answer("Done."), answer("Parser repair"))
+    h.create().send(say[0]!)
+    await h.seen((event) => event.type === "session.renamed")
+    h.session.rename("Next steps")
   },
 
   "One tool call, then an answer": async (h, say) => {
@@ -2172,7 +2186,7 @@ describe("the loop writes each scenario's events", () => {
 
   test("every scenario has a play and every play a scenario", () => {
     expect(Object.keys(PLAYS).sort()).toEqual(scenarios.map(({ scenario }) => scenario.title).sort())
-    expect(scenarios).toHaveLength(128)
+    expect(scenarios).toHaveLength(129)
     for (const title of Object.keys(DEVIATIONS)) expect(Object.keys(PLAYS)).toContain(title)
   })
 })

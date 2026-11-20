@@ -88,6 +88,7 @@ export interface MapResult {
 /** Event types the log has that carry nothing a span needs. Listed, so that an event type nobody thought about is counted. */
 export const IGNORED_EVENTS: ReadonlySet<string> = new Set([
   "session.renamed",
+  "session.title_usage",
   "session.archived",
   "session.unarchived",
   "baseline.set",

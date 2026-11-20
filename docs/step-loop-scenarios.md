@@ -4492,9 +4492,36 @@ A program wrote a file and then started the tests, and the process died while th
 
 *Model sees next:* u1, a1, s1, a2.
 
+### Session titles
+
+#### 128. A title arrives after the turn and the user replaces it
+
+The first prompt supplies a bounded excerpt for an independent title request. The turn finishes while that request is pending. Its usage and title are recorded outside the conversation. An explicit rename then takes precedence.
+
+*Provider:* answers the prompt first, then returns a title and its usage.
+
+```
+-- the turn completes and the independent request names it
+1-5  opening: session.created, inbox.enqueued u1, execution.started exe_1, baseline.set, inbox.delivered u1
+  6  step.started a1 attempt=1
+  7  text.ended a1 "Done."
+  8  step.ended a1 finish=stop
+  9  execution.succeeded exe_1
+ 10  session.title_usage u1 model=gpt-6-luna
+ 11  session.renamed generated "Parser repair"
+ 12  session.renamed "Next steps"
+```
+
+*UI:* u1 user · a1 completed. *Claim:* released.
+
+*Model sees next:* u1, a1.
+
+*The reducer rejects:*
+- after "the turn completes and the independent request names it": `session.renamed generated "Late title"` (invalid_transition). A generated title can only fill an empty title.
+
 ### Forks
 
-#### 128. A fork continues from its parent's history
+#### 129. A fork continues from its parent's history
 
 A session is forked at a step boundary. The fork is a session of its own (its own file, its own events from here on) whose history is the parent's up to the fork point: the first event of its own names the parent and the last inherited seq. It starts idle with an empty inbox, with the parent's baseline, settings and taint and the root session's cache key, so its first request is the parent's last request plus the new prompt. The parent is only read and may be working elsewhere meanwhile.
 

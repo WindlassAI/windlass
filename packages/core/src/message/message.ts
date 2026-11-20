@@ -192,6 +192,7 @@ export const message = variant("kind", {
     delivery,
     /** The slash command that produced `content`, when one did (`command.expanded`): what a transcript shows the message as. */
     command: optional(commandUse),
+    titlePrompt: optional(string),
   }),
   /**
    * Something the harness said to the model. `delivery` is `null` when it was
@@ -293,6 +294,8 @@ export const inboxItem = object({
   origin: nullable(nonEmptyString),
   delivery,
   content,
+  /** A bounded excerpt taken before attachments or command files were expanded. */
+  titlePrompt: optional(string),
   /** The slash command that produced `content`, when one did (`command.expanded`). */
   command: optional(commandUse),
   /** The agent that command names, as its definition was when the command was sent: the session switches to it where this item is delivered, right before it. */
@@ -356,6 +359,7 @@ export const sessionState = object({
   id: sessionId,
   cwd: nonEmptyString,
   title: nullable(string),
+  titleGenerated: optional(boolean),
   lineage: nullable(lineage),
   /**
    * The first session of the fork chain this session belongs to: its own ID

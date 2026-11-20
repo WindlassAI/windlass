@@ -138,7 +138,7 @@ export function panelLines(input: PanelInput, columns: number, rows: number): Sp
   }
   {
     // The context is the whole conversation, inherited part included: the latest call says how full it is.
-    const latest = input.calls.at(-1)?.usage ?? null
+    const latest = input.calls.findLast((call) => call.kind !== "title")?.usage ?? null
     if (latest !== null) {
       const used = latest.inputTokens + latest.outputTokens
       const window = input.contextWindow
@@ -151,6 +151,7 @@ export function panelLines(input: PanelInput, columns: number, rows: number): Sp
   heading("Cache per call", [span("  █ cached ░ new", "dim")])
   const marks = [
     input.calls.some((call) => call.diagnostics.length > 0) ? "⚠ diagnostic" : null,
+    input.calls.some((call) => call.kind === "title") ? "T title" : null,
     input.calls.some((call) => call.kind === "compaction") ? "C compaction" : null,
     input.calls.some((call) => call.ended !== "ok" && call.diagnostics.length === 0 && call.kind !== "compaction") ? "✗ cut short" : null,
   ].filter((mark) => mark !== null)
@@ -171,7 +172,7 @@ export function panelLines(input: PanelInput, columns: number, rows: number): Sp
 function callLine(call: CallUsage, max: number, bar: number, numberWidth: number): Span[] {
   const total = Math.max(call.usage.inputTokens > 0 ? 1 : 0, Math.round((call.usage.inputTokens / max) * bar))
   const cached = Math.min(total, Math.round((call.usage.cachedInputTokens / max) * bar))
-  const mark = call.diagnostics.length > 0 ? "⚠" : call.kind === "compaction" ? "C" : call.ended !== "ok" ? "✗" : " "
+  const mark = call.diagnostics.length > 0 ? "⚠" : call.kind === "title" ? "T" : call.kind === "compaction" ? "C" : call.ended !== "ok" ? "✗" : " "
   const shareText = percent(share(call.usage))
   return [
     span(String(call.n).padStart(numberWidth), "dim"),

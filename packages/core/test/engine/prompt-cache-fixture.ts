@@ -27,7 +27,8 @@ export async function fixture(options: { engine?: Partial<EngineOptions>; config
   }
   // This is a real repository, so nested instruction discovery and snapshots use
   // the same boundary as production. It contains only this test's fixtures.
-  const config = (value: ConfigFile) => write(join(configDir, "config.json"), JSON.stringify(value))
+  // Scripted replies here describe the conversation lane only.
+  const config = (value: ConfigFile) => write(join(configDir, "config.json"), JSON.stringify({ titles: "off", ...value }))
   if (!options.resume) {
     write(join(cwd, "note.txt"), "A synthetic file for the cache regression.\n")
     write(join(cwd, "AGENTS.md"), "Use the project's tests.\n")

@@ -111,7 +111,7 @@ Three places are changed by one owner at a time, never in parallel branches. Oth
 
 | Group | Events |
 | --- | --- |
-| Session | `session.created` (cwd, title, settings, and the lineage: a `fork` of a parent through a seq, a `spawn` by a parent's tool call with its depth and worktree, a `replay` of a recording with its policy and what was changed; for a fork also `inherited`, what it needs at run time of the events it inherited: the entries taint is derived from), `session.renamed`, `session.archived`, `session.unarchived`, `settings.changed` |
+| Session | `session.created` (cwd, title, settings, and the lineage: a `fork` of a parent through a seq, a `spawn` by a parent's tool call with its depth and worktree, a `replay` of a recording with its policy and what was changed; for a fork also `inherited`, what it needs at run time of the events it inherited: the entries taint is derived from), `session.renamed`, `session.title_usage`, `session.archived`, `session.unarchived`, `settings.changed` |
 | Frozen prefix | `baseline.set` (instructions, tools, source fingerprints), `instruction.appended` (source, text, fingerprint; for the sources that are never in the baseline, `detail`: the servers whose descriptions an MCP catalogue carries, the notes a memory message makes the model hold, the skills an index lists, the agents a list names), `agent.switched` (the agent the session runs as from here on, as the definition was when it was selected; before the first baseline, or right after the instruction message that announces it) |
 | Inbox | `inbox.enqueued` (with `untrusted` when a wake-up's firing carries a webhook's body or a networked check's output), `command.expanded` (the message admitted right before it was produced by a slash command: the command's name and file, the fingerprint of the file as it was read, the arguments, the positions that were not given, the positions of the arguments the template has no place for, what was left as text), `inbox.delivery_changed`, `inbox.cancelled`, `inbox.delivered`, `turn.ended` (a turn ends because a queued message waits), `synthetic.appended` |
 | Execution | `execution.started`, `execution.interrupt_requested`, `execution.interrupted`, `execution.resumed`, `execution.succeeded` (with what the gate found, and `hooks.unsatisfied` with `hooks.objections`, their last words, when stop hooks still objected at their bound; `turn.ended` carries the same), `execution.failed` (`cause: "approval"` when a call nobody could approve ended the run, `cause: "replay"` when a replay ended where the model had not answered) |
@@ -1637,7 +1637,10 @@ listing is computed from the files alone. "The most recent session for this dire
 "resolve an ID or a unique prefix" are all this listing (the prefix needs only the file names). The cost of a listing is one `readdir` and two `stat` calls per session, plus one small read per session that
 changed. That read brings the summary and, with it, the beginning of the user's first prompt (`firstPrompt`),
 which the cache keeps under the same rules: a session nobody titled is named from the listing itself, and no
-session's log is opened for a title.
+session's log is opened for a title. After the first user prompt is delivered, a signed-in session can also
+generate a short title in the background (`titles/title.ts`). The first user's unexpanded text supplies a bounded
+excerpt. Each request has its own ledger row with purpose `title`. A generated `session.renamed` fills an empty
+title and an ordinary rename replaces it. The independent request uses a separate trace lane.
 
 **A page at a time.** `Engine.listSessionsPage({ ...query, limit, cursor })` gives at most `limit` sessions and
 the cursor of the page after them. The cursor is a place in the listing's order (when the page's last session

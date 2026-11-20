@@ -191,6 +191,7 @@ type AppliedEvent = Exclude<StoredEvent, { type: "session.created" }>
  */
 const SCOPE = {
   "session.renamed": "session",
+  "session.title_usage": "session",
   "session.archived": "session",
   "session.unarchived": "session",
   "inbox.enqueued": "session",
@@ -483,7 +484,12 @@ function apply(state: Projection, event: AppliedEvent): Projection {
 
   switch (event.type) {
     case "session.renamed":
+      if (event.data.generated && state.session.title !== null) fail("invalid_transition", "a generated title can only fill an empty title")
+      if (event.data.generated) return session({ title: event.data.title, titleGenerated: true })
+      if (state.session.titleGenerated) return session({ title: event.data.title, titleGenerated: false })
       return session({ title: event.data.title })
+    case "session.title_usage":
+      return state
     case "session.archived":
       if (state.session.archived) fail("invalid_transition", "the session is already archived")
       return session({ archived: true })
@@ -558,6 +564,7 @@ function apply(state: Projection, event: AppliedEvent): Projection {
         origin: event.data.origin,
         delivery: event.data.delivery,
         content: event.data.content,
+        ...(event.data.titlePrompt === undefined ? {} : { titlePrompt: event.data.titlePrompt }),
       }
       return { ...state, inbox: [...state.inbox, item] }
     }
@@ -601,7 +608,7 @@ function apply(state: Projection, event: AppliedEvent): Projection {
       }
       const delivered: Message =
         item.origin === null
-          ? { kind: "user", id: item.messageId, ...created, content: item.content, delivery: item.delivery, ...(item.command === undefined ? {} : { command: item.command }) }
+          ? { kind: "user", id: item.messageId, ...created, content: item.content, delivery: item.delivery, ...(item.titlePrompt === undefined ? {} : { titlePrompt: item.titlePrompt }), ...(item.command === undefined ? {} : { command: item.command }) }
           : {
               kind: "synthetic",
               id: item.messageId,

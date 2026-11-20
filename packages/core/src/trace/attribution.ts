@@ -37,6 +37,7 @@
  * that were (the instructions, the tools, the kept messages) are counted as
  * re-sent. A break with no cause is reported as `unexplained`: it is a bug.
  */
+import { storedTitleRequest } from "../titles/title.ts"
 import type { StoredEvent } from "../event/durable.ts"
 import { type ModelHistory, selectModelHistory } from "../message/history.ts"
 import type { AssistantMessage, Message, Projection } from "../message/message.ts"
@@ -252,6 +253,7 @@ interface StartPoint {
  * attempt it names, `compaction.repair_requested`.
  */
 function fold(events: readonly StoredEvent[]) {
+  const titles = new Map<string, StartPoint>()
   const steps = new Map<string, StartPoint>()
   const summaries = new Map<string, { readonly fromAttempt: number; readonly point: StartPoint }[]>()
   let state: Projection | null = null
@@ -264,6 +266,8 @@ function fold(events: readonly StoredEvent[]) {
       break
     }
     const point = { seq: event.seq, projection: state }
+    const delivered = state.messages.at(-1)
+    if (event.type === "inbox.delivered" && delivered?.kind === "user" && delivered.titlePrompt !== undefined) titles.set(event.data.messageId, point)
     if (event.type === "step.started") steps.set(key(event.data.messageId, event.data.attempt), point)
     if (event.type === "compaction.started") summaries.set(event.data.messageId, [{ fromAttempt: 1, point }])
     if (event.type === "compaction.repair_requested") summaries.get(event.data.messageId)?.push({ fromAttempt: event.data.attempt, point })
@@ -272,10 +276,12 @@ function fold(events: readonly StoredEvent[]) {
       if (message?.kind === "assistant" && message.status === "running") steps.set(key(event.data.messageId, event.data.attempt), point)
     }
   }
-  const get = (row: RequestRecord): StartPoint | null =>
-    row.purpose === "compaction"
+  const get = (row: RequestRecord): StartPoint | null => {
+    if (row.purpose === "title") return titles.get(row.messageId) ?? null
+    return row.purpose === "compaction"
       ? (summaries.get(row.messageId)?.findLast((entry) => entry.fromAttempt <= row.attempt)?.point ?? null)
       : (steps.get(key(row.messageId, row.attempt)) ?? null)
+  }
   return { points: { get }, final: state, failure }
 }
 
@@ -288,7 +294,7 @@ function findBase(rows: readonly RequestRecord[], index: number): number | null 
   const row = rows[index]!
   for (let at = index - 1; at >= 0; at -= 1) {
     const candidate = rows[at]!
-    if (candidate.messageId === row.messageId || candidate.purpose === "step") return at
+    if (candidate.messageId === row.messageId || (row.purpose !== "title" && candidate.purpose === "step")) return at
   }
   return null
 }
@@ -357,7 +363,10 @@ function name(row: RequestRecord, start: StartPoint | null, options: Attribution
   let request: ModelRequest
   let sources: readonly ItemSource[]
   try {
-    if (row.purpose === "compaction") {
+    if (row.purpose === "title") {
+      request = storedTitleRequest(start.projection, row.messageId, row.model)
+      sources = []
+    } else if (row.purpose === "compaction") {
       request = buildCompactionRequest(start.projection, options.callOptions, row.messageId as never)
       const compaction = start.projection.messages.findLast((message) => message.id === row.messageId)
       const keepFrom = compaction?.kind === "compaction" ? compaction.keepFromSeq : Number.POSITIVE_INFINITY

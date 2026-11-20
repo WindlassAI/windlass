@@ -22,6 +22,7 @@
 import { createHash } from "node:crypto"
 import { brand } from "../brand.ts"
 import type { Json } from "../json.ts"
+import type { RequestPurpose } from "../store/store.ts"
 import type { Usage } from "../provider/usage.ts"
 import { canonicalJson } from "../request/canonical.ts"
 
@@ -98,7 +99,7 @@ export interface HarnessExtension {
   readonly ordinal: number
   readonly message_id: string
   readonly attempt: number
-  readonly purpose: "step" | "compaction"
+  readonly purpose: RequestPurpose
   /** The provider that served the call, by the name the ledger has for it (`Provider.id`): the signed-in one, or a scripted one. */
   readonly served_by: string
   readonly outcome: "ok" | "error" | "aborted" | null

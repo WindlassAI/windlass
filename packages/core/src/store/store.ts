@@ -63,13 +63,13 @@ export interface AppendOptions {
 }
 
 /** What the model call was for. A compaction request is the step request plus one prompt (context rule 7). */
-export type RequestPurpose = "step" | "compaction"
+export type RequestPurpose = "step" | "compaction" | "title"
 
 /** Written to the ledger before the request is sent. */
 export interface RequestStart {
   readonly id: RequestId
   readonly sessionId: SessionId
-  /** The assistant or compaction message the call serves. */
+  /** The assistant or compaction message the call serves, or the first user message for a title. */
   readonly messageId: MessageId
   /** The attempt within the step's retry budget. Each attempt is its own ledger row. */
   readonly attempt: number

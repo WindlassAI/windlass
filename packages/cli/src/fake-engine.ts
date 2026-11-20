@@ -155,6 +155,7 @@ const SESSION_SCOPED = new Set([
   "settings.changed",
   "session.created",
   "session.renamed",
+  "session.title_usage",
   "session.archived",
   "session.unarchived",
   // A snapshot is a fact about the working tree; it does not move the turn on either.

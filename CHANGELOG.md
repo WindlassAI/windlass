@@ -6,6 +6,14 @@ All notable changes to Windlass are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- New sessions get a short title from the first prompt in the background. Listings and ACP clients receive the
+  saved title, and an explicit rename always wins. Set `titles` to `"off"` to keep the prompt-derived title, or
+  choose a `titleModel` (default `gpt-6-luna`). Scripted runs and demos make no title request. Title calls use the
+  session's sign-in and their tokens are included in session usage. Existing sessions keep their titles. Version
+  0.4.0 cannot read sessions that contain the new title excerpt, generated-title marker or title-usage event.
+
 ## [0.4.0] - 2026-11-19
 
 ### Added

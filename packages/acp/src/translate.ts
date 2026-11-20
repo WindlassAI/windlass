@@ -147,6 +147,9 @@ export class Translator {
         this.model = item.data.model
         out.push({ type: "settings", settings: item.data })
         break
+      case "session.title_usage":
+        if (!replay) out.push({ type: "ext", method: EXT.usage, params: { sessionId: this.options.sessionId, ...item.data } })
+        break
       case "session.renamed":
         update({ sessionUpdate: "session_info_update", title: item.data.title, updatedAt: new Date(item.time).toISOString() })
         break

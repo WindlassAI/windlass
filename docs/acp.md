@@ -106,12 +106,17 @@ are its parent's turn's; or `unresolved` with the reason and the checks that did
 as a `_windlass/turn` notification marked `replay: true`, after that turn's updates (and, for a client that
 takes the harness's events, after that turn's events), with the files it changed worked out from its snapshots.
 
-**Titles.** A session the user did not name gets a title without a model call: the first line of the first thing
-the user said in it, trimmed, runs of spaces collapsed, shortened at a word to 60 characters with `…` (`sessionTitle`
-and `deriveTitle` in `packages/acp/src/extensions.ts`). The engine keeps the beginning of that prompt with the
-session's summary (`firstPrompt`), so a listing reads no log for a title. It is what `session/list`,
-`session_info_update` (on load and resume, and live when the first message arrives) and `_windlass/session`
-report; nothing is written to the log. A title the user gives (`_windlass/rename`) replaces it.
+**Titles.** The first user prompt gives an unnamed session an immediate display title from its opening line.
+With `titles: "generate"` (the default), the engine also requests a short title in the background using the session's
+provider and the configured `titleModel`. Only the first 1,000 characters of user text are eligible. ACP resource
+blocks and slash-command file contents are excluded. A successful result writes `session.renamed` with
+`generated: true`. The client receives a standard `session/update` with `sessionUpdate: "session_info_update"`
+and `title`. The stored title also appears in `session/list`, `_windlass/session` and on load or resume.
+
+An explicit title wins even if the request is in flight. After two failed attempts the prompt title stays.
+Scripted sessions and `titles: "off"` use the prompt title until explicitly renamed. Title calls report token use
+through `_windlass/usage` and the session's request ledger. The conversation's context-window figure continues to
+describe the turn's own model calls.
 
 **Agents.** A session can run as an agent: a definition with its own instructions, restrictions on what it may
 call, and optionally a model. `_windlass/agents` lists them; `agent` in `_meta["windlass"]` starts a
@@ -996,7 +1001,7 @@ the prompt-cache counts.
 ```ts
 {
   sessionId: string,
-  messageId: string,          // the assistant (or compaction) message the call served
+  messageId: string,          // the assistant or compaction message, or the first user message for a title
   model: string | null,
   usage: {
     inputTokens: number,        // all input, including cached

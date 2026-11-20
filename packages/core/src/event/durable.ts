@@ -564,8 +564,10 @@ export const durableEvents = {
    * which `checkPrefix` is told about through this event.
    */
   "settings.changed": define(1, sessionSettings),
-  /** The session's title was set. */
-  "session.renamed": define(1, object({ title: string })),
+  /** The session's title was set. A generated title can only fill an empty title. */
+  "session.renamed": define(1, object({ title: string, generated: optional(literal(true)) })),
+  /** The usage a background title request reported, including a request whose answer was discarded. */
+  "session.title_usage": define(1, object({ messageId, model: nonEmptyString, usage })),
   /**
    * The session was hidden from the default list. Nothing is deleted from its
    * log; the workspace snapshots no revert or undo of it could still restore
@@ -633,7 +635,7 @@ export const durableEvents = {
    * webhook's body, a networked check's output, text a client marked as not
    * its user's): a taint source, recorded with the admission.
    */
-  "inbox.enqueued": define(1, object({ messageId, origin: nullable(nonEmptyString), delivery, content, untrusted: optional(untrustedInput) })),
+  "inbox.enqueued": define(1, object({ messageId, origin: nullable(nonEmptyString), delivery, content, titlePrompt: optional(string), untrusted: optional(untrustedInput) })),
   /**
    * The message admitted by the event right before this one was produced by
    * a slash command: the user typed `/name arguments`, and the content of

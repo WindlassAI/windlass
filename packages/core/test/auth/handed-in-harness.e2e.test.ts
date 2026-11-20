@@ -124,7 +124,7 @@ const stepError = (events: readonly { readonly type: string; readonly data: unkn
   return failed?.error.kind === "provider" ? failed.error.error : undefined
 }
 
-const start = (at: Place) => at.harness.engine.createSession({ cwd: at.workspace, settings: { model: MODEL, reasoningEffort: null } })
+const start = (at: Place) => at.harness.engine.createSession({ cwd: at.workspace, title: "Authentication test", settings: { model: MODEL, reasoningEffort: null } })
 const responses = (at: Place) => at.sent.filter((request) => request.path === "/responses").map((request) => request.token)
 
 describe("a handed-in token the provider rejects", () => {

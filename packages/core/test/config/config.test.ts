@@ -48,7 +48,7 @@ describe("defaults", () => {
   test("no files: no model, no checks, gate mode with three rounds", async () => {
     const { home, repo } = layout()
     const loaded = await loadConfig({ cwd: repo, home, env: {} })
-    expect(loaded.config).toEqual({ model: null, effort: null, checks: [], verify: { mode: "gate", maxRounds: 3 } })
+    expect(loaded.config).toEqual({ model: null, effort: null, titles: "generate", titleModel: "gpt-6-luna", checks: [], verify: { mode: "gate", maxRounds: 3 } })
     expect(loaded.sources).toEqual([])
     expect(loaded.projectFile).toBeNull()
     expect(loaded.projectDir).toBe(repo)
@@ -110,15 +110,18 @@ describe("merge", () => {
     const { home, repo, userFile } = layout()
     write(userFile, {
       model: "user-model",
+      titleModel: "user-title-model",
       effort: "low",
       checks: [{ name: "lint", command: "eslint ." }, { name: "test", command: "npm test" }],
       verify: { mode: "report", maxRounds: 5 },
     })
-    write(projectFile(repo), { model: "project-model", checks: [{ name: "test", command: "bun test" }], verify: { mode: "gate" } })
+    write(projectFile(repo), { model: "project-model", titles: "off", checks: [{ name: "test", command: "bun test" }], verify: { mode: "gate" } })
     const loaded = await loadConfig({ cwd: repo, home, env: {} })
     expect(loaded.sources).toEqual([userFile, projectFile(repo)])
     expect(loaded.config).toEqual({
       model: "project-model",
+      titles: "off",
+      titleModel: "user-title-model",
       effort: "low",
       checks: [{ name: "test", command: "bun test", timeoutSeconds: 120, when: null }],
       verify: { mode: "gate", maxRounds: 5 },
@@ -139,8 +142,8 @@ describe("validation errors name the file and the path", () => {
     ["not an object", "[]", "f.json: expected object, got array"],
     ["model type", `{"model": 3}`, "f.json: model: expected non-empty string, got 3"],
     ["empty effort", `{"effort": ""}`, `f.json: effort: expected non-empty string, got ""`],
-    ["unknown top-level key, close", `{"modle": "x"}`, `f.json: modle: unknown key "modle" (did you mean "model"?); known keys: $schema, model, effort, checks, requiredChecks, verify`],
-    ["unknown key, nothing close", `{"permissions": {}}`, `f.json: permissions: unknown key "permissions"; known keys: $schema, model, effort, checks, requiredChecks, verify`],
+    ["unknown top-level key, close", `{"modle": "x"}`, `f.json: modle: unknown key "modle" (did you mean "model"?); known keys: $schema, model, effort, titles, titleModel, checks, requiredChecks, verify`],
+    ["unknown key, nothing close", `{"permissions": {}}`, `f.json: permissions: unknown key "permissions"; known keys: $schema, model, effort, titles, titleModel, checks, requiredChecks, verify`],
     ["unknown verify key", `{"verify": {"maxRound": 2}}`, `f.json: verify.maxRound: unknown key "maxRound" (did you mean "maxRounds"?); known keys: mode, maxRounds`],
     ["bad mode", `{"verify": {"mode": "gated"}}`, `f.json: verify.mode: expected "off" | "report" | "gate", got "gated"`],
     ["maxRounds zero", `{"verify": {"maxRounds": 0}}`, "f.json: verify.maxRounds: expected integer >= 1, got 0"],
@@ -228,7 +231,7 @@ describe("the sections of other modules", () => {
     expect(file.wake).toEqual({ enabled: true, hourlyCeiling: 6 })
     expect(file.memory).toEqual({ enabled: true })
     // They are not part of the merged configuration: the engine reads them from the files, apart.
-    expect(Object.keys(resolveConfig(file)).sort()).toEqual(["checks", "effort", "model", "verify"])
+    expect(Object.keys(resolveConfig(file)).sort()).toEqual(["checks", "effort", "model", "titleModel", "titles", "verify"])
   })
 
   const cases: [string, unknown, string][] = [
@@ -271,7 +274,7 @@ describe("the agents section, and loading without waiting", () => {
   test("agents is accepted and validated by its own module, and is not part of the merged configuration", () => {
     const file = parseConfigFile(JSON.stringify({ agents: { paths: ["~/team-agents"], disabled: ["old"], default: "reviewer" } }), "f.json")
     expect(file.agents).toEqual({ paths: ["~/team-agents"], disabled: ["old"], default: "reviewer" })
-    expect(Object.keys(resolveConfig(file)).sort()).toEqual(["checks", "effort", "model", "verify"])
+    expect(Object.keys(resolveConfig(file)).sort()).toEqual(["checks", "effort", "model", "titleModel", "titles", "verify"])
     expect(errorOf(() => parseConfigFile(JSON.stringify({ agents: { defualt: "x" } }), "f.json")).message).toStartWith('f.json: agents.defualt: unknown key "defualt"')
     expect(errorOf(() => parseConfigFile(JSON.stringify({ agents: { paths: ["team"] } }), "f.json")).message).toStartWith("f.json: agents.paths[0]: expected an absolute path or one starting with ~/")
   })
@@ -302,7 +305,7 @@ describe("the commands and telemetry sections", () => {
     )
     expect(file.commands).toEqual({ paths: ["~/team-commands"], disabled: ["old-deploy"] })
     expect(file.telemetry).toEqual({ enabled: true, endpoint: "http://localhost:4318", headers: { authorization: "Bearer ${COLLECTOR_TOKEN}" }, content: false, timeoutMs: 2000 })
-    expect(Object.keys(resolveConfig(file)).sort()).toEqual(["checks", "effort", "model", "verify"])
+    expect(Object.keys(resolveConfig(file)).sort()).toEqual(["checks", "effort", "model", "titleModel", "titles", "verify"])
   })
 
   test("a bad value names the file and the path", () => {
@@ -328,7 +331,7 @@ describe("the sandbox section", () => {
     expect(parseConfigFile(JSON.stringify({ sandbox: { home: "session" } }), "f.json").sandbox).toEqual({ home: "session" })
     expect(parseConfigFile(JSON.stringify({ sandbox: { home: "user" } }), "f.json").sandbox).toEqual({ home: "user" })
     expect(parseConfigFile(JSON.stringify({ sandbox: {} }), "f.json").sandbox).toEqual({})
-    expect(Object.keys(resolveConfig(parseConfigFile(JSON.stringify({ sandbox: { home: "session" } }), "f.json"))).sort()).toEqual(["checks", "effort", "model", "verify"])
+    expect(Object.keys(resolveConfig(parseConfigFile(JSON.stringify({ sandbox: { home: "session" } }), "f.json"))).sort()).toEqual(["checks", "effort", "model", "titleModel", "titles", "verify"])
   })
 
   test("the variables commands are not given, and the credential-looking ones they are, are lists of names: no value has a place in them", () => {
@@ -366,7 +369,7 @@ describe("required checks", () => {
     const file = parseConfigFile(JSON.stringify({ requiredChecks: required, checks: [{ name: "lint", command: "eslint ." }] }), "f.json")
     expect(file.requiredChecks).toEqual(required as never)
     const config = resolveConfig(file)
-    expect(Object.keys(config).sort()).toEqual(["checks", "effort", "model", "verify"])
+    expect(Object.keys(config).sort()).toEqual(["checks", "effort", "model", "titleModel", "titles", "verify"])
     // A file that names only required checks leaves the plain list as it was: empty here.
     expect(config.checks).toEqual([{ name: "lint", command: "eslint .", timeoutSeconds: 120, when: null }])
     expect(resolveConfig(parseConfigFile(JSON.stringify({ requiredChecks: required }), "f.json")).checks).toEqual([])
@@ -416,7 +419,7 @@ describe("the hooks and lsp sections", () => {
     )
     expect(file.hooks).toEqual({ beforeTool: [{ name: "no-push", tools: ["shell"], command: "exit 0" }], maxStopRounds: 2 })
     expect(file.lsp?.servers?.python?.command).toBe("pyright-langserver")
-    expect(Object.keys(resolveConfig(file)).sort()).toEqual(["checks", "effort", "model", "verify"])
+    expect(Object.keys(resolveConfig(file)).sort()).toEqual(["checks", "effort", "model", "titleModel", "titles", "verify"])
     expect(errorOf(() => parseConfigFile(JSON.stringify({ hooks: { beforeTol: [] } }), "f.json")).message).toStartWith('f.json: hooks.beforeTol: unknown key "beforeTol"')
     expect(errorOf(() => parseConfigFile(JSON.stringify({ lsp: { waitMs: 9000 } }), "f.json")).message).toStartWith("f.json: lsp.waitMs: ")
   })

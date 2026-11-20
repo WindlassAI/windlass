@@ -71,6 +71,7 @@ import { type CallRun, type ChoiceId, TaintHistory, inheritableTaint } from "../
 import { redact, unfinishedSecret } from "../approval/redact.ts"
 import { type TaintState, deriveTaint, describeTaint } from "../approval/taint.ts"
 import { approvedNote, declinedMessage } from "../approval/texts.ts"
+import { DEFAULT_TITLE_MODEL, cleanTitle, titleExcerpt, titleRequest } from "../titles/title.ts"
 import { brand } from "../brand.ts"
 import { type LoadedConfig, loadConfig, loadConfigSync } from "../config/load.ts"
 import { type CheckConfig, resolveConfig } from "../config/schema.ts"
@@ -119,7 +120,7 @@ import { selectModelHistory } from "../message/history.ts"
 import { type AssistantMessage, type Projection, type ToolCallPart, hasSideEffect, watchInForce } from "../message/message.ts"
 import { reduce } from "../message/reducer.ts"
 import { type ProviderError, makeProviderError } from "../provider/error.ts"
-import type { FinishReason, Provider, ResponseFacts, StreamEvent } from "../provider/provider.ts"
+import { SIGNED_IN_PROVIDER, type FinishReason, type Provider, type ResponseFacts, type StreamEvent } from "../provider/provider.ts"
 import { type Usage, sumUsage } from "../provider/usage.ts"
 import type { CommandSandbox } from "../sandbox/command.ts"
 import { type CommandEnv, type SandboxHomeChoice, resolveCommandEnv, resolveSandboxHome } from "../sandbox/config.ts"
@@ -770,6 +771,8 @@ export type CompactResult =
   | { readonly kind: "failed"; readonly message: string }
 
 export interface SendOptions {
+  /** User text before a client expanded attachments into the prompt. */
+  readonly titlePrompt?: string
   /** `steer` (the default) is delivered at the next step boundary; `queue` once the session would otherwise go idle. */
   readonly delivery?: "steer" | "queue"
   /** The step limit of the turn this input starts, instead of the engine's. */
@@ -2072,6 +2075,9 @@ class LiveSession implements EngineSession {
   /** Input arrived while the drain was ending (a user's cancel winding down, or just released), or during a revert: start again when it is gone. */
   private restart = false
   private closing: Promise<void> | null = null
+  /** Only the first delivered user message is eligible, including when a session resumes. */
+  private titleChecked = false
+  private titleJob: { controller: AbortController; done: Promise<void> } | null = null
   /** The configuration the execution in progress runs under, read when it started. `null`: nothing is verified. */
   private config: SessionConfig | null = null
   /** Whether a person is there to answer questions. Nobody is until a client says so. */
@@ -2230,10 +2236,11 @@ class LiveSession implements EngineSession {
 
   send = (value: string, options: SendOptions = {}): MessageId => {
     this.assertOpen()
-    if (this.projection().session.replay !== undefined) throw new EngineError("invalid_request", REPLAY_TEXT.noPrompts)
+    const projection = this.projection()
+    if (projection.session.replay !== undefined) throw new EngineError("invalid_request", REPLAY_TEXT.noPrompts)
     const messageId = this.core.ids.message()
     if (options.maxSteps !== undefined) this.turnLimits.set(messageId, options.maxSteps)
-    this.write([event("inbox.enqueued", { messageId, origin: null, delivery: options.delivery ?? "steer", content: text(value) })])
+    this.write([event("inbox.enqueued", { messageId, origin: null, delivery: options.delivery ?? "steer", content: text(value), ...this.titleInput(projection, options.titlePrompt ?? value) })])
     this.start()
     return messageId
   }
@@ -2266,7 +2273,7 @@ class LiveSession implements EngineSession {
     // One append: the message never waits without the record of where its text came from, nor without the agent it
     // switches the session to where it is delivered. That switch is the log's to keep, not this process's.
     this.write([
-      event("inbox.enqueued", { messageId, origin: null, delivery: options.delivery ?? "steer", content: text(expansion.text) }),
+      event("inbox.enqueued", { messageId, origin: null, delivery: options.delivery ?? "steer", content: text(expansion.text), ...this.titleInput(projection, options.titlePrompt ?? `/${name} ${args}`.trimEnd()) }),
       event("command.expanded", { messageId, ...commandUseOf(command, expansion), ...(agent === null ? {} : { agent }) }),
     ])
     this.start()
@@ -2531,11 +2538,50 @@ class LiveSession implements EngineSession {
     return true
   }
 
+  /** Keep the user's words separately from expanded prompts. Old sessions have no such excerpt. */
+  private titleInput(state: Projection, value: string): { titlePrompt?: string } {
+    if (this.core.provider.id !== SIGNED_IN_PROVIDER || this.titleChecked) return {}
+    if (state.session.title !== null || state.messages.some((message) => message.kind === "user")) return {}
+    return { titlePrompt: titleExcerpt(value) }
+  }
+
+  private startTitle(ready: Projection): void {
+    if (this.titleChecked || this.core.provider.id !== SIGNED_IN_PROVIDER || this.director !== null) return
+    const first = ready.messages.find((message) => message.kind === "user")
+    if (!first) return
+    this.titleChecked = true
+    if (ready.session.title !== null || this.config?.config.titles === "off" || !first.titlePrompt?.trim() || this.closing !== null) return
+    const request = titleRequest(first.titlePrompt, this.config?.config.titleModel ?? DEFAULT_TITLE_MODEL)
+    const controller = new AbortController()
+    const done = Promise.resolve().then(() => this.generateTitle(first.id, request, controller.signal)).catch(() => {})
+    this.titleJob = { controller, done }
+  }
+
+  private async generateTitle(messageId: MessageId, request: ModelRequest, signal: AbortSignal): Promise<void> {
+    // The ledger reserves each attempt before contacting the provider, including one cut short by a crash.
+    const previous = this.store.lastRequest(this.id, "title")
+    if (previous?.outcome === "ok") return
+    const blocks = hashRequest(request)
+    for (let attempt = (previous?.attempt ?? 0) + 1; attempt <= 2 && !signal.aborted; attempt++) {
+      if (this.projection().session.title !== null) return
+      const call = await this.callModel(signal, { purpose: "title", request, messageId, attempt, blocks, limitMs: 15_000, maxOutputChars: 256 })
+      if (call.usage !== null) this.write([event("session.title_usage", { messageId, model: request.params.model, usage: call.usage })])
+      if (signal.aborted || this.projection().session.title !== null) return
+      const title = call.end.type === "finish" && call.end.reason !== "tool_calls" ? cleanTitle(call.text || call.partialText) : ""
+      if (title) {
+        this.write([event("session.renamed", { title, generated: true })])
+        return
+      }
+    }
+  }
+
   rename = (title: string): string => {
     this.assertOpen()
     const next = title.replace(/\s+/g, " ").trim()
     if (next === "") throw new EngineError("invalid_request", "a session's title cannot be empty")
-    if (this.projection().session.title !== next) this.write([event("session.renamed", { title: next })])
+    const session = this.projection().session
+    this.titleJob?.controller.abort()
+    if (session.title !== next || session.titleGenerated) this.write([event("session.renamed", { title: next })])
     return next
   }
 
@@ -2921,6 +2967,7 @@ class LiveSession implements EngineSession {
   }
 
   private async shutdown(): Promise<void> {
+    this.titleJob?.controller.abort()
     try {
       // A restore in progress is finished, not cut: it is short, and half of one helps nobody.
       // (No await when there is none: the interrupt below must be requested in this very turn of the event loop.)
@@ -2946,6 +2993,7 @@ class LiveSession implements EngineSession {
     } catch (error) {
       this.core.report({ kind: "internal_error", sessionId: this.id, message: `closing failed: ${describe(error)}`, cause: error })
     } finally {
+      if (this.titleJob !== null) await this.titleJob.done
       // The ends of spawned work are recorded, and the subagents let go of, before the session is.
       while (this.ending.size > 0) await Promise.all([...this.ending]).catch(() => {})
       await Promise.all([...this.children].map((child) => child.close())).catch(() => {})
@@ -3234,6 +3282,7 @@ class LiveSession implements EngineSession {
         ])
 
       const ready = this.projection()
+      this.startTitle(ready)
       const input = turnInput(ready)
       const limit = (input === undefined ? undefined : this.turnLimits.get(input.id)) ?? limits.stepLimit
       const steps = stepsThisTurn(ready)
@@ -3411,7 +3460,7 @@ class LiveSession implements EngineSession {
         const tools = this.beginTools(run, messageId, toolChoice)
         this.stepTools = tools
         // A retry resends the same request unchanged.
-        const call = await this.callModel(run, { messageId, attempt, request, blocks, purpose: "step", ...(tools.early ? { onCall: tools.add } : {}) })
+        const call = await this.callModel(signal, { messageId, attempt, request, blocks, purpose: "step", ...(tools.early ? { onCall: tools.add } : {}) })
         if (call.end.type === "finish") return await this.finishStep(run, messageId, toolChoice, call.end.reason, call, tools)
         // The response did not finish: nothing more starts, and the calls that started run to their result first.
         tools.end(false)
@@ -3628,10 +3677,10 @@ class LiveSession implements EngineSession {
   /**
    * Streams one model call: deltas are published as they arrive, each
    * finished item is appended at its end, and the ledger row is closed.
-   * A compaction call records no output events; its text is returned.
+   * Compaction and title calls return their text without streaming it into the conversation.
    */
   private async callModel(
-    run: Run,
+    signal: AbortSignal,
     input: {
       readonly messageId: MessageId
       readonly attempt: number
@@ -3655,7 +3704,6 @@ class LiveSession implements EngineSession {
   ): Promise<ModelCall> {
     const { provider, ids } = this.core
     const store = this.store
-    const signal = run.interrupt.signal
     const { messageId, request } = input
     const step = input.purpose === "step"
     const requestId = ids.request()
@@ -5495,7 +5543,7 @@ class LiveSession implements EngineSession {
       /** What came back: text (cut short when the loop stopped reading), or why there is none. `final`: not worth asking again. */
       let answer: { readonly text: string; readonly complete: boolean; readonly final: string | null } | null = null
       for (let tries = 1; answer === null; tries += 1) {
-        const call = await this.callModel(run, {
+        const call = await this.callModel(signal, {
           messageId,
           attempt,
           request,

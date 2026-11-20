@@ -779,7 +779,7 @@ function decodeMessage(id: string, text: string): Message {
   return decodeJson(message, text, `session ${id} message`)
 }
 
-const requestPurpose = oneOf(["step", "compaction"])
+const requestPurpose = oneOf(["step", "compaction", "title"])
 
 const requestStart = object({
   id: requestId,

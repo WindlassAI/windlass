@@ -588,7 +588,7 @@ class ConnectionState {
     const text = requirePromptText(blocks)
     const delivery = meta?.[META.delivery] === "queue" ? "queue" : "steer"
     const maxSteps = stepLimit(meta?.[META.maxSteps])
-    const options = { delivery, ...(maxSteps === undefined ? {} : { maxSteps }) } as const
+    const options = { delivery, titlePrompt: userText(blocks), ...(maxSteps === undefined ? {} : { maxSteps }) } as const
     // The commands as they are now: a file added since the session was opened is offered from here on.
     view.advertiseCommands()
     // `/name args` is a command file's, or nothing: a name no file has is refused with the close names, and no
@@ -775,7 +775,7 @@ class ConnectionState {
   admit(sessionId: string, blocks: readonly ContentBlock[], delivery: "steer" | "queue", maxSteps: number | undefined) {
     const view = this.requireView(sessionId)
     const text = requirePromptText(blocks)
-    const messageId = view.session.send(text, { delivery, ...(maxSteps === undefined ? {} : { maxSteps }) })
+    const messageId = view.session.send(text, { delivery, titlePrompt: userText(blocks), ...(maxSteps === undefined ? {} : { maxSteps }) })
     view.echo.add(messageId)
     return { messageId }
   }
@@ -1652,7 +1652,7 @@ class SessionView {
     }
     if (item.type === "settings.changed") this.requested = null
     this.noteHook(item)
-    // A title the user gave: the first message no longer names the session.
+    // A stored title takes precedence over the first-prompt fallback.
     if (item.type === "session.renamed") this.titled = true
     if (item.type === "inbox.enqueued" && item.data.origin === null && !this.titled) {
       const title = this.connection.titleOf(this.session.id, this.session.projection().session.title)
@@ -2080,6 +2080,11 @@ export function configOptionsFor(
           },
         ]),
   ]
+}
+
+/** Only what the user typed can be sent to the title model. */
+function userText(blocks: readonly ContentBlock[]): string {
+  return blocks.flatMap((block) => block.type === "text" ? [block.text] : []).join("\n\n")
 }
 
 function requirePromptText(blocks: readonly ContentBlock[]): string {

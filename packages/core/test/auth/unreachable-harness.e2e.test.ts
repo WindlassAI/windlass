@@ -99,7 +99,7 @@ test("a refresh that cannot reach the sign-in service fails the turn as a connec
   const message = `no usable access token: Could not reach the sign-in service at ${new URL(CHATGPT_AUTH.tokenUrl).host}: ${LOOKUP_FAILED}`
   // The sign-in is saved, and a failed lookup says nothing against it.
   expect(await at.harness.signIn()).toEqual({ signedIn: true })
-  const session = at.harness.engine.createSession({ cwd: at.workspace, settings: { model: MODEL, reasoningEffort: null } })
+  const session = at.harness.engine.createSession({ cwd: at.workspace, title: "Authentication test", settings: { model: MODEL, reasoningEffort: null } })
   const events = await turn(session, "Hi.")
   const retries = events.filter((item) => item.type === "retry.scheduled")
   expect(retries).toHaveLength(2)

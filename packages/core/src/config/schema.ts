@@ -28,6 +28,7 @@ import { type McpConfigSection, parseMcpSection } from "../mcp/config.ts"
 import { type MemoryConfigSection, parseMemorySection } from "../memory/config.ts"
 import { type SandboxConfigSection, parseSandboxSection } from "../sandbox/config.ts"
 import { type SkillsConfigSection, parseSkillsSection } from "../skills/config.ts"
+import { DEFAULT_TITLE_MODEL } from "../titles/title.ts"
 import { type TelemetryConfigSection, parseTelemetrySection } from "../telemetry/config.ts"
 import { DecodeError, type Infer, type Validator, integer, nonEmptyString, oneOf, string } from "../validate.ts"
 import { type WakeConfigSection, parseWakeSection } from "../wake/config.ts"
@@ -158,6 +159,8 @@ const baseFile = section({
   $schema: string,
   model: nonEmptyString,
   effort: nonEmptyString,
+  titles: oneOf(["generate", "off"]),
+  titleModel: nonEmptyString,
   checks: checkList,
   /**
    * Checks a project's file cannot replace, remove or switch off (`verify/required.ts`). Never merged like the
@@ -253,6 +256,9 @@ export interface CheckConfig {
 
 /** The effective configuration: both files merged, defaults applied. */
 export interface Config {
+  /** Optional for callers supplying a configuration directly. The file resolver applies the defaults. */
+  readonly titles?: "generate" | "off"
+  readonly titleModel?: string
   readonly model: string | null
   readonly effort: string | null
   readonly checks: readonly CheckConfig[]
@@ -290,6 +296,8 @@ export function resolveChecks(list: ConfigFile["checks"]): CheckConfig[] {
 /** Applies the defaults to a merged file. */
 export function resolveConfig(file: ConfigFile): Config {
   return {
+    titles: file.titles ?? "generate",
+    titleModel: file.titleModel ?? DEFAULT_TITLE_MODEL,
     model: file.model ?? null,
     effort: file.effort ?? null,
     checks: resolveChecks(file.checks),

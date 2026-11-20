@@ -34,6 +34,7 @@
  * Nothing from the sign-in is read. The only header written is `session-id`,
  * which is the session's prompt-cache key (the ID of its root session).
  */
+import { storedTitleRequest } from "../titles/title.ts"
 import { brand } from "../brand.ts"
 import type { StoredEvent } from "../event/durable.ts"
 import type { SessionId } from "../id.ts"
@@ -152,15 +153,22 @@ export function exportSession(store: Store, sessionId: SessionId, options: Expor
   let previousRequest: CanonicalTraceRequest | null = null
   // Declarations of calls that have no record, waiting for the next record.
   let carried: PrefixBreakHint[] = []
-  const calls = rows.map((row, index): ExportedCall => {
+  let previousRow: RequestRecord | null = null
+  const calls = rows.map((row): ExportedCall => {
     const start = starts.get(row)
+    const rebuilt = rebuild(store, row, start, starts.failure, options)
+    const request = "request" in rebuilt ? rebuilt.request : null
+    if (row.purpose === "title") {
+      // The title has its own prefix. A call in this lane never changes what the next turn is compared with.
+      const record = row.usage === null ? null : toRecord(row, rebuilt, [], { ...options, lane: options.lane ? `${options.lane}/title` : "title" }, sessionId)
+      return { row, startSeq: start?.seq ?? null, request, unverified: "unverified" in rebuilt ? rebuilt.unverified : null, breaks: [], declared: [], hinted: [], record }
+    }
     const before = previousStart
     const since = start === null || before === null ? [] : events.filter((event) => event.seq > before.seq && event.seq <= start.seq)
     if (start !== null) previousStart = start
     const breaks = prefixBreakCauses(since)
-    const rebuilt = rebuild(store, row, start, starts.failure, options)
-    const request = "request" in rebuilt ? rebuilt.request : null
-    const declared = [...declare(since, { row, start }, { row: rows[index - 1] ?? null, start: before }, previousRequest), ...summaryBreak(row, start, request, previousRequest)]
+    const declared = [...declare(since, { row, start }, { row: previousRow, start: before }, previousRequest), ...summaryBreak(row, start, request, previousRequest)]
+    previousRow = row
     if (request !== null) previousRequest = request
     const hinted = [...carried, ...declared]
     const hints: TraceHint[] = [
@@ -229,6 +237,9 @@ function startPoints(events: readonly StoredEvent[]) {
       break
     }
     const point = { seq: event.seq, projection: state }
+    const delivered = state.messages.at(-1)
+    if (event.type === "inbox.delivered" && delivered?.kind === "user" && delivered.titlePrompt !== undefined)
+      steps.set(startKey("title", event.data.messageId, 1), point)
     if (event.type === "step.started") steps.set(startKey("step", event.data.messageId, event.data.attempt), point)
     if (event.type === "compaction.started") summaries.set(event.data.messageId, [{ fromAttempt: 1, point: { ...point, appended: 1 } }])
     if (event.type === "compaction.repair_requested")
@@ -242,7 +253,7 @@ function startPoints(events: readonly StoredEvent[]) {
   const get = (key: { readonly purpose: string; readonly messageId: string; readonly attempt: number }): StartPoint | null =>
     key.purpose === "compaction"
       ? (summaries.get(key.messageId)?.findLast((entry) => entry.fromAttempt <= key.attempt)?.point ?? null)
-      : (steps.get(startKey(key.purpose, key.messageId, key.attempt)) ?? null)
+      : (steps.get(startKey(key.purpose, key.messageId, key.purpose === "title" ? 1 : key.attempt)) ?? null)
   return { get, failure }
 }
 
@@ -268,11 +279,12 @@ function rebuild(
     return foldFailure !== null
       ? fail("fold_failed", `cannot rebuild: ${foldFailure}`)
       : fail("no_start_event", `no event starts ${row.purpose} call ${row.messageId} attempt ${row.attempt}`)
-  const built = attempt(() =>
-    row.purpose === "compaction"
+  const built = attempt(() => {
+    if (row.purpose === "title") return storedTitleRequest(start.projection, row.messageId, row.model)
+    return row.purpose === "compaction"
       ? buildCompactionRequest(start.projection, options.callOptions, row.messageId)
-      : (options.buildStep ?? buildRequest)(start.projection, { ...options.callOptions, toolChoice: "auto" }),
-  )
+      : (options.buildStep ?? buildRequest)(start.projection, { ...options.callOptions, toolChoice: "auto" })
+  })
   if ("error" in built) return fail("build_failed", `the request builder failed: ${built.error}`)
   const hashes = hashRequest(built.value)
   const index = firstDifference(row.blocks, hashes)

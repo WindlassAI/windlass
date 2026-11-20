@@ -21,6 +21,7 @@ import { revertScenarios } from "./revert.ts"
 import type { Scenario } from "./script.ts"
 import { shutdownScenarios } from "./shutdown.ts"
 import { steeringScenarios } from "./steering.ts"
+import { generatedTitle } from "./titles.ts"
 import { verificationScenarios } from "./verification.ts"
 
 export * from "./script.ts"
@@ -44,6 +45,7 @@ export const families: Record<string, readonly Scenario[]> = {
   "Hooks and diagnostics": hookScenarios,
   "Slash commands and telemetry": commandScenarios,
   "Code mode": codeModeScenarios,
+  "Session titles": [generatedTitle],
 }
 
 /**

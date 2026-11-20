@@ -134,11 +134,11 @@ add `approval.requested` and `approval.answered` between `tool.called` and `tool
 
 ## The events
 
-61 event types, in 15 groups. In the tables, "Required: may be absent" marks a field that can be left out of `data`; every other field is always present (inside an object that is itself present), and a type that ends in "or `null`" may be `null`. A field inside an object or a list is written with dots (`work.command`, `paths[].real`); "when `kind: ...`" marks the fields of one shape of a union. Shapes used in several places are under [Shared shapes](#shared-shapes).
+62 event types, in 15 groups. In the tables, "Required: may be absent" marks a field that can be left out of `data`; every other field is always present (inside an object that is itself present), and a type that ends in "or `null`" may be `null`. A field inside an object or a list is written with dots (`work.command`, `paths[].real`); "when `kind: ...`" marks the fields of one shape of a union. Shapes used in several places are under [Shared shapes](#shared-shapes).
 
 | Group | Events |
 | --- | --- |
-| session lifecycle | [`session.created`](#sessioncreated), [`settings.changed`](#settingschanged), [`session.renamed`](#sessionrenamed), [`session.archived`](#sessionarchived), [`session.unarchived`](#sessionunarchived) |
+| session lifecycle | [`session.created`](#sessioncreated), [`settings.changed`](#settingschanged), [`session.renamed`](#sessionrenamed), [`session.title_usage`](#sessiontitle_usage), [`session.archived`](#sessionarchived), [`session.unarchived`](#sessionunarchived) |
 | frozen request prefix | [`baseline.set`](#baselineset), [`instruction.appended`](#instructionappended), [`agent.switched`](#agentswitched) |
 | inbox | [`inbox.enqueued`](#inboxenqueued), [`command.expanded`](#commandexpanded), [`inbox.delivery_changed`](#inboxdelivery_changed), [`inbox.cancelled`](#inboxcancelled), [`inbox.delivered`](#inboxdelivered), [`turn.ended`](#turnended), [`synthetic.appended`](#syntheticappended) |
 | execution | [`execution.started`](#executionstarted), [`execution.resumed`](#executionresumed), [`execution.succeeded`](#executionsucceeded), [`execution.failed`](#executionfailed), [`execution.interrupt_requested`](#executioninterrupt_requested), [`execution.interrupted`](#executioninterrupted) |
@@ -186,11 +186,24 @@ The session's model or reasoning effort changed, from here on. Accepted only at 
 
 Version 1.
 
-The session's title was set.
+The session's title was set. A generated title can only fill an empty title.
 
 | Field | Type | Required |
 | --- | --- | --- |
 | `title` | string | yes |
+| `generated` | `true` | may be absent |
+
+### `session.title_usage`
+
+Version 1.
+
+The usage a background title request reported, including a request whose answer was discarded.
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `messageId` | string, not empty | yes |
+| `model` | string, not empty | yes |
+| `usage` | [usage](#usage) | yes |
 
 ### `session.archived`
 
@@ -264,6 +277,7 @@ Input was admitted and is waiting to be delivered. `messageId` is the ID the mes
 | `origin` | string, not empty, or `null` | yes |
 | `delivery` | one of `"steer"`, `"queue"` | yes |
 | `content` | [content](#content) | yes |
+| `titlePrompt` | string | may be absent |
 | `untrusted` | [untrustedInput](#untrustedinput) | may be absent |
 
 ### `command.expanded`

@@ -174,10 +174,10 @@ CREATE TABLE request (
   ordinal             INTEGER PRIMARY KEY AUTOINCREMENT,
   id                  TEXT NOT NULL UNIQUE,
   session_id          TEXT NOT NULL REFERENCES session (id),
-  -- The assistant or compaction message the call serves.
+  -- The assistant or compaction message the call serves, or the first user message for a title.
   message_id          TEXT NOT NULL,
   attempt             INTEGER NOT NULL,
-  -- step | compaction
+  -- step | compaction | title
   purpose             TEXT NOT NULL,
   model               TEXT NOT NULL,
   -- The provider that served the call, by its own name (Provider.id).

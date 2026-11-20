@@ -505,7 +505,7 @@ export const HAND_EDIT_OPTIONS = { overwrite: "overwrite", keep: "keep", cancel:
 /** Token counts of one model call, as the harness stores them. */
 export interface UsageNotification {
   readonly sessionId: string
-  /** The assistant (or compaction) message the call served. */
+  /** The assistant or compaction message the call served, or the first user message for a title. */
   readonly messageId: string
   readonly model: string | null
   readonly usage: {
