@@ -2114,6 +2114,7 @@ describe("the loop writes each scenario's events", () => {
       hostCalls.length = 0
       exportedSpans = []
       const h = new Harness({
+        ...(family === "Session titles" ? { models: ["gpt-test", "gpt-6-luna"] } : {}),
         ...(cwd === undefined ? {} : { cwd }),
         ...(features?.skills === true ? { skills: { configDir: join(dirname(cwd!), "config") } } : {}),
         // One scripted server of the user's own, slow to start, so that the first request is out before it connects.

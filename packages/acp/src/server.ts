@@ -789,7 +789,7 @@ class ConnectionState {
     })
     return {
       defaultModel: this.harness.defaults.model,
-      models: models.map((model) => ({ ...model, efforts: [...model.efforts] })),
+      models: models.map(({ id, name, efforts, defaultEffort, contextWindow }) => ({ id, name, efforts: [...efforts], defaultEffort, contextWindow })),
     }
   }
 

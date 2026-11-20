@@ -108,7 +108,10 @@ takes the harness's events, after that turn's events), with the files it changed
 
 **Titles.** The first user prompt gives an unnamed session an immediate display title from its opening line.
 With `titles: "generate"` (the default), the engine also requests a short title in the background using the session's
-provider and the configured `titleModel`. Only the first 1,000 characters of user text are eligible. ACP resource
+provider. The engine uses the configured `titleModel` if the account offers it. With no explicit setting,
+it selects a model from the same catalog used for model selection.
+An unavailable explicit model or an unreadable or unusable catalog leaves the opening line in place.
+Only the first 1,000 characters of user text are eligible. ACP resource
 blocks and slash-command file contents are excluded. A successful result writes `session.renamed` with
 `generated: true`. The client receives a standard `session/update` with `sessionUpdate: "session_info_update"`
 and `title`. The stored title also appears in `session/list`, `_windlass/session` and on load or resume.

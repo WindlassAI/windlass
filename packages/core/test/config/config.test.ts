@@ -48,7 +48,7 @@ describe("defaults", () => {
   test("no files: no model, no checks, gate mode with three rounds", async () => {
     const { home, repo } = layout()
     const loaded = await loadConfig({ cwd: repo, home, env: {} })
-    expect(loaded.config).toEqual({ model: null, effort: null, titles: "generate", titleModel: "gpt-6-luna", checks: [], verify: { mode: "gate", maxRounds: 3 } })
+    expect(loaded.config).toEqual({ model: null, effort: null, titles: "generate", titleModel: null, checks: [], verify: { mode: "gate", maxRounds: 3 } })
     expect(loaded.sources).toEqual([])
     expect(loaded.projectFile).toBeNull()
     expect(loaded.projectDir).toBe(repo)

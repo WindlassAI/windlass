@@ -64,7 +64,7 @@ export async function serveStdio(options: StdioOptions): Promise<number> {
   // The same harness the command line builds: one data directory, a store per session, the saved sign-in. Its lines
   // (the engine's diagnostics, notices about the data directory) are what the command line prints as warnings too.
   const fires = firesWakeUps(options.env)
-  const harness = createHarness({ log: (line) => log.warn(line), ...(provider === undefined ? {} : { provider }), ...(fires ? { engine: { wake: { run: true } } } : {}) })
+  const harness = createHarness({ log: (line) => log.warn(line), ...(provider === undefined ? {} : { provider }), engine: { debug: log.debug, ...(fires ? { wake: { run: true } } : {}) } })
   // The scheduler and the webhook listener start with the engine, not with the first session: a wake-up that is
   // due is delivered although the client has opened nothing yet.
   if (fires) void harness.engine.wake()

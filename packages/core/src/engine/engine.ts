@@ -52,6 +52,7 @@ import { existsSync, mkdirSync, realpathSync, rmdirSync, statSync } from "node:f
 import { realpath } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join, relative, resolve, sep } from "node:path"
+import { debuglog } from "node:util"
 import type { AgentDefinition } from "../agents/discover.ts"
 import type { CommandDefinition } from "../commands/discover.ts"
 import { type BuiltinCommand, type CommandListing, type CommandLookup, listCommands, lookupCommand } from "../commands/lookup.ts"
@@ -71,7 +72,7 @@ import { type CallRun, type ChoiceId, TaintHistory, inheritableTaint } from "../
 import { redact, unfinishedSecret } from "../approval/redact.ts"
 import { type TaintState, deriveTaint, describeTaint } from "../approval/taint.ts"
 import { approvedNote, declinedMessage } from "../approval/texts.ts"
-import { DEFAULT_TITLE_MODEL, cleanTitle, titleExcerpt, titleRequest } from "../titles/title.ts"
+import { chooseTitleModel, cleanTitle, titleExcerpt, titleRequest } from "../titles/title.ts"
 import { brand } from "../brand.ts"
 import { type LoadedConfig, loadConfig, loadConfigSync } from "../config/load.ts"
 import { type CheckConfig, resolveConfig } from "../config/schema.ts"
@@ -117,7 +118,7 @@ import type { Json } from "../json.ts"
 import type { LspPlan } from "../lsp/config.ts"
 import type { LspNotice } from "../lsp/registry.ts"
 import { selectModelHistory } from "../message/history.ts"
-import { type AssistantMessage, type Projection, type ToolCallPart, hasSideEffect, watchInForce } from "../message/message.ts"
+import { type AssistantMessage, type InboxItem, type Projection, type ToolCallPart, hasSideEffect, watchInForce } from "../message/message.ts"
 import { reduce } from "../message/reducer.ts"
 import { type ProviderError, makeProviderError } from "../provider/error.ts"
 import { SIGNED_IN_PROVIDER, type FinishReason, type Provider, type ResponseFacts, type StreamEvent } from "../provider/provider.ts"
@@ -377,6 +378,9 @@ export class EngineError extends Error {
 /** One model the provider offers, as `EngineOptions.listModels` reports it. */
 export interface ModelOffer {
   readonly id: string
+  readonly name?: string
+  readonly description?: string
+  readonly supportedInApi?: boolean
   /** The reasoning efforts the model accepts. Absent or empty: not known, and an effort is not checked. */
   readonly efforts?: readonly string[]
 }
@@ -432,6 +436,8 @@ export interface EngineOptions {
   readonly onDiagnostic?: (diagnostic: Diagnostic) => void
   /** One line per diagnostic. Defaults to standard error. */
   readonly log?: (line: string) => void
+  /** Optional background decisions, visible only at debug level. */
+  readonly debug?: (line: string) => void
   /**
    * Throw `PrefixViolationError` when a request breaks the cached prefix with
    * no event that allows it. Tests set this; a user's session reports the
@@ -470,7 +476,7 @@ export interface EngineOptions {
    * the loop makes before it sends a request. Without it, or when the
    * listing fails, a model and an effort are not checked before the first call.
    */
-  readonly listModels?: () => Promise<readonly (string | ModelOffer)[]>
+  readonly listModels?: (signal?: AbortSignal) => Promise<readonly (string | ModelOffer)[]>
   /**
    * `loadConfig` without waiting, for the two things that cannot wait for an
    * execution to read the files: how a session's calls are decided, asked
@@ -1425,8 +1431,11 @@ interface Core {
   readonly loadConfigSync: ((cwd: string) => SessionConfig) | null
   /** The provider's models as they were last listed; `null` before the first listing, or without one. */
   readonly offered: () => readonly ModelOffer[] | null
-  /** Lists the provider's models and keeps the listing; the last one when that fails. `null`: nobody knows. */
-  readonly listOffered: (() => Promise<readonly ModelOffer[] | null>) | null
+  /** A fresh listing for the title job. It never changes which conversation settings are allowed. */
+  readonly readOffers: ((signal?: AbortSignal) => Promise<readonly ModelOffer[] | null>) | null
+  /** A settings check retains the latest nonempty listing, reusing a concurrent read when available. */
+  readonly listOffered: ((pending?: Promise<readonly ModelOffer[] | null> | null) => Promise<readonly ModelOffer[] | null>) | null
+  readonly debug: (line: string) => void
 }
 
 export function createEngine(options: EngineOptions): Engine {
@@ -1551,9 +1560,17 @@ export function createEngine(options: EngineOptions): Engine {
   const features = mine([skill, bridge.search as unknown as AnyTool, bridge.call as unknown as AnyTool, ...wakeToolset, ...memoryToolset, ...(coder === null ? [] : [coder])])
   // The provider's models, as last listed: what settings are checked against without another request.
   let offered: readonly ModelOffer[] | null = null
-  const listOffered = async (): Promise<readonly ModelOffer[] | null> => {
-    const listed = await options.listModels!().catch(() => null)
-    if (listed !== null && listed.length > 0) offered = listed.map((entry) => (typeof entry === "string" ? { id: entry } : entry))
+  const readOffers = async (signal?: AbortSignal): Promise<readonly ModelOffer[] | null> => {
+    try {
+      const listed = await options.listModels!(signal)
+      return listed.map((entry) => typeof entry === "string" ? { id: entry } : entry)
+    } catch {
+      return null
+    }
+  }
+  const listOffered = async (pending?: Promise<readonly ModelOffer[] | null> | null) => {
+    const models = await (pending ?? readOffers())
+    if (models?.length) offered = models
     return offered
   }
   const runnable = [...options.tools.filter((tool) => tool !== acknowledge), ...history, ...own, ...features, acknowledge]
@@ -1639,6 +1656,8 @@ export function createEngine(options: EngineOptions): Engine {
     origins: new Map(runnable.flatMap((tool) => (tool.origin === undefined ? [] : [[tool.name, tool.origin] as const]))),
     loadConfigSync: options.loadConfigSync !== undefined ? options.loadConfigSync : options.loadConfig === undefined ? (cwd) => loadConfigSync({ cwd }) : null,
     offered: () => offered,
+    debug: options.debug ?? debuglog(brand.binary),
+    readOffers: options.listModels === undefined ? null : readOffers,
     listOffered: options.listModels === undefined ? null : listOffered,
   }
   let closing: Promise<void> | null = null
@@ -2077,6 +2096,8 @@ class LiveSession implements EngineSession {
   private closing: Promise<void> | null = null
   /** Only the first delivered user message is eligible, including when a session resumes. */
   private titleChecked = false
+  /** An in-flight title lookup can also answer the turn’s settings check. */
+  private titleOffers: Promise<readonly ModelOffer[] | null> | null = null
   private titleJob: { controller: AbortController; done: Promise<void> } | null = null
   /** The configuration the execution in progress runs under, read when it started. `null`: nothing is verified. */
   private config: SessionConfig | null = null
@@ -2545,23 +2566,43 @@ class LiveSession implements EngineSession {
     return { titlePrompt: titleExcerpt(value) }
   }
 
-  private startTitle(ready: Projection): void {
+  private startTitle(ready: Projection, arriving: readonly InboxItem[]): void {
     if (this.titleChecked || this.core.provider.id !== SIGNED_IN_PROVIDER || this.director !== null) return
     const first = ready.messages.find((message) => message.kind === "user")
     if (!first) return
     this.titleChecked = true
     if (ready.session.title !== null || this.config?.config.titles === "off" || !first.titlePrompt?.trim() || this.closing !== null) return
-    const request = titleRequest(first.titlePrompt, this.config?.config.titleModel ?? DEFAULT_TITLE_MODEL)
     const controller = new AbortController()
-    const done = Promise.resolve().then(() => this.generateTitle(first.id, request, controller.signal)).catch(() => {})
+    const firstDelivery = arriving.some((item) => item.messageId === first.id)
+    const done = this.generateTitle(first.id, first.titlePrompt, firstDelivery, controller.signal).catch(() => {})
     this.titleJob = { controller, done }
   }
 
-  private async generateTitle(messageId: MessageId, request: ModelRequest, signal: AbortSignal): Promise<void> {
-    // The ledger reserves each attempt before contacting the provider, including one cut short by a crash.
+  private async generateTitle(messageId: MessageId, prompt: string, firstDelivery: boolean, signal: AbortSignal): Promise<void> {
     const previous = this.store.lastRequest(this.id, "title")
-    if (previous?.outcome === "ok") return
+    if (previous?.outcome === "ok" || (previous?.attempt ?? 0) >= 2) return
+    const configured = this.config?.config.titleModel ?? null
+    let model = previous?.model ?? null
+    if (model === null) {
+      // A skipped lookup stays skipped on resume. Only the original delivery reads the catalog.
+      if (!firstDelivery || this.core.readOffers === null) return
+      const lookup = AbortSignal.any([signal, AbortSignal.timeout(5000)])
+      this.titleOffers = this.core.readOffers(lookup)
+      const offers = await this.titleOffers
+      this.titleOffers = null
+      if (offers === null || lookup.aborted) return
+      model = chooseTitleModel(offers, configured)
+      if (model === null) {
+        if (configured !== null) this.core.debug(`Skipping session title: configured titleModel ${JSON.stringify(configured)} is unavailable.`)
+        return
+      }
+    } else if (configured !== null && configured !== model) {
+      // A retry after resume can only use the already selected model.
+      return
+    }
+    const request = titleRequest(prompt, model)
     const blocks = hashRequest(request)
+    // The ledger reserves each attempt before contacting the provider, including one cut short by a crash.
     for (let attempt = (previous?.attempt ?? 0) + 1; attempt <= 2 && !signal.aborted; attempt++) {
       if (this.projection().session.title !== null) return
       const call = await this.callModel(signal, { purpose: "title", request, messageId, attempt, blocks, limitMs: 15_000, maxOutputChars: 256 })
@@ -3282,7 +3323,7 @@ class LiveSession implements EngineSession {
         ])
 
       const ready = this.projection()
-      this.startTitle(ready)
+      this.startTitle(ready, arriving)
       const input = turnInput(ready)
       const limit = (input === undefined ? undefined : this.turnLimits.get(input.id)) ?? limits.stepLimit
       const steps = stepsThisTurn(ready)
@@ -3344,7 +3385,7 @@ class LiveSession implements EngineSession {
     const list = this.core.listOffered
     const known = this.core.offered()
     if (known === null && list === null) return null
-    return (known !== null ? Promise.resolve(known) : list!()).then((models) => {
+    return (known !== null ? Promise.resolve(known) : list!(this.titleOffers)).then((models) => {
       this.checkedSettings = key
       const problem = models === null ? null : settingsProblem(settings, models)
       return problem !== null && problem.code === "unknown_effort" ? problem.message : null

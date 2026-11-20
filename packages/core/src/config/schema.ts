@@ -28,7 +28,6 @@ import { type McpConfigSection, parseMcpSection } from "../mcp/config.ts"
 import { type MemoryConfigSection, parseMemorySection } from "../memory/config.ts"
 import { type SandboxConfigSection, parseSandboxSection } from "../sandbox/config.ts"
 import { type SkillsConfigSection, parseSkillsSection } from "../skills/config.ts"
-import { DEFAULT_TITLE_MODEL } from "../titles/title.ts"
 import { type TelemetryConfigSection, parseTelemetrySection } from "../telemetry/config.ts"
 import { DecodeError, type Infer, type Validator, integer, nonEmptyString, oneOf, string } from "../validate.ts"
 import { type WakeConfigSection, parseWakeSection } from "../wake/config.ts"
@@ -258,7 +257,7 @@ export interface CheckConfig {
 export interface Config {
   /** Optional for callers supplying a configuration directly. The file resolver applies the defaults. */
   readonly titles?: "generate" | "off"
-  readonly titleModel?: string
+  readonly titleModel?: string | null
   readonly model: string | null
   readonly effort: string | null
   readonly checks: readonly CheckConfig[]
@@ -297,7 +296,7 @@ export function resolveChecks(list: ConfigFile["checks"]): CheckConfig[] {
 export function resolveConfig(file: ConfigFile): Config {
   return {
     titles: file.titles ?? "generate",
-    titleModel: file.titleModel ?? DEFAULT_TITLE_MODEL,
+    titleModel: file.titleModel ?? null,
     model: file.model ?? null,
     effort: file.effort ?? null,
     checks: resolveChecks(file.checks),

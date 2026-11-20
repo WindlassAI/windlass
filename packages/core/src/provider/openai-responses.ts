@@ -257,6 +257,7 @@ export interface ModelInfo {
   readonly slug: string
   /** Shown to the user. */
   readonly displayName: string
+  readonly description?: string
   /** `list` entries are offered to the user; `hide` entries are not. */
   readonly visibility: string
   readonly supportedInApi: boolean
@@ -322,6 +323,7 @@ export async function listModels(options: {
       {
         slug,
         displayName: stringOr(entry.display_name) ?? slug,
+        ...(typeof entry.description === "string" ? { description: entry.description } : {}),
         visibility: stringOr(entry.visibility) ?? "list",
         supportedInApi: entry.supported_in_api !== false,
         contextWindow: typeof entry.context_window === "number" ? entry.context_window : null,

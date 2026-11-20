@@ -140,7 +140,9 @@ windlass --session ses_9acf "and run it"
 - `windlass --list-sessions` lists the sessions of the current directory, newest first: ID, last use, model, title.
   A new session first shows the opening line of your prompt. By default, a background request then names it from
   up to 1,000 characters of the text you typed. Attachments, command-file expansions, answers and tool output are
-  excluded. If both attempts fail, the opening line stays. Scripted sessions and demos keep their prompt titles.
+  excluded. Title selection reads the catalog at most once per session. If the list is unreadable, has no usable model,
+  or omits your explicit `titleModel`, the opening line stays. It also stays if both title attempts fail.
+  Scripted sessions and demos keep their prompt titles.
   `--json` prints one JSON object per line.
 - A run with `--json` writes every event as one JSON line, and after each turn's last event one line of its own,
   `{"type":"cli.summary", "outcome", "steps", "durationMs", "usage", "cachedShare", ...}`: what the end of the
@@ -289,7 +291,7 @@ Every key:
 | `model` | the model for new sessions |
 | `effort` | the reasoning effort for new sessions |
 | `titles` | `generate` (default) asks for a short session title in the background. `off` keeps the first-prompt title. |
-| `titleModel` | model ID for title requests, using the session's sign-in. Defaults to `gpt-6-luna` at low effort. Other models use their default effort. |
+| `titleModel` | Optional model ID from the signed-in account’s `--models` catalog. By default, titles use `gpt-6-luna` at low effort when offered. Next come models described as fast, affordable or suited to simple tasks, then models named nano, then mini or small. Ties and unmarked models follow catalog order. Other models use their default effort. |
 | `checks` | the project's checks, a list (below) |
 | `requiredChecks` | checks that a project's file cannot replace or switch off, a list like `checks` ("Required checks" below). Only your own file: a project's is not followed |
 | `verify` | what is done with the checks (below) |

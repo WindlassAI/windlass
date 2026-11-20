@@ -449,7 +449,7 @@ function modelsRoute(incoming: Request, scenario: string) {
   if (scenario === "models-bad") return json(200, { data: [] })
   return json(200, {
     models: [
-      { slug: "gpt-6-luna", display_name: "GPT-6 Luna", visibility: "list", supported_in_api: true, context_window: 400000, supported_reasoning_levels: [{ effort: "low", description: "x" }, { effort: "medium" }], default_reasoning_level: "medium" },
+      { slug: "gpt-6-luna", display_name: "GPT-6 Luna", description: "Fast and affordable", visibility: "list", supported_in_api: true, context_window: 400000, supported_reasoning_levels: [{ effort: "low", description: "x" }, { effort: "medium" }], default_reasoning_level: "medium" },
       { slug: "gpt-hidden", display_name: "Hidden", visibility: "hide" },
       { slug: "gpt-6-sol", display_name: "GPT-6 Sol", visibility: "list" },
     ],
@@ -463,6 +463,7 @@ describe("listModels", () => {
     expect(models[0]).toEqual({
       slug: "gpt-6-luna",
       displayName: "GPT-6 Luna",
+      description: "Fast and affordable",
       visibility: "list",
       supportedInApi: true,
       contextWindow: 400000,

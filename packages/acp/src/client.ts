@@ -1028,7 +1028,7 @@ async function memoryTransport(transport: Extract<Transport, { kind: "memory" }>
       log?.(own[2]!, own[1] as LogLevel)
     },
   })
-  const harness = createHarness({ log: (line) => logger.warn(line), ...transport.harness })
+  const harness = createHarness({ log: (line) => logger.warn(line), ...transport.harness, engine: { debug: logger.debug, ...transport.harness?.engine } })
   // Copied as JSON, as the wire would: neither side keeps a reference to the other's objects.
   const wire = () => new TransformStream<object, object>({ transform: (message, controller) => controller.enqueue(JSON.parse(JSON.stringify(message))) })
   const toClient = wire()

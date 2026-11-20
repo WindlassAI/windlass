@@ -21,11 +21,11 @@ import { AUTH_UNREACHABLE, AuthError, HANDED_IN_REJECTED, aboutHandedIn, accessT
 import { brand } from "./brand.ts"
 import { loadConfig } from "./config/load.ts"
 import { environmentSecrets } from "./engine/approval.ts"
-import { type Engine, type EngineOptions, createEngine } from "./engine/engine.ts"
+import { type Engine, type EngineOptions, type ModelOffer, createEngine } from "./engine/engine.ts"
 import type { SessionSettings } from "./event/durable.ts"
 import type { ProviderError } from "./provider/error.ts"
 import { ModelListError, OpenAIResponsesProvider, listModels } from "./provider/openai-responses.ts"
-import type { Provider } from "./provider/provider.ts"
+import { type Provider, SIGNED_IN_PROVIDER } from "./provider/provider.ts"
 import { type CommandSandbox, createCommandSandbox } from "./sandbox/command.ts"
 import { type SessionDirectory, openSessionDirectory } from "./store/directory.ts"
 import type { AnyTool } from "./tool/tool.ts"
@@ -55,8 +55,7 @@ export function testContextWindow(env: Record<string, string | undefined> = proc
 }
 
 /** One model the account offers. */
-export interface ModelEntry {
-  readonly id: string
+export interface ModelEntry extends ModelOffer {
   /** A name to show; the ID when the provider gives none. */
   readonly name: string
   /** Reasoning efforts the model accepts; empty when it has none. */
@@ -218,6 +217,25 @@ export function createHarness(options: HarnessOptions = {}): Harness {
           return token
         }
 
+  const accountModels = async (signal?: AbortSignal): Promise<readonly ModelEntry[]> => {
+    if (options.models !== undefined) return options.models(signal)
+    if (options.provider !== undefined) return []
+    const models = await listModels({ accessToken, ...(signal === undefined ? {} : { signal }) }).catch((error: unknown) => {
+      // A handed-in token the provider rejected: the listing says so, and not to sign in here.
+      if (secrets === null || !(error instanceof ModelListError)) throw error
+      throw new ModelListError(rejectedHandedIn(error.error))
+    })
+    return models.map((model) => ({
+      id: model.slug,
+      name: model.displayName,
+      supportedInApi: model.supportedInApi,
+      ...(model.description !== undefined && { description: model.description }),
+      efforts: model.reasoningEfforts,
+      defaultEffort: model.defaultReasoningEffort,
+      contextWindow: model.contextWindow,
+    }))
+  }
+
   const start = () => {
     if (closing !== null) throw new Error(`${brand.name} is shutting down`)
     if (running !== null) return running
@@ -258,11 +276,9 @@ export function createHarness(options: HarnessOptions = {}): Harness {
                 () => true,
                 () => false,
               ),
-            // What a model name is checked against. A provider of the caller's has no listing, so nothing is checked.
-            // What a model name and a reasoning effort are checked against, before a session is created with them and before a request is sent.
-            listModels: () => listModels({ accessToken }).then((models) => models.map((model) => ({ id: model.slug, efforts: model.reasoningEfforts }))),
           }
         : {}),
+      ...(provider.id === SIGNED_IN_PROVIDER ? { listModels: accountModels } : {}),
       log,
       ...options.engine,
       // With a provider of the caller's the window is the caller's to give; the test setting lowers either.
@@ -329,22 +345,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
         throw error
       }
     },
-    listModels: async (signal) => {
-      if (options.models !== undefined) return options.models(signal)
-      if (options.provider !== undefined) return []
-      const models = await listModels({ accessToken, ...(signal === undefined ? {} : { signal }) }).catch((error: unknown) => {
-        // A handed-in token the provider rejected: the listing says so, and not to sign in here.
-        if (secrets === null || !(error instanceof ModelListError)) throw error
-        throw new ModelListError(rejectedHandedIn(error.error))
-      })
-      return models.map((model) => ({
-        id: model.slug,
-        name: model.displayName,
-        efforts: model.reasoningEfforts,
-        defaultEffort: model.defaultReasoningEffort,
-        contextWindow: model.contextWindow,
-      }))
-    },
+    listModels: accountModels,
     settingsFor: async (cwd, asked = {}) => {
       // The same configuration the engine verifies with, so a test that switches it off switches this off too.
       const load = options.engine?.loadConfig === undefined ? (directory: string) => loadConfig({ cwd: directory }) : options.engine.loadConfig
