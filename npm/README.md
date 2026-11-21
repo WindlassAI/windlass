@@ -27,5 +27,5 @@ windlass tui              # the full-screen interface, in your project's folder
 windlass "fix the failing test"
 ```
 
-The [README](https://github.com/parthg1901/windlass#readme) and the
-[user guide](https://github.com/parthg1901/windlass/blob/main/docs/user-guide.md) have the rest. MIT licence.
+The [README](https://github.com/WindlassAI/windlass#readme) and the
+[user guide](https://github.com/WindlassAI/windlass/blob/main/docs/user-guide.md) have the rest. MIT licence.
