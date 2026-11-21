@@ -75,8 +75,8 @@ workflow on that tag, or by the maintainer by hand (the first release, below).
    bottom (the first release links to `releases/tag/v<version>`, later ones to `compare/v<previous>...v<version>`):
 
    ```
-   [Unreleased]: https://github.com/parthg1901/windlass/compare/v<version>...HEAD
-   [<version>]: https://github.com/parthg1901/windlass/releases/tag/v<version>
+   [Unreleased]: https://github.com/WindlassAI/windlass/compare/v<version>...HEAD
+   [<version>]: https://github.com/WindlassAI/windlass/releases/tag/v<version>
    ```
 
 2. Set `version` in the root `package.json` to the same version.
@@ -138,7 +138,7 @@ Steps, with `0.1.0` (its changelog section and the version in `package.json` are
 
    ```
    for pkg in windlass-agent windlass-agent-linux-x64 windlass-agent-linux-arm64 windlass-agent-darwin-x64 windlass-agent-darwin-arm64; do
-     npm trust github "$pkg" --file release.yml --repo parthg1901/windlass --allow-publish --yes
+     npm trust github "$pkg" --file release.yml --repo WindlassAI/windlass --allow-publish --yes
      sleep 2
    done
    ```

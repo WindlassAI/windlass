@@ -19,5 +19,5 @@ export const brand = {
    */
   npmPackage: "windlass-agent",
   /** The GitHub repository, `<owner>/<repo>`: releases, and the `repository` field of the npm packages. */
-  repository: "parthg1901/windlass",
+  repository: "WindlassAI/windlass",
 } as const

@@ -11,7 +11,7 @@ options, configuration keys, exit codes and environment variables here against t
 Node 18 or later, or Bun, only starts it. Leaving optional dependencies out (`--omit=optional`) leaves that package
 out too, and `windlass` then says which package is missing; `npm uninstall -g windlass-agent` removes both.
 
-Each [release](https://github.com/parthg1901/windlass/releases) also has an executable for Linux and macOS, x64 and
+Each [release](https://github.com/WindlassAI/windlass/releases) also has an executable for Linux and macOS, x64 and
 arm64, with `install.sh` and `SHA256SUMS`; the README's Install section has the commands to download, check and
 install one. To build instead you need [Bun](https://bun.sh) 1.4 and this repository with its dependencies installed
 (`bun install`).

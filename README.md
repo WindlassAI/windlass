@@ -26,12 +26,12 @@ for the sandbox. **From npm**, which installs the executable for your machine (N
 npm install -g windlass-agent
 ```
 
-**Or download an executable** from [Releases](https://github.com/parthg1901/windlass/releases), check it against
+**Or download an executable** from [Releases](https://github.com/WindlassAI/windlass/releases), check it against
 `SHA256SUMS` and install it with `install.sh`. For Linux on x64 (elsewhere, `linux-arm64`, `darwin-x64` or
 `darwin-arm64`):
 
 ```sh
-curl -fL --remote-name-all https://github.com/parthg1901/windlass/releases/latest/download/{windlass-linux-x64,build-info.json,install.sh,SHA256SUMS}
+curl -fL --remote-name-all https://github.com/WindlassAI/windlass/releases/latest/download/{windlass-linux-x64,build-info.json,install.sh,SHA256SUMS}
 shasum -a 256 -c --ignore-missing SHA256SUMS
 sh install.sh windlass-linux-x64
 ```
