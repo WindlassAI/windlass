@@ -24,11 +24,13 @@
  *   branch are removed. After a conflict or a failure the worktree is removed
  *   and the branch stays, with the child's work committed on it.
  */
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join, relative, resolve } from "node:path"
 import { brand } from "../brand.ts"
 import { type GitLayout, gitLayout, validGitLayout } from "../sandbox/git.ts"
+import { copyGitIndex, repositoryEntries } from "../sandbox/git-inspect.ts"
+import { type FileVersion, mergeComponents, versionOnDisk, writeVersion } from "./merge-files.ts"
 import type { WorktreeRecord } from "../event/durable.ts"
 
 export interface GitResult {
@@ -81,6 +83,10 @@ async function git(repo: Repository, args: readonly string[], options: { readonl
     if (keys.code !== 0) return refused("git could not read the repository configuration")
     if (new TextDecoder().decode(keys.stdout).split("\0").some((key) => unsafeKey.test(key)))
       return refused("the repository config names an include, external driver or work tree; run the subagent in the shared workspace")
+    if (["add", "status", "commit"].includes(args[0]!)) {
+      const nested = await repositoryEntries(repo.workTree, options.index ?? join(repo.gitDir, "index"), repo.gitDir)
+      if (nested.size) return refused(`the workspace contains ${[...nested].join(", ")}. Inspect it before using a subagent worktree.`)
+    }
     return await run(args)
   } catch (error) {
     return refused(error instanceof Error ? error.message : String(error))
@@ -117,7 +123,11 @@ export async function createWorktree(input: { readonly cwd: string; readonly dir
   try {
     const index = join(scratch, "index")
     const source = join(repository.gitDir, "index")
-    if (existsSync(source)) writeFileSync(index, readFileSync(source))
+    try {
+      copyGitIndex(source, index)
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error) }
+    }
     const added = await git(repository, ["add", "-A", "--ignore-errors", "."], { index })
     if (added.code !== 0 && added.code !== 1) return { error: `the workspace could not be recorded for the worktree: ${lastLine(added)}` }
     const tree = await git(repository, ["write-tree"], { index })
@@ -213,14 +223,8 @@ export async function salvageWorktree(worktree: WorktreeRecord, parent: Reposito
   }
 }
 
-interface FileVersion {
-  readonly bytes: Uint8Array
-  /** `100644`, `100755` or `120000`. */
-  readonly mode: string
-}
-
 async function versionAt(repository: Repository, commit: string, path: string): Promise<FileVersion | null> {
-  const listed = await git(repository, ["ls-tree", "-z", commit, "--", path])
+  const listed = await git(repository, ["--literal-pathspecs", "ls-tree", "-z", commit, "--", path])
   if (listed.code !== 0) throw new Error(lastLine(listed))
   const entry = text(listed)
   const match = /^(\d{6}) blob ([0-9a-f]+)\t/.exec(entry)
@@ -228,17 +232,6 @@ async function versionAt(repository: Repository, commit: string, path: string): 
   const blob = await git(repository, ["cat-file", "blob", match[2]!])
   if (blob.code !== 0) throw new Error(lastLine(blob))
   return { bytes: blob.stdout, mode: match[1]! }
-}
-
-function versionOnDisk(path: string): FileVersion | null {
-  try {
-    const info = lstatSync(path)
-    if (info.isSymbolicLink()) return { bytes: new TextEncoder().encode(readlinkSync(path)), mode: "120000" }
-    if (!info.isFile()) return null
-    return { bytes: readFileSync(path), mode: (info.mode & 0o111) !== 0 ? "100755" : "100644" }
-  } catch {
-    return null
-  }
 }
 
 const same = (a: FileVersion | null, b: FileVersion | null) =>
@@ -282,18 +275,19 @@ async function mergeNow(worktree: WorktreeRecord, parent: Repository, input: { r
   }
   const listed = await git(parent, ["diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", "--no-renames", worktree.base, tip])
   if (listed.code !== 0) return failed(lastLine(listed))
-  const files = new TextDecoder().decode(listed.stdout).split("\0").filter((path) => path !== "")
-  const writes: { readonly path: string; readonly result: FileVersion | null }[] = []
+  const files = new TextDecoder("utf-8", { fatal: true }).decode(listed.stdout).split("\0").filter((path) => path !== "")
+  const writes: { readonly path: string; readonly previous: FileVersion | null; readonly result: FileVersion | null }[] = []
   const conflicts: string[] = []
   const scratch = mkdtempSync(join(tmpdir(), `${brand.directory}-merge-`))
   try {
     for (const path of files) {
+      mergeComponents(path)
       const [origin, theirs] = await Promise.all([versionAt(parent, worktree.base, path), versionAt(parent, tip, path)])
-      const ours = versionOnDisk(join(worktree.repository, path))
+      const ours = versionOnDisk(parent.workTree, path)
       if (same(ours, theirs)) continue
       // The parent did not touch it since the branch started: the child's version is the result.
       if (same(ours, origin)) {
-        writes.push({ path, result: theirs })
+        writes.push({ path, previous: ours, result: theirs })
         continue
       }
       // Both changed it. Text merges line by line; a deletion on one side, a link, or a file with no common start does not.
@@ -305,8 +299,10 @@ async function mergeNow(worktree: WorktreeRecord, parent: Repository, input: { r
       ;[ours, origin, theirs].forEach((version, index) => writeFileSync(names[index]!, version.bytes))
       const merged = await git(parent, ["merge-file", "-p", names[0]!, names[1]!, names[2]!])
       if (merged.code !== 0) conflicts.push(path)
-      else writes.push({ path, result: { bytes: merged.stdout, mode: theirs.mode === origin.mode ? ours.mode : theirs.mode } })
+      else writes.push({ path, previous: ours, result: { bytes: merged.stdout, mode: theirs.mode === origin.mode ? ours.mode : theirs.mode } })
     }
+  } catch (error) {
+    return failed(error instanceof Error ? error.message : String(error))
   } finally {
     rmSync(scratch, { recursive: true, force: true })
   }
@@ -323,21 +319,21 @@ async function mergeNow(worktree: WorktreeRecord, parent: Repository, input: { r
     }
   }
   input.probe?.("computed")
-  let first = true
-  for (const { path, result } of writes) {
-    const target = join(worktree.repository, path)
-    if (result === null) rmSync(target, { force: true })
-    else {
-      mkdirSync(dirname(target), { recursive: true })
-      rmSync(target, { force: true })
-      if (result.mode === "120000") symlinkSync(new TextDecoder().decode(result.bytes), target)
-      else {
-        writeFileSync(target, result.bytes)
-        chmodSync(target, result.mode === "100755" ? 0o755 : 0o644)
-      }
+  let written = 0
+  try {
+    if (!stillPinned(parent)) return failed(changedRepository)
+    for (const { path, previous } of writes) {
+      if (!same(versionOnDisk(parent.workTree, path), previous)) return failed(`the merge target changed: ${path}`)
     }
-    if (first) input.probe?.("writing")
-    first = false
+    for (const { path, previous, result } of writes) {
+      writeVersion(parent.workTree, path, previous, result)
+      if (++written === 1) input.probe?.("writing")
+    }
+  } catch (error) {
+    return {
+      ...base, status: "failed", commit: tip, files, kept: true,
+      message: `The merge stopped after ${written} completed writes (${error instanceof Error ? error.message : String(error)}). Inspect the workspace before retrying. Its work is on branch ${worktree.branch}.`,
+    }
   }
   await removeWorktree(worktree, parent, { keepBranch: false })
   return {

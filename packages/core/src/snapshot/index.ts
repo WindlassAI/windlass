@@ -3,6 +3,7 @@
  * a private git directory, so every step can be diffed and undone. See
  * README.md for what is and is not captured.
  */
+import { nestedDirectories } from "../sandbox/git-inspect.ts"
 import { createHash, randomBytes } from "node:crypto"
 import { link, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
@@ -389,7 +390,7 @@ function createSnapshots(context: GitContext, workspace: string, given: string, 
     try {
       const untracked = splitNul(await text(["ls-files", "-z", "--others", "--exclude-standard"], run))
       // ls-files does not descend into a directory holding a repository; it lists it with a trailing slash.
-      const nested = untracked.filter((path) => path.endsWith("/")).map((path) => path.slice(0, -1))
+      const nested = nestedDirectories(untracked)
       const skipped: SkippedFile[] = []
       for (const path of untracked) {
         if (path.endsWith("/")) continue
