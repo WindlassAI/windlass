@@ -108,6 +108,14 @@ export interface CommandSandbox {
    * `plan` gives, and one without the sandbox the harness's own environment.
    */
   readonly environment?: CommandEnvironments
+  /**
+   * A command of the session runs outside the sandbox from now. The checks
+   * of the workspace's Git metadata around the session's sandboxed commands
+   * neither check nor restore while it runs, and take their baseline again
+   * when it has ended: what it changed is the user's. Call the returned
+   * function then. Absent in a stand-in that checks nothing.
+   */
+  readonly outside?: (sessionId: string) => () => Promise<void>
 }
 
 export interface CommandEnvironments {
@@ -164,12 +172,15 @@ export function createCommandSandbox(options: CommandSandboxOptions = {}): Comma
   /** The sessions that named variables for their commands, each with the names in force now. */
   const environments = new Map<string, CommandEnv>()
   /** By session and working directory: the Git baseline its commands are checked against, carried from one command to the next. */
-  const gitWatches = new Map<string, GitWatch>()
+  const gitWatches = new Map<string, { readonly sessionId: string; readonly watch: GitWatch }>()
+  /** Any sandboxed command of any session: one may write where another session's watch looks. */
+  const anyRunning = () => [...gitWatches.values()].some((entry) => entry.watch.busy())
   const watchFor = (sessionId: string, cwd: string, layout: ReturnType<typeof gitLayout>) => {
     const key = `${sessionId}\0${real(cwd)}`
     let found = gitWatches.get(key)
-    if (found === undefined) gitWatches.set(key, (found = gitWatch(cwd, layout)))
-    return found
+    // Under bubblewrap nothing of a command's sandbox outlives it; under Seatbelt a process can.
+    if (found === undefined) gitWatches.set(key, (found = { sessionId, watch: gitWatch(cwd, layout, { survivors: !bwrap, othersRunning: anyRunning }) }))
+    return found.watch
   }
   let base: string | null = null
 
@@ -250,6 +261,12 @@ export function createCommandSandbox(options: CommandSandboxOptions = {}): Comma
       if (!input.run.network) return checked
       // A download needs a cache it can write. The user's own stays read-only: what is in it runs outside the sandbox later.
       return { ...checked, env: { ...plan.env, BUN_INSTALL_CACHE_DIR: join(plan.env.TMPDIR ?? "/tmp", ".bun-install-cache") } }
+    },
+    outside: (sessionId) => {
+      const ends = [...gitWatches.values()].filter((entry) => entry.sessionId === sessionId).map((entry) => entry.watch.outside())
+      return async () => {
+        await Promise.all(ends.map((end) => end()))
+      }
     },
     confined: (input) => {
       // Under bubblewrap the root is mounted at /tmp; sandbox-exec leaves paths as they are.

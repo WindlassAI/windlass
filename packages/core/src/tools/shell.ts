@@ -122,11 +122,14 @@ async function runShell(
   const buffer = createOutputBuffer(Bun.file(spillPath).writer(), options.spillLimit, context)
 
   const inspectGit = await wrapped?.auditGit?.()
+  // A command outside the sandbox is the user's: what it changes in the Git metadata is not undone.
+  const outside = wrapped === null ? options.sandbox?.outside?.(context.sessionId) : undefined
   const spawned = spawn(wrapped ?? { argv: [options.shell, "-c", input.command], env: unsandboxedEnv(context, options), cwd: context.cwd })
   if (spawned instanceof Error) {
     void wrapped?.ended?.()
     // Nothing ran: the check is ended, so that the session's watch no longer counts it as running.
     void inspectGit?.().catch(() => {})
+    await outside?.()
     await buffer.close()
     await unlink(spillPath).catch(() => {})
     return {
@@ -174,6 +177,7 @@ async function runShell(
   if (!drained) await Promise.all(readers.map((reader) => reader.cancel().catch(() => {})))
   const finding = await inspectGit?.()
   if (finding) reportGitFinding(context, buffer, finding.message)
+  await outside?.()
   await buffer.close()
 
   return finish({
@@ -214,11 +218,13 @@ async function startBackground(
   // No progress events: the call is over long before the command prints anything.
   const buffer = createOutputBuffer(sink, options.spillLimit, { ...context, progress: () => {} })
   const inspectGit = await wrapped?.auditGit?.()
+  const outside = wrapped === null ? options.sandbox?.outside?.(context.sessionId) : undefined
   const spawned = spawn(wrapped ?? { argv: [options.shell, "-c", input.command], env: unsandboxedEnv(context, options), cwd: context.cwd })
   if (spawned instanceof Error) {
     void wrapped?.ended?.()
     // Nothing ran: the check is ended, so that the session's watch no longer counts it as running.
     void inspectGit?.().catch(() => {})
+    await outside?.()
     await buffer.close()
     await unlink(logPath).catch(() => {})
     return refused(`Could not start the command: ${spawned.message}`)
@@ -259,6 +265,7 @@ async function startBackground(
     if (!drained) await Promise.all(readers.map((reader) => reader.cancel().catch(() => {})))
     const finding = await inspectGit?.()
     if (finding) reportGitFinding(context, buffer, finding.message)
+    await outside?.()
     await buffer.close()
     return {
       exitCode: child.signalCode === null ? (finding?.violation && exitCode === 0 ? 1 : exitCode) : null,
