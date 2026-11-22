@@ -1,7 +1,10 @@
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs"
+import { type Stats, closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs"
 
-/** Read only the regular file we opened, without following a link, blocking on a pipe or allocating past the limit. */
-export function readGitFile(path: string, maxBytes: number): Buffer | null {
+/**
+ * Read only the regular file we opened, without following a link, blocking on a pipe or allocating past the limit.
+ * `opened` is told the status of the file that was read.
+ */
+export function readGitFile(path: string, maxBytes: number, opened?: (stat: Stats) => void): Buffer | null {
   const entry = lstatSync(path, { throwIfNoEntry: false })
   if (!entry) return null
   const invalid = `${path} must be a regular file of at most ${maxBytes} bytes`
@@ -10,6 +13,7 @@ export function readGitFile(path: string, maxBytes: number): Buffer | null {
   try {
     const stat = fstatSync(fd)
     if (!stat.isFile() || stat.size > maxBytes) throw new Error(invalid)
+    opened?.(stat)
     const bytes = Buffer.alloc(stat.size)
     let offset = 0
     while (offset < bytes.length) {

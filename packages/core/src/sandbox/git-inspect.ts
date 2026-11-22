@@ -1,5 +1,5 @@
 /** Inspect a workspace without asking its repository, submodules or configured drivers to run anything. */
-import { lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { type Stats, lstatSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs"
 import { readdir } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
@@ -15,10 +15,19 @@ export const MAX_SCANNED_DIRECTORIES = 20_000
 /** Snapshot ls-files lists an untracked repository as a directory, without visiting its work tree. */
 export const nestedDirectories = (entries: readonly string[]) => entries.filter((name) => name.endsWith("/")).map((name) => name.slice(0, -1))
 
-/** Git replaces an index atomically. Copy just the regular file we opened, even if the name changes again. */
+/**
+ * Git replaces an index atomically. Copy just the regular file we opened, even if the name changes again.
+ * The copy keeps the index's modification time: Git compares it with each entry's to tell which entries it
+ * must hash again (a file rewritten in the second it was staged, with the same size). A fresh time would make
+ * Git trust those entries and miss the change.
+ */
 export function copyGitIndex(source: string, target: string): void {
-  const bytes = readGitFile(source, MAX_INDEX_BYTES)
-  if (bytes !== null) writeFileSync(target, bytes)
+  const read: { stat?: Stats } = {}
+  const bytes = readGitFile(source, MAX_INDEX_BYTES, (stat) => (read.stat = stat))
+  if (bytes === null) return
+  writeFileSync(target, bytes)
+  // Milliseconds: never later than the original, so Git hashes again at least the entries it would have.
+  if (read.stat) utimesSync(target, read.stat.atime, read.stat.mtime)
 }
 
 /** The private repository keeps ls-files away from the workspace's config, attributes and hooks. */
