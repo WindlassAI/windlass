@@ -46,9 +46,9 @@
  * from the lockfile, `tsc` and local git commits: they read the user's Bun
  * cache and git configuration, which the default policy leaves readable.
  */
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync } from "node:fs"
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
-import { dirname, isAbsolute, join, resolve } from "node:path"
+import { dirname, join } from "node:path"
 import { ACCESS_TOKEN_FILE_ENV } from "../auth/handed-in.ts"
 import { brand } from "../brand.ts"
 import type { SandboxRun, TempDirectory } from "../tool/tool.ts"
@@ -56,7 +56,10 @@ import { HOME_BINDS, type HomeMounts, homeMounts, homeView } from "./bwrap.ts"
 import { type SandboxDetection, detectSandbox } from "./detect.ts"
 import { type SandboxPlan, type SandboxUnavailable, sandboxCommand } from "./index.ts"
 import type { CommandEnv } from "./config.ts"
+import { gitLayout, gitProtection } from "./git.ts"
 import { type SandboxPolicy, defaultPolicy, filterEnv } from "./policy.ts"
+
+export { type GitLayout, gitLayout } from "./git.ts"
 
 export interface CommandSandboxOptions {
   /** Where the sessions' temp directories are made. Default: `<os temp>/<brand.directory>-<uid>`. */
@@ -284,8 +287,20 @@ export function workspacePolicy(input: {
     ...(input.env === undefined ? {} : { env: input.env }),
   })
   const git = gitLayout(input.cwd)
-  const outside = git === null ? [] : [...new Set([git.gitDir, git.commonDir])].filter((path) => !within(input.cwd, path))
+  const protection = git === null ? null : gitProtection(git)
+  const outside = protection?.directories.filter((path) => !within(input.cwd, path)) ?? []
   const writableRoots = [...new Set([...base.writableRoots, ...input.run.writableRoots, ...outside])]
+  // An extra writable root can hold the workspace itself. Pin the intervening directories too:
+  // binding a child prevents moving that child, but does not prevent moving one of its ancestors.
+  const pinned = new Set(protection?.directories)
+  if (git && protection && pinned.size > 0) {
+    const roots = writableRoots.map(real)
+    for (const path of [join(git.workTree, ".git"), ...protection.directories]) {
+      for (let dir = dirname(path); dirname(dir) !== dir && roots.some((root) => within(root, dirname(dir))); dir = dirname(dir)) {
+        if (!protection.parents.includes(dir)) pinned.add(dir)
+      }
+    }
+  }
   // A home the command may write as it is stays the user's: the working directory is the home, or holds it.
   const homePath = base.home?.path
   // A command that may write where the session's home is kept would have it under a second name, where it could
@@ -297,46 +312,11 @@ export function workspacePolicy(input: {
     home: reached || (homePath !== undefined && writableRoots.some((root) => within(real(root), real(homePath)))) ? undefined : base.home,
     ...(reached ? { hiddenPaths: [...base.hiddenPaths, kept] } : {}),
     writableRoots,
-    readOnlyPaths: [...(git === null ? [] : gitProtected(git)), join(input.cwd, `.${brand.directory}`)],
+    ...(protection === null ? {} : { pinnedDirectories: [...pinned], readOnlyParents: protection.parents }),
+    readOnlyPaths: [...(protection?.files ?? []), join(input.cwd, `.${brand.directory}`)],
     // The variable that names the file a sign-in is handed in through is never passed: a sandboxed command is not told where that file is.
     ...(input.commandEnv === undefined ? {} : { env: { mode: "deny" as const, names: input.commandEnv.withhold, keep: input.commandEnv.pass.filter((name) => name !== ACCESS_TOKEN_FILE_ENV) } }),
   }
-}
-
-export interface GitLayout {
-  /** The directory `.git` is, or points to (a linked worktree's own directory under the main repository's). */
-  readonly gitDir: string
-  /** Where objects, refs, hooks and the configuration are: `gitDir`, or the main repository's for a worktree. */
-  readonly commonDir: string
-}
-
-/** The git directory of the repository `cwd` is in, found the way git finds it: `.git` here or in the nearest parent. */
-export function gitLayout(cwd: string): GitLayout | null {
-  for (let dir = resolve(cwd); ; dir = dirname(dir)) {
-    const entry = join(dir, ".git")
-    const info = statOrNull(entry)
-    if (info?.isDirectory()) return { gitDir: entry, commonDir: entry }
-    if (info?.isFile()) {
-      // A worktree or a submodule: `.git` is a file naming the real directory.
-      const named = /^gitdir:\s*(.+)$/m.exec(readOrNull(entry) ?? "")?.[1]?.trim()
-      if (named === undefined) return null
-      const gitDir = isAbsolute(named) ? named : resolve(dir, named)
-      const common = readOrNull(join(gitDir, "commondir"))?.trim()
-      return { gitDir, commonDir: common === undefined || common === "" ? gitDir : isAbsolute(common) ? common : resolve(gitDir, common) }
-    }
-    if (dirname(dir) === dir) return null
-  }
-}
-
-/** What stays read-only in a repository's git directory. The hooks directory is created when it is missing, so that it can be. */
-function gitProtected(git: GitLayout): string[] {
-  const hooks = join(git.commonDir, "hooks")
-  try {
-    mkdirSync(hooks)
-  } catch {
-    // It exists (the usual case), or the directory cannot be written: nothing to protect that is not protected already.
-  }
-  return [...new Set([hooks, join(git.commonDir, "config"), join(git.gitDir, "config"), join(git.gitDir, "config.worktree"), join(git.gitDir, "hooks")])]
 }
 
 /** `path` as a directory only this user can enter: made if missing, replaced by a fresh one when it is someone else's or open to others. */
@@ -364,21 +344,5 @@ function real(path: string) {
     return realpathSync(path)
   } catch {
     return path
-  }
-}
-
-function statOrNull(path: string) {
-  try {
-    return statSync(path)
-  } catch {
-    return null
-  }
-}
-
-function readOrNull(path: string) {
-  try {
-    return readFileSync(path, "utf8")
-  } catch {
-    return null
   }
 }

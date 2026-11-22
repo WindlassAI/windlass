@@ -15,6 +15,12 @@ All notable changes to Windlass are recorded here. The format follows
   a relay placeholder through its existing access-token file. A relay outside loopback needs an explicit
   `WINDLASS_MODEL_ALLOWED_ORIGIN` matching its scheme, host and port.
 
+### Security
+
+- Sandboxed commands can still commit, check out branches and run garbage collection, while the repository's
+  Git directory and its pointers are protected on Linux and macOS. Windlass pins its own subagent Git
+  operations to the session's repository and refuses configuration that could launch external drivers.
+
 ## [0.5.0] - 2026-11-20
 
 ### Added

@@ -79,7 +79,21 @@ command:
 
 What works inside without asking: `bun test`, `bun run <script>`, `bun install` from the lockfile with packages
 already in your cache, `tsc`, `git status`, `git diff`, `git add`, `git commit`, `git stash`, branches and
-worktrees (also when the working directory is a subdirectory of the repository or a linked worktree).
+checkouts and garbage collection, including in a subdirectory or an existing linked worktree.
+
+A sandboxed command cannot replace the repository's `.git` directory or gitfile, or redirect the common
+directory. Linux pins the directories as mount points. Before a writable Git directory is used, Windlass
+reserves absent bind targets on disk, including a `commondir` containing `.` (the directory itself), an
+empty `config.worktree` and the `worktrees` directory. They remain between commands. macOS denies writes to
+the pointer paths even when absent, and denies replacing the directory entry. On both systems the linked
+worktree registry is read-only except for the current worktree's own metadata. Create and remove worktrees
+outside the command sandbox. A standalone gitfile naming an external directory without a linked worktree's
+matching back-pointer gets read-only access to that directory. A command can still create a separate, nested repository in the workspace.
+
+Windlass's own subagent worktree operations pin the repository directories found when the session opened,
+ignore global and system Git configuration, and disable hooks, fsmonitor and external diff. A repository
+with configuration includes, filter drivers, external diff or merge drivers, or a configured work tree
+is refused for these operations. The subagent can still work in the shared workspace.
 
 What the protection of the repository's configuration breaks: anything that writes `.git/config` or `.git/hooks`.
 That is `git config` without `--global`, `git remote add`, `git branch --set-upstream-to` (and a checkout that sets
@@ -255,8 +269,9 @@ What the lists do not do:
   redacted before the model sees it, like every credential-looking variable's ("Secrets in tool output").
 - **The variable that names a handed-in token's file** (`WINDLASS_ACCESS_TOKEN_FILE`) is never passed, also when
   `passEnv` names it.
-- **What Windlass itself runs is not covered:** `git` for a subagent's worktree, with hooks off, gets Windlass's
-  environment, and `rg` for the search tool does too. Neither runs a command the agent or the project chose.
+- **Windlass's own tools manage their environments separately.** Git for a subagent's worktree inherits only
+  `PATH`. Windlass sets the Git directories and configuration described above. The search tool runs `rg` with
+  Windlass's environment.
 
 ## Required checks
 

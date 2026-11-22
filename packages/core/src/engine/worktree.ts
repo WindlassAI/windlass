@@ -28,6 +28,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { tmpdir } from "node:os"
 import { dirname, join, relative, resolve } from "node:path"
 import { brand } from "../brand.ts"
+import { type GitLayout, gitLayout, validGitLayout } from "../sandbox/git.ts"
 import type { WorktreeRecord } from "../event/durable.ts"
 
 export interface GitResult {
@@ -36,21 +37,59 @@ export interface GitResult {
   readonly stderr: string
 }
 
-/** Runs the user's git in `cwd` with no hooks, no prompts, no signing and the harness as the author of what it commits. */
-export async function git(cwd: string, args: readonly string[], options: { readonly env?: Record<string, string>; readonly stdin?: Uint8Array } = {}): Promise<GitResult> {
-  const hardening = ["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "-c", `user.name=${brand.name}`, "-c", "user.email=subagent@localhost", "-c", "core.quotePath=false", "-c", "gc.auto=0"]
+export interface Repository extends GitLayout {
+  readonly identity: string
+}
+
+/** The repository a session actually opened. Never run discovery through Git or accept a different directory later. */
+export function repositoryAt(cwd: string): Repository | null {
+  const layout = gitLayout(cwd)
+  if (!layout || !validGitLayout(layout)) return null
   try {
-    const child = Bun.spawn(["git", ...hardening, ...args], {
-      cwd,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C", ...options.env },
-      stdin: options.stdin === undefined ? "ignore" : options.stdin,
-      stdout: "pipe",
-      stderr: "pipe",
-    })
+    const identity = [join(layout.workTree, ".git"), layout.gitDir, layout.commonDir].map((path) => {
+      const { dev, ino } = lstatSync(path, { bigint: true })
+      return `${dev}:${ino}`
+    }).join("/")
+    return { ...layout, identity }
+  } catch {
+    return null
+  }
+}
+
+const GIT_OPTIONS = [
+  "core.hooksPath=/dev/null", "core.fsmonitor=false", "core.sshCommand=false", "diff.external=",
+  "protocol.allow=never", "submodule.recurse=false", "commit.gpgsign=false", "tag.gpgsign=false",
+  `user.name=${brand.name}`, "user.email=subagent@localhost", "core.quotePath=false", "gc.auto=0", "maintenance.auto=false",
+].flatMap((value) => ["-c", value])
+
+const unsafeKey = /^(?:filter\.|diff\..+\.(?:textconv|command)$|merge\..+\.driver$|include(?:if)?\.|core\.(?:worktree|alternaterefscommand)$)/is
+
+const changedRepository = "the repository's git directory or its pointers changed; check .git and commondir before using this worktree"
+const stillPinned = (repo: Repository) => repositoryAt(repo.workTree)?.identity === repo.identity
+const refused = (stderr: string): GitResult => ({ code: 128, stderr, stdout: new Uint8Array() })
+
+async function git(repo: Repository, args: readonly string[], options: { readonly index?: string } = {}): Promise<GitResult> {
+  if (!stillPinned(repo)) return refused(changedRepository)
+  const env = {
+    PATH: process.env.PATH, LC_ALL: "C", HOME: "/dev/null", XDG_CONFIG_HOME: "/dev/null", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1",
+    GIT_DIR: repo.gitDir, GIT_COMMON_DIR: repo.commonDir, GIT_WORK_TREE: repo.workTree, GIT_ATTR_NOSYSTEM: "1",
+    GIT_TERMINAL_PROMPT: "0", GIT_ALLOW_PROTOCOL: "", GIT_OPTIONAL_LOCKS: "0", GIT_NO_REPLACE_OBJECTS: "1", ...(options.index ? { GIT_INDEX_FILE: options.index } : {}),
+  }
+  try {
+    // Read the keys as Git parses them, without expanding includes. A driver named in attributes can have any name.
+    const keys = await run(["config", "--no-includes", "--null", "--name-only", "--list"])
+    if (keys.code !== 0) return refused("git could not read the repository configuration")
+    if (new TextDecoder().decode(keys.stdout).split("\0").some((key) => unsafeKey.test(key)))
+      return refused("the repository config names an include, external driver or work tree; run the subagent in the shared workspace")
+    return await run(args)
+  } catch (error) {
+    return refused(error instanceof Error ? error.message : String(error))
+  }
+
+  async function run(command: readonly string[]): Promise<GitResult> {
+    const child = Bun.spawn(["git", ...GIT_OPTIONS, ...command], { cwd: repo.workTree, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
     const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).arrayBuffer(), new Response(child.stderr).text(), child.exited])
     return { code, stdout: new Uint8Array(stdout), stderr }
-  } catch (error) {
-    return { code: 127, stdout: new Uint8Array(), stderr: error instanceof Error ? error.message : String(error) }
   }
 }
 
@@ -67,23 +106,21 @@ export function worktreeBranch(childId: string): string {
  * workspace as it stands. Returns the record, with `path` the directory in
  * the worktree that corresponds to `cwd`, or why there is none.
  */
-export async function createWorktree(input: { readonly cwd: string; readonly directory: string; readonly branch: string }): Promise<{ readonly worktree: WorktreeRecord; readonly cwd: string } | { readonly error: string }> {
-  const top = await git(input.cwd, ["rev-parse", "--show-toplevel"])
-  if (top.code !== 0) return { error: "the working directory is not in a git repository, so a subagent cannot get a worktree of its own. Run it without `worktree`: it then shares this workspace." }
-  const repository = text(top)
+export async function createWorktree(input: { readonly cwd: string; readonly directory: string; readonly branch: string; readonly parent: Repository | null }): Promise<{ readonly worktree: WorktreeRecord; readonly cwd: string } | { readonly error: string }> {
+  const repository = input.parent
+  if (!repository) return { error: "the working directory is not in a git repository, so a subagent cannot get a worktree of its own. Run it without `worktree`: it then shares this workspace." }
   const head = await git(repository, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])
+  if (head.code > 1) return { error: lastLine(head) }
   if (head.code !== 0) return { error: "the repository has no commit yet, so there is nothing a worktree could start from. Run the subagent without `worktree`." }
   // The workspace as it is now, as a tree, through an index of our own: the user's index is only copied, never written.
   const scratch = mkdtempSync(join(tmpdir(), `${brand.directory}-worktree-`))
   try {
     const index = join(scratch, "index")
-    const own = text(await git(repository, ["rev-parse", "--git-path", "index"]))
-    const source = resolve(repository, own)
+    const source = join(repository.gitDir, "index")
     if (existsSync(source)) writeFileSync(index, readFileSync(source))
-    const env = { GIT_INDEX_FILE: index }
-    const added = await git(repository, ["add", "-A", "--ignore-errors", "."], { env })
+    const added = await git(repository, ["add", "-A", "--ignore-errors", "."], { index })
     if (added.code !== 0 && added.code !== 1) return { error: `the workspace could not be recorded for the worktree: ${lastLine(added)}` }
-    const tree = await git(repository, ["write-tree"], { env })
+    const tree = await git(repository, ["write-tree"], { index })
     if (tree.code !== 0) return { error: `the workspace could not be recorded for the worktree: ${lastLine(tree)}` }
     const same = text(await git(repository, ["rev-parse", "HEAD^{tree}"])) === text(tree)
     const base = same ? head : await git(repository, ["commit-tree", text(tree), "-p", text(head), "-m", `${brand.name}: the workspace a subagent started from`])
@@ -91,9 +128,9 @@ export async function createWorktree(input: { readonly cwd: string; readonly dir
     mkdirSync(dirname(input.directory), { recursive: true })
     const made = await git(repository, ["worktree", "add", "--quiet", "-b", input.branch, input.directory, text(base)])
     if (made.code !== 0) return { error: `git could not create the worktree: ${lastLine(made)}` }
-    const inside = relative(repository, await realPath(input.cwd))
+    const inside = relative(repository.workTree, await realPath(input.cwd))
     return {
-      worktree: { path: input.directory, branch: input.branch, base: text(base), repository },
+      worktree: { path: input.directory, branch: input.branch, base: text(base), repository: repository.workTree },
       cwd: inside === "" || inside.startsWith("..") ? input.directory : join(input.directory, inside),
     }
   } finally {
@@ -122,30 +159,35 @@ export interface MergeOutcome {
 }
 
 /** Commits whatever the worktree holds onto its branch. Returns the tip, or `null` with the reason. */
-async function commitWork(worktree: WorktreeRecord, message: string): Promise<{ readonly tip: string } | { readonly error: string }> {
+async function commitWork(worktree: WorktreeRecord, parent: Repository, message: string): Promise<{ readonly tip: string } | { readonly error: string }> {
   if (!existsSync(worktree.path)) {
-    const tip = await git(worktree.repository, ["rev-parse", "--verify", "--quiet", `refs/heads/${worktree.branch}`])
+    const tip = await git(parent, ["rev-parse", "--verify", "--quiet", `refs/heads/${worktree.branch}`])
     return tip.code === 0 ? { tip: text(tip) } : { error: `the worktree ${worktree.path} and its branch are gone` }
   }
-  const added = await git(worktree.path, ["add", "-A", "."])
+  const child = repositoryAt(worktree.path)
+  if (!stillPinned(parent)) return { error: changedRepository }
+  if (!child || child.commonDir !== parent.commonDir || child.gitDir === child.commonDir || child.gitDir === parent.gitDir || child.workTree !== await realPath(worktree.path))
+    return { error: "the subagent's worktree no longer points back to its repository" }
+  const added = await git(child, ["add", "-A", "."])
   if (added.code !== 0) return { error: lastLine(added) }
-  const staged = await git(worktree.path, ["diff", "--cached", "--quiet"])
+  const staged = await git(child, ["diff", "--no-ext-diff", "--no-textconv", "--cached", "--quiet"])
+  if (staged.code > 1) return { error: lastLine(staged) }
   if (staged.code === 1) {
-    const committed = await git(worktree.path, ["commit", "--quiet", "--no-verify", "-m", message])
+    const committed = await git(child, ["commit", "--quiet", "--no-verify", "-m", message])
     if (committed.code !== 0) return { error: lastLine(committed) }
   }
-  const tip = await git(worktree.path, ["rev-parse", "HEAD"])
+  const tip = await git(child, ["rev-parse", "HEAD"])
   return tip.code === 0 ? { tip: text(tip) } : { error: lastLine(tip) }
 }
 
 /** Removes the worktree directory and, unless it is kept, its branch. Never throws: what cannot be removed is left. */
-export async function removeWorktree(worktree: WorktreeRecord, options: { readonly keepBranch: boolean }): Promise<void> {
+export async function removeWorktree(worktree: WorktreeRecord, parent: Repository, options: { readonly keepBranch: boolean }): Promise<void> {
   if (existsSync(worktree.path)) {
-    const removed = await git(worktree.repository, ["worktree", "remove", "--force", worktree.path])
-    if (removed.code !== 0) rmSync(worktree.path, { recursive: true, force: true })
+    const removed = await git(parent, ["worktree", "remove", "--force", worktree.path])
+    if (removed.code !== 0) return
   }
-  await git(worktree.repository, ["worktree", "prune"])
-  if (!options.keepBranch) await git(worktree.repository, ["branch", "-D", "--quiet", worktree.branch])
+  await git(parent, ["worktree", "prune"])
+  if (!options.keepBranch) await git(parent, ["branch", "-D", "--quiet", worktree.branch])
 }
 
 /**
@@ -154,11 +196,12 @@ export async function removeWorktree(worktree: WorktreeRecord, options: { readon
  * removed, and the branch is kept when it holds work, so nothing is lost and
  * nothing is merged.
  */
-export async function salvageWorktree(worktree: WorktreeRecord, title: string): Promise<MergeOutcome> {
-  const work = await commitWork(worktree, `${brand.name} subagent (unfinished): ${title}`)
-  const tip = "tip" in work ? work.tip : null
-  const holdsWork = tip !== null && tip !== worktree.base
-  await removeWorktree(worktree, { keepBranch: holdsWork })
+export async function salvageWorktree(worktree: WorktreeRecord, parent: Repository, title: string): Promise<MergeOutcome> {
+  const work = await commitWork(worktree, parent, `${brand.name} subagent (unfinished): ${title}`)
+  if ("error" in work) throw new Error(work.error)
+  const tip = work.tip
+  const holdsWork = tip !== worktree.base
+  await removeWorktree(worktree, parent, { keepBranch: holdsWork })
   return {
     status: "nothing",
     branch: worktree.branch,
@@ -166,7 +209,7 @@ export async function salvageWorktree(worktree: WorktreeRecord, title: string): 
     files: [],
     conflicts: [],
     kept: holdsWork,
-    message: holdsWork ? `What it had done so far is on branch ${worktree.branch} (commit ${tip!.slice(0, 12)}); nothing was merged into this workspace.` : "It had changed no file.",
+    message: holdsWork ? `What it had done so far is on branch ${worktree.branch} (commit ${tip.slice(0, 12)}); nothing was merged into this workspace.` : "It had changed no file.",
   }
 }
 
@@ -176,12 +219,15 @@ interface FileVersion {
   readonly mode: string
 }
 
-async function versionAt(repository: string, commit: string, path: string): Promise<FileVersion | null> {
-  const entry = text(await git(repository, ["ls-tree", "-z", commit, "--", path]))
+async function versionAt(repository: Repository, commit: string, path: string): Promise<FileVersion | null> {
+  const listed = await git(repository, ["ls-tree", "-z", commit, "--", path])
+  if (listed.code !== 0) throw new Error(lastLine(listed))
+  const entry = text(listed)
   const match = /^(\d{6}) blob ([0-9a-f]+)\t/.exec(entry)
   if (match === null) return null
   const blob = await git(repository, ["cat-file", "blob", match[2]!])
-  return blob.code === 0 ? { bytes: blob.stdout, mode: match[1]! } : null
+  if (blob.code !== 0) throw new Error(lastLine(blob))
+  return { bytes: blob.stdout, mode: match[1]! }
 }
 
 function versionOnDisk(path: string): FileVersion | null {
@@ -211,8 +257,8 @@ const merging = new Map<string, Promise<unknown>>()
  * moment would otherwise both merge against the same state, and the second
  * to write would undo the first.
  */
-export function mergeWorktree(worktree: WorktreeRecord, input: { readonly title: string; readonly probe?: (point: "computed" | "writing") => void }): Promise<MergeOutcome> {
-  const turn = (merging.get(worktree.repository) ?? Promise.resolve()).then(() => mergeNow(worktree, input))
+export function mergeWorktree(worktree: WorktreeRecord, parent: Repository, input: { readonly title: string; readonly probe?: (point: "computed" | "writing") => void }): Promise<MergeOutcome> {
+  const turn = (merging.get(worktree.repository) ?? Promise.resolve()).then(() => mergeNow(worktree, parent, input))
   const settled = turn.catch(() => {})
   merging.set(worktree.repository, settled)
   void settled.then(() => {
@@ -221,20 +267,20 @@ export function mergeWorktree(worktree: WorktreeRecord, input: { readonly title:
   return turn
 }
 
-async function mergeNow(worktree: WorktreeRecord, input: { readonly title: string; readonly probe?: (point: "computed" | "writing") => void }): Promise<MergeOutcome> {
+async function mergeNow(worktree: WorktreeRecord, parent: Repository, input: { readonly title: string; readonly probe?: (point: "computed" | "writing") => void }): Promise<MergeOutcome> {
   const base = { branch: worktree.branch, files: [] as string[], conflicts: [] as string[] }
   const failed = async (reason: string): Promise<MergeOutcome> => {
-    await removeWorktree(worktree, { keepBranch: true })
+    await removeWorktree(worktree, parent, { keepBranch: true })
     return { ...base, status: "failed", commit: null, kept: true, message: `Its work could not be merged into this workspace (${reason}); nothing was changed here. It is on branch ${worktree.branch}.` }
   }
-  const work = await commitWork(worktree, `${brand.name} subagent: ${input.title}`)
-  if ("error" in work) return failed(work.error)
+  const work = await commitWork(worktree, parent, `${brand.name} subagent: ${input.title}`)
+  if ("error" in work) throw new Error(work.error)
   const tip = work.tip
   if (tip === worktree.base) {
-    await removeWorktree(worktree, { keepBranch: false })
+    await removeWorktree(worktree, parent, { keepBranch: false })
     return { ...base, status: "nothing", commit: null, kept: false, message: "It changed no file, so there was nothing to merge." }
   }
-  const listed = await git(worktree.repository, ["diff", "--name-only", "-z", "--no-renames", worktree.base, tip])
+  const listed = await git(parent, ["diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", "--no-renames", worktree.base, tip])
   if (listed.code !== 0) return failed(lastLine(listed))
   const files = new TextDecoder().decode(listed.stdout).split("\0").filter((path) => path !== "")
   const writes: { readonly path: string; readonly result: FileVersion | null }[] = []
@@ -242,7 +288,7 @@ async function mergeNow(worktree: WorktreeRecord, input: { readonly title: strin
   const scratch = mkdtempSync(join(tmpdir(), `${brand.directory}-merge-`))
   try {
     for (const path of files) {
-      const [origin, theirs] = await Promise.all([versionAt(worktree.repository, worktree.base, path), versionAt(worktree.repository, tip, path)])
+      const [origin, theirs] = await Promise.all([versionAt(parent, worktree.base, path), versionAt(parent, tip, path)])
       const ours = versionOnDisk(join(worktree.repository, path))
       if (same(ours, theirs)) continue
       // The parent did not touch it since the branch started: the child's version is the result.
@@ -257,7 +303,7 @@ async function mergeNow(worktree: WorktreeRecord, input: { readonly title: strin
       }
       const names = ["ours", "base", "theirs"].map((name) => join(scratch, name))
       ;[ours, origin, theirs].forEach((version, index) => writeFileSync(names[index]!, version.bytes))
-      const merged = await git(scratch, ["merge-file", "-p", names[0]!, names[1]!, names[2]!])
+      const merged = await git(parent, ["merge-file", "-p", names[0]!, names[1]!, names[2]!])
       if (merged.code !== 0) conflicts.push(path)
       else writes.push({ path, result: { bytes: merged.stdout, mode: theirs.mode === origin.mode ? ours.mode : theirs.mode } })
     }
@@ -265,7 +311,7 @@ async function mergeNow(worktree: WorktreeRecord, input: { readonly title: strin
     rmSync(scratch, { recursive: true, force: true })
   }
   if (conflicts.length > 0) {
-    await removeWorktree(worktree, { keepBranch: true })
+    await removeWorktree(worktree, parent, { keepBranch: true })
     return {
       ...base,
       status: "conflicts",
@@ -293,7 +339,7 @@ async function mergeNow(worktree: WorktreeRecord, input: { readonly title: strin
     if (first) input.probe?.("writing")
     first = false
   }
-  await removeWorktree(worktree, { keepBranch: false })
+  await removeWorktree(worktree, parent, { keepBranch: false })
   return {
     ...base,
     status: "merged",

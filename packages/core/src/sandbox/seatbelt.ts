@@ -19,7 +19,8 @@
  * read-only like the rest.
  */
 import { realpathSync } from "node:fs"
-import type { SandboxPolicy } from "./policy.ts"
+import { basename, dirname, join } from "node:path"
+import { type SandboxPolicy, directoryMounts } from "./policy.ts"
 
 export const SANDBOX_EXEC_PATH = "/usr/bin/sandbox-exec"
 
@@ -89,10 +90,10 @@ const NETWORK_ON = `
 /** The profile and its parameters for `policy`. Paths are canonicalised (macOS: /tmp is /private/tmp) when they exist. */
 export function seatbeltProfile(policy: SandboxPolicy): SeatbeltProfile {
   const params: Array<[string, string]> = []
-  const param = (prefix: string, path: string) => {
+  const param = (prefix: string, path: string, match = "subpath") => {
     const name = `${prefix}_${params.filter(([key]) => key.startsWith(`${prefix}_`)).length}`
     params.push([name, canonical(path)])
-    return `(subpath (param "${name}"))`
+    return `(${match} (param "${name}"))`
   }
 
   const reads = policy.readRest
@@ -118,6 +119,11 @@ export function seatbeltProfile(policy: SandboxPolicy): SeatbeltProfile {
     writes,
     "",
     "; read-only inside the writable roots: after the writes, so they win over them",
+    ...directoryMounts(policy).map(({ path, writable }) =>
+      writable
+        ? `(allow file-write* ${param("PINNED", path)})\n(deny file-write* ${param("ENTRY", path, "literal")})`
+        : `(deny file-write* ${param("PARENT", path)})`,
+    ),
     readOnly,
     network,
     "; hidden paths: last, so they win over every allow above",
@@ -132,10 +138,11 @@ export function seatbeltArgv(policy: SandboxPolicy, command: readonly string[], 
   return [sandboxExecPath, "-p", generated.profile, ...generated.params.map(([name, value]) => `-D${name}=${value}`), "--", ...command]
 }
 
-function canonical(path: string) {
+function canonical(path: string): string {
   try {
     return realpathSync(path)
   } catch {
-    return path.replace(/^\/(tmp|var|etc)(?=\/|$)/, "/private/$1")
+    const parent = dirname(path)
+    return parent === path ? path : join(canonical(parent), basename(path))
   }
 }

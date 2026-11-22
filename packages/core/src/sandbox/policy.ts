@@ -49,13 +49,25 @@ export interface SandboxPolicy {
    * Absolute paths the command may read and not write, also inside a writable
    * root: what would otherwise run later outside the sandbox (`.git/hooks`,
    * `.git/config`) or steer the harness (its project directory). Paths that do
-   * not exist are skipped. Hidden paths still win over them.
+   * not exist are skipped on Linux. Seatbelt denies creation at those paths too. Hidden paths still win over them.
    */
   readonly readOnlyPaths?: readonly string[]
+  /** Read-only trees that may contain an explicitly pinned writable directory. */
+  readonly readOnlyParents?: readonly string[]
+  /** Writable directories whose entries can change but which cannot themselves be replaced. */
+  readonly pinnedDirectories?: readonly string[]
   /** Absolute paths the command cannot read or write at all. They win over every other rule. */
   readonly hiddenPaths: readonly string[]
   readonly network: NetworkPolicy
   readonly env: EnvPolicy
+}
+
+/** Mount parents before children: a read-only registry may hold a pinned writable worktree directory. */
+export function directoryMounts(policy: SandboxPolicy) {
+  return [
+    ...(policy.pinnedDirectories ?? []).map((path) => ({ path, writable: true })),
+    ...(policy.readOnlyParents ?? []).map((path) => ({ path, writable: false })),
+  ].sort((a, b) => a.path.length - b.path.length)
 }
 
 /**
@@ -264,6 +276,8 @@ export function assertValidPolicy(policy: SandboxPolicy) {
     ...policy.hiddenPaths,
     ...(policy.readableRoots ?? []),
     ...(policy.readOnlyPaths ?? []),
+    ...(policy.readOnlyParents ?? []),
+    ...(policy.pinnedDirectories ?? []),
     ...(policy.tempRoot ? [policy.tempRoot] : []),
     ...(policy.home ? [policy.home.path, policy.home.root] : []),
   ]

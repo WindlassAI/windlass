@@ -30,6 +30,18 @@ function layout() {
 
 const options = { bwrapPath: "/usr/bin/bwrap", envPath: "/usr/bin/env", maskFile: "/mask" }
 
+test("Seatbelt denies replacing a pinned directory and creating its missing commondir after the workspace write grant", () => {
+  const l = layout()
+  const git = join(l.workspace, ".git")
+  mkdirSync(git)
+  const common = join(git, "commondir")
+  const { profile, params } = seatbeltProfile({ ...l.policy, pinnedDirectories: [git], readOnlyPaths: [common] })
+  expect(params).toContainEqual(["ENTRY_0", git])
+  expect(params).toContainEqual(["READONLY_0", common])
+  expect(profile).toContain('(deny file-write* (literal (param "ENTRY_0")))')
+  expect(profile.indexOf('(subpath (param "READONLY_0"))')).toBeGreaterThan(profile.indexOf('(subpath (param "WRITABLE_0"))'))
+})
+
 describe("bwrap argv", () => {
   test("namespaces, mounts in order, hidden paths last, command behind the signal trampoline", () => {
     const l = layout()
