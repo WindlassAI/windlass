@@ -2,6 +2,7 @@
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
 import { mkdirSync, statSync, utimesSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { brand } from "../../src/brand.ts"
 import { copyGitIndex, repositoryEntries } from "../../src/sandbox/git-inspect.ts"
 import { isDotGit, reservedName } from "../../src/sandbox/git-name.ts"
 import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
@@ -10,17 +11,24 @@ import { removeTempDirs, tempDir } from "./helpers.ts"
 setDefaultTimeout(E2E_TIMEOUT_MS)
 afterAll(removeTempDirs)
 
-test.each([".git", ".GIT", ".Git", ".git.", ".git ", ".git. .", "git~1", "GIT~1", "git~1.", ".git:stream", ".git\\x", ".g‌it", ".git﻿", "‎.git", ".g⁪it"])("%j is .git to some filesystem", (name) => {
+test.each([".git", ".GIT", ".Git", ".git.", ".git ", ".git. .", "git~1", "GIT~1", "git~1.", ".git:stream", ".git\\x", ".g‌it", ".git﻿", "‎.git", ".g⁪it", "a\\.git", "a\\b\\GIT~1\\c", "x\\.Git. \\y", "x\\.git:stream"])("%j is .git to some filesystem", (name) => {
   expect(isDotGit(name)).toBe(true)
 })
 
-test.each([".gitignore", ".gitmodules", ".github", "git", "git~2", "x.git", ".gi", ".git~1", ".gît"])("%j is an ordinary name", (name) => {
+test.each([".gitignore", ".gitmodules", ".github", "git", "git~2", "x.git", ".gi", ".git~1", ".gît", "a\\.gitignore", "x\\git"])("%j is an ordinary name", (name) => {
   expect(isDotGit(name)).toBe(false)
 })
 
 test("the project directory is matched in any case, with ignored code points and trailing dots", () => {
   for (const name of [".windlass", ".Windlass", ".windlass.", ".wind‌lass"]) expect(reservedName(name, ".windlass")).toBe(true)
   expect(reservedName(".windlass-old", ".windlass")).toBe(false)
+})
+
+test("the project directory is matched as NTFS reads it: after a backslash, with a stream, and by its short name", () => {
+  const reserved = `.${brand.directory}`
+  const short = brand.directory.slice(0, 6)
+  for (const name of [`${reserved}:stream`, `${reserved}. :x`, `a\\${reserved}`, `${short}~1`, `${short.toUpperCase()}~4.`, `a\\${short}~2\\b`]) expect([name, reservedName(name, reserved)]).toEqual([name, true])
+  for (const name of [`${short}~5`, `${short}~1x`, `${reserved}-old:x`, `a\\${brand.directory}`]) expect([name, reservedName(name, reserved)]).toEqual([name, false])
 })
 
 test("a nested repository under a lookalike .git name is found", async () => {
@@ -47,3 +55,4 @@ test("the walk of untracked directories is bounded", async () => {
   await expect(repositoryEntries(root, undefined, undefined, { maxDirectories: 4 })).rejects.toThrow("more than 4 untracked directories")
   expect((await repositoryEntries(root, undefined, undefined, { maxDirectories: 100 })).size).toBe(0)
 })
+
