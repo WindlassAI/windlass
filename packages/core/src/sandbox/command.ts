@@ -56,7 +56,7 @@ import { HOME_BINDS, type HomeMounts, homeMounts, homeView } from "./bwrap.ts"
 import { type SandboxDetection, detectSandbox } from "./detect.ts"
 import { type SandboxPlan, type SandboxUnavailable, sandboxCommand } from "./index.ts"
 import type { CommandEnv } from "./config.ts"
-import { auditGit } from "./git-audit.ts"
+import { type GitWatch, gitWatch } from "./git-audit.ts"
 import { gitLayout, gitProtection } from "./git.ts"
 import { type SandboxPolicy, defaultPolicy, filterEnv } from "./policy.ts"
 
@@ -163,6 +163,14 @@ export function createCommandSandbox(options: CommandSandboxOptions = {}): Comma
   const homeOn = (sessionId: string) => homes.get(sessionId)?.on === true
   /** The sessions that named variables for their commands, each with the names in force now. */
   const environments = new Map<string, CommandEnv>()
+  /** By session and working directory: the Git baseline its commands are checked against, carried from one command to the next. */
+  const gitWatches = new Map<string, GitWatch>()
+  const watchFor = (sessionId: string, cwd: string, layout: ReturnType<typeof gitLayout>) => {
+    const key = `${sessionId}\0${real(cwd)}`
+    let found = gitWatches.get(key)
+    if (found === undefined) gitWatches.set(key, (found = gitWatch(cwd, layout)))
+    return found
+  }
   let base: string | null = null
 
   const sessionDirectory = (sessionId: string) => {
@@ -237,7 +245,8 @@ export function createCommandSandbox(options: CommandSandboxOptions = {}): Comma
       )
       if (plan.kind !== "ready") return plan
       const layout = gitLayout(input.cwd)
-      const checked = { ...plan, auditGit: () => auditGit(input.cwd, layout) }
+      const watch = watchFor(input.sessionId, input.cwd, layout)
+      const checked = { ...plan, auditGit: () => watch.begin() }
       if (!input.run.network) return checked
       // A download needs a cache it can write. The user's own stays read-only: what is in it runs outside the sandbox later.
       return { ...checked, env: { ...plan.env, BUN_INSTALL_CACHE_DIR: join(plan.env.TMPDIR ?? "/tmp", ".bun-install-cache") } }

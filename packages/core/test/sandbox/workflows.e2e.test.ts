@@ -121,6 +121,73 @@ describe.skipIf(!sandbox.state.available)("git metadata inside the command sandb
     expect(notices).toEqual([expect.stringContaining("Your own root git status")])
   })
 
+  test("the baseline carries across commands: what changed between them is reported by the next one", async () => {
+    const cwd = project("carried-baseline")
+    expect((await sh(cwd, "true")).ok).toBe(true)
+    // What a process that outlived its command could do once that command's check was over.
+    expect(host(cwd, `git init -q vendor && ${GIT_IDENTITY} -C vendor commit --allow-empty -qm initial`).code).toBe(0)
+    writeFileSync(join(cwd, ".git", "commondir"), "elsewhere\n")
+    const next = await sh(cwd, "true")
+    expect(next.ok).toBe(false)
+    expect(next.output).toContain('nested repository "vendor"')
+    expect(next.output).toContain("commondir")
+    expect(existsSync(join(cwd, ".git", "commondir"))).toBe(false)
+    // Reported once: the command after it starts from what was reported.
+    const after = await sh(cwd, "true")
+    expect(after).toMatchObject({ ok: true })
+    expect(after.output).not.toContain("nested repository")
+  })
+
+  test("a commondir a background command creates is set aside while it still runs", async () => {
+    const cwd = project("guarded-commondir")
+    const common = join(cwd, ".git", "commondir")
+    let started: BackgroundCommand | undefined
+    await tool.execute({ command: "printf elsewhere > .git/commondir; touch created; exec sleep 60", background: true }, {
+      cwd, sessionId: SESSION, callId: "call_guarded" as CallId, messageId: "msg_1" as MessageId, signal: new AbortController().signal, progress: () => {}, putBlob: noBlobStore, sandbox: NOTHING,
+      background: { command: (work) => { started = work; return { id: "bg_guarded" } } },
+    })
+    await waitFor(() => existsSync(join(cwd, "created")), { what: "the command to have tried" })
+    // Within a few checks, not when the command ends a minute later.
+    await waitFor(() => !existsSync(common), { what: "the guard to set commondir aside", timeoutMs: 5_000 })
+    await started!.stop()
+    const end = await started!.exited
+    if (process.platform === "linux") expect(end.output).toContain("created Git's commondir pointer")
+    expect(existsSync(common)).toBe(false)
+  })
+
+  test("an index Windlass cannot inspect is one warning, not a failure of every command", async () => {
+    const cwd = project("large-index")
+    writeFileSync(join(cwd, ".git", "index"), Buffer.alloc(64 * 1024 * 1024 + 1))
+    const first = await sh(cwd, "true")
+    expect(first).toMatchObject({ ok: true, exitCode: 0 })
+    expect(first.output).toContain("could not inspect this workspace")
+    const second = await sh(cwd, "true")
+    expect(second).toMatchObject({ ok: true, exitCode: 0 })
+    expect(second.output).not.toContain("could not inspect")
+  })
+
+  test("a nested repository in an ignored directory is neither walked nor reported", async () => {
+    const cwd = project("ignored-nested")
+    writeFileSync(join(cwd, ".gitignore"), "node_modules/\n")
+    const made = await sh(cwd, "mkdir -p node_modules/pkg && git init -q node_modules/pkg")
+    expect(made.ok).toBe(true)
+    expect(made.output).not.toContain("nested repository")
+  })
+
+  test.skipIf(process.platform !== "darwin")("macOS: a command cannot create protected Git paths under another case of their names", async () => {
+    const cwd = project("any-case")
+    rmSync(join(cwd, ".git", "hooks"), { recursive: true, force: true })
+    const pointer = await sh(cwd, "printf elsewhere > .git/CommonDir")
+    expect(pointer.ok).toBe(false)
+    // Seatbelt refused it: the check after the command had nothing to set aside.
+    expect(pointer.output).not.toContain("Sandbox violation")
+    expect(readdirSync(join(cwd, ".git")).filter((name) => name.toLowerCase() === "commondir")).toEqual([])
+    expect((await sh(cwd, "mkdir -p .git/Hooks && printf 'exit 0' > .git/Hooks/pre-commit")).ok).toBe(false)
+    expect(existsSync(join(cwd, ".git", "hooks", "pre-commit"))).toBe(false)
+    expect((await sh(cwd, "printf '[core]' > .git/Config.Worktree")).ok).toBe(false)
+    expect(readdirSync(join(cwd, ".git")).filter((name) => name.toLowerCase() === "config.worktree")).toEqual([])
+  })
+
   test("a new nested repository and a newly staged gitlink are reported when the command ends", async () => {
     const cwd = project("inspect-nested")
     const made = await sh(cwd, `git init -q vendor && cd vendor && ${GIT_IDENTITY} commit --allow-empty -qm initial`)
