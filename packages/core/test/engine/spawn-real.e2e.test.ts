@@ -155,7 +155,7 @@ describe("subagents in git worktrees", () => {
     })
   }
 
-  test("merge rejects reserved components in a Git path list before touching the workspace", async () => {
+  test.each(["folder/.GiT/result", "../result"])("merge rejects the reserved Git path %s before touching the workspace", async (listed) => {
     const { directory: cwd, data } = repository()
     const parent = repositoryAt(cwd)!
     const made = await createWorktree({ cwd, directory: join(data, "child"), branch: "child", parent })
@@ -167,10 +167,11 @@ describe("subagents in git worktrees", () => {
     // Substitute only the path list. No crafted Git object or index is necessary to exercise the merge boundary.
     writeFileSync(join(bin, "git"), `#!/bin/sh
 case " $* " in
-  *" --name-only "*) printf 'folder/.GiT/result\\0' ;;
+  *" --name-only "*) cat "$0.paths" ;;
   *) exec "${git}" "$@" ;;
 esac
 `, { mode: 0o755 })
+    writeFileSync(join(bin, "git.paths"), listed + "\0")
     const path = process.env.PATH
     try {
       process.env.PATH = `${bin}:${path}`
@@ -232,7 +233,8 @@ esac
     const module = new URL("../../src/engine/worktree.ts", import.meta.url).href
     const code = `import { createWorktree, repositoryAt } from ${JSON.stringify(module)};
       const cwd = process.argv[1]; console.log((await createWorktree({ cwd, parent: repositoryAt(cwd), directory: process.argv[2], branch: "child" })).error)`
-    const result = Bun.spawnSync([process.execPath, "-e", code, cwd, join(data, "child")], { timeout: 5000, killSignal: "SIGKILL" })
+    const result = Bun.spawnSync([process.execPath, "-e", code, cwd, join(data, "child")], { timeout: E2E_TIMEOUT_MS / 2, killSignal: "SIGKILL" })
+    expect(result.exitCode).toBe(0)
     expect(result.stdout.toString()).toMatch(/regular.*index|index.*regular/i)
   })
 

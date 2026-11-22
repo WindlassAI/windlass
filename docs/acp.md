@@ -172,7 +172,7 @@ Before every tool call the harness decides whether it runs, runs in the sandbox,
   (`"stop"`): the prompt is answered with an error whose `data["windlass"].reason` is `approval_required`.
   Nothing waits either way.
 - **Taint.** When content from outside (a file outside the workspace, a command that ran with the network, an MCP
-  tool, text the client marked as untrusted on a prompt, steer or `_windlass/admit`, the result of a client's tool declared with
+  tool, text the client marked as untrusted on a prompt, steer, queue, slash command or `_windlass/admit`, the result of a client's tool declared with
   `untrustedResult`) enters the conversation, `_windlass/taint` `{ sessionId, tainted: true, text, source }` is
   sent once, and a `notice` to clients that show them. From then on anything that can send data out asks again.
   `_windlass/clear_taint` is the user's "I trust what is there"; it is answered `{ cleared }` and followed by
@@ -182,7 +182,8 @@ Before every tool call the harness decides whether it runs, runs in the sandbox,
   would have loosened the policy, asked for the session's home, named environment variables for commands, named required checks, or named a check with a required check's name), `checks_not_run` (there is no sandbox to run the checks in; with a required check, that it is recorded as not started), `session_home` (the session's
   home is on and the session gets none, or not all of the user's home in it, and why); and about how a turn ended,
   `no_closing_answer` (the model did its work and then returned nothing twice, so the turn ended without a last
-  word from it).
+  word from it). A `git_metadata` notice reports a repository safety finding when a sandboxed command ends.
+  The command output also records the finding.
 - **The session's home.** `"sandboxHome": "session"` in `_meta["windlass"]` when a session is opened gives its
   sandboxed commands, on Linux, a home of the session's own at the home directory's path, where tools can keep
   caches and settings and the user's home is never written ([safety.md](safety.md), "The session's home").

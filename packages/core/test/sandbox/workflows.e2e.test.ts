@@ -7,13 +7,14 @@
  * Skipped, visibly, where bubblewrap cannot run.
  */
 import { afterAll, beforeAll, describe, expect, test, setDefaultTimeout } from "bun:test"
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { brand } from "../../src/brand.ts"
 import type { CallId, MessageId, SessionId } from "../../src/id.ts"
 import { createInterrupt } from "../../src/interrupt.ts"
 import { E2E_TIMEOUT_MS, waitFor } from "../../src/testing/wait.ts"
 import { escalationSchema, sandboxHint } from "../../src/approval/escalation.ts"
+import { auditGit } from "../../src/sandbox/git-audit.ts"
 import { HOME_BINDS } from "../../src/sandbox/bwrap.ts"
 import { createCommandSandbox, gitLayout, workspacePolicy } from "../../src/sandbox/command.ts"
 import { type BackgroundCommand, type SandboxRun, noBlobStore } from "../../src/tool/tool.ts"
@@ -60,6 +61,26 @@ function project(label: string) {
   return dir
 }
 
+test("the completion check restores a displaced .git and preserves its replacement for inspection", async () => {
+  const cwd = project("audit-directory")
+  const entry = join(cwd, ".git")
+  const head = readFileSync(join(entry, "HEAD"))
+  const verify = await auditGit(cwd, gitLayout(cwd))
+  renameSync(entry, join(cwd, "original"))
+  writeFileSync(entry, "unexpected")
+  const found = await verify()
+  expect(found).toMatchObject({ violation: true, message: expect.stringContaining("changed .git") })
+  expect(readFileSync(join(entry, "HEAD"))).toEqual(head)
+})
+
+test.skipIf(process.platform !== "linux" || !sandbox.state.available)("a repository with a symlinked .git has a read-only work tree on Linux", async () => {
+  const cwd = project("symlinked-entry")
+  renameSync(join(cwd, ".git"), join(cwd, "metadata"))
+  symlinkSync("metadata", join(cwd, ".git"))
+  expect((await sh(cwd, "touch ordinary-file")).ok).toBe(false)
+  expect(existsSync(join(cwd, "ordinary-file"))).toBe(false)
+})
+
 // Exercise the same boundary on either installed backend. Use inert metadata and inspect it from the host.
 describe.skipIf(!sandbox.state.available)("git metadata inside the command sandbox", () => {
   for (const [name, command] of [
@@ -72,6 +93,7 @@ describe.skipIf(!sandbox.state.available)("git metadata inside the command sandb
       const head = host(cwd, "git rev-parse HEAD").output
       const blocked = await sh(cwd, command)
       expect(blocked.ok).toBe(false)
+      expect(existsSync(join(cwd, ".git", "commondir"))).toBe(false)
       if (process.platform === "linux" && command.startsWith("mv ")) expect(blocked.output).toMatch(/busy/i)
       expect(host(cwd, "git rev-parse HEAD").output).toBe(head)
     })
@@ -81,7 +103,55 @@ describe.skipIf(!sandbox.state.available)("git metadata inside the command sandb
     const cwd = project("normal-git")
     const commit = await sh(cwd, `echo normal > tracked && git add tracked && ${GIT_IDENTITY} commit -qm normal && git checkout -qb topic && git gc`)
     expect(commit.ok).toBe(true)
+    expect(host(cwd, "git rev-parse --git-common-dir").output.trim()).toBe(".git")
+    expect(existsSync(join(cwd, ".git", "commondir"))).toBe(false)
     expect(host(cwd, "git log -1 --format=%s").output.trim()).toBe("normal")
+  })
+
+  test("a background command reports its Git safety check in the completion result", async () => {
+    const cwd = project("background-inspection")
+    let started: BackgroundCommand | undefined
+    const notices: string[] = []
+    const context = { cwd, gitNotice: (message: string) => notices.push(message), sessionId: SESSION, callId: "call_background_git" as CallId, messageId: "msg_1" as MessageId,
+      signal: new AbortController().signal, progress: () => {}, putBlob: noBlobStore, sandbox: NOTHING }
+    await tool.execute({ command: "git init -q nested", background: true }, {
+      ...context, background: { command: (work) => { started = work; return { id: "bg_1" } } },
+    })
+    expect((await started!.exited).output).toContain("nested repository")
+    expect(notices).toEqual([expect.stringContaining("Your own root git status")])
+  })
+
+  test("a new nested repository and a newly staged gitlink are reported when the command ends", async () => {
+    const cwd = project("inspect-nested")
+    const made = await sh(cwd, `git init -q vendor && cd vendor && ${GIT_IDENTITY} commit --allow-empty -qm initial`)
+    expect(made.output).toContain("nested repository")
+    expect(made.output).toContain("git status")
+    const staged = await sh(cwd, "git add vendor")
+    expect(staged.output).toContain("gitlink")
+  })
+
+  test("a workspace that started without a repository reports and sets aside a new root .git", async () => {
+    const cwd = join(base, "new-root")
+    mkdirSync(cwd)
+    const result = await sh(cwd, "git init -q")
+    expect(result.ok).toBe(false)
+    expect(result.output).toContain(".git")
+    expect(existsSync(join(cwd, ".git"))).toBe(false)
+  })
+
+  test("absorbed submodule metadata stays read-only under a writable repository", async () => {
+    const cwd = project("absorbed")
+    const modules = join(cwd, ".git", "modules", "vendor")
+    mkdirSync(modules, { recursive: true })
+    writeFileSync(join(modules, "config"), "original")
+    expect((await sh(cwd, "printf changed > .git/modules/vendor/config")).ok).toBe(false)
+    expect(readFileSync(join(modules, "config"), "utf8")).toBe("original")
+  })
+
+  test("protected repository files cannot be hard linked into the workspace", async () => {
+    const cwd = project("protect-hard-links")
+    expect((await sh(cwd, "ln .git/config copy")).ok).toBe(false)
+    expect(existsSync(join(cwd, "copy"))).toBe(false)
   })
 
   test("a gitfile alone cannot grant writes to another repository's external directory", () => {
@@ -273,6 +343,7 @@ describe.skipIf(skipReason !== null)("what the sandbox stops, and what the harde
     expect(policy.network).toEqual({ mode: "off" })
     expect(policy.readOnlyPaths).toEqual([
       join(workspace, ".git", "hooks"),
+      join(workspace, ".git", "modules"),
       join(workspace, ".git", "config"),
       join(workspace, ".git", "config.worktree"),
       join(workspace, ".git", "commondir"),
@@ -416,7 +487,7 @@ describe.skipIf(skipReason !== null)("the session's home is a setting, off until
     const expected = [
       "--bind", workspace, workspace,
       "--bind", gitDir, gitDir,
-      ...["worktrees", "hooks", "config", "config.worktree", "commondir"].flatMap((name) => {
+      ...["worktrees", "hooks", "modules", "config", "config.worktree"].flatMap((name) => {
         const path = join(gitDir, name)
         return ["--ro-bind", path, path]
       }),

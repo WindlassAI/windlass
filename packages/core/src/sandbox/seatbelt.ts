@@ -102,7 +102,7 @@ export function seatbeltProfile(policy: SandboxPolicy): SeatbeltProfile {
   const writableRoots = [...policy.writableRoots, ...(policy.tempRoot ? [policy.tempRoot] : [])]
   const writes = writableRoots.length > 0 ? `(allow file-read* file-write*\n  ${writableRoots.map((path) => param("WRITABLE", path)).join("\n  ")})` : "; no writable roots"
   const readOnly =
-    (policy.readOnlyPaths ?? []).length > 0 ? `(deny file-write*\n  ${(policy.readOnlyPaths ?? []).map((path) => param("READONLY", path)).join("\n  ")})` : "; no read-only paths"
+    (policy.readOnlyPaths ?? []).length > 0 ? `(deny file-write* file-link\n  ${(policy.readOnlyPaths ?? []).map((path) => param("READONLY", path)).join("\n  ")})` : "; no read-only paths"
   const hidden =
     policy.hiddenPaths.length > 0
       ? `(deny file-read* file-write*\n  ${policy.hiddenPaths.map((path) => param("HIDDEN", path)).join("\n  ")})`

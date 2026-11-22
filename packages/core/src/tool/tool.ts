@@ -135,6 +135,8 @@ export interface ToolContext {
    * read, a write that is one rename) finishes and returns its result as ever.
    */
   readonly signal: AbortSignal
+  /** A repository safety finding from the sandbox, also kept in the command output. */
+  readonly gitNotice?: (message: string) => void
   /** Reports ephemeral progress. Safe to call often; may be dropped. */
   readonly progress: (update: ToolProgress) => void
   /**

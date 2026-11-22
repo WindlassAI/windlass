@@ -36,6 +36,7 @@ test("Seatbelt denies replacing a pinned directory and creating its missing comm
   mkdirSync(git)
   const common = join(git, "commondir")
   const { profile, params } = seatbeltProfile({ ...l.policy, pinnedDirectories: [git], readOnlyPaths: [common] })
+  expect(profile).toContain("deny file-write* file-link")
   expect(params).toContainEqual(["ENTRY_0", git])
   expect(params).toContainEqual(["READONLY_0", common])
   expect(profile).toContain('(deny file-write* (literal (param "ENTRY_0")))')

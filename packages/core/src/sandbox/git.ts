@@ -1,6 +1,7 @@
 /** Repository layout and the mounts needed to keep Git's metadata pointers stable during a command. */
-import { linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { linkSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join, relative, resolve } from "node:path"
+import { readGitFile } from "./git-file.ts"
 import { brand } from "../brand.ts"
 
 export interface GitLayout {
@@ -79,17 +80,16 @@ export function gitProtection(git: GitLayout): { directories: string[]; parents:
   const fromTree = relative(git.workTree, git.gitDir)
   if (entry !== git.gitDir && git.commonDir === git.gitDir && (fromTree === ".." || fromTree.startsWith("../"))) return closed
   const hooks = directories.map((dir) => join(dir, "hooks"))
+  const modules = join(git.commonDir, "modules")
   const registry = join(git.commonDir, "worktrees")
   const common = join(git.commonDir, "commondir")
   const configs = directories.flatMap((dir) => [join(dir, "config"), join(dir, "config.worktree")])
   try {
     if (process.platform === "linux") {
-      for (const dir of [...hooks, registry]) mkdirSync(dir, { recursive: true })
-      // An empty commondir makes Git unusable. "." explicitly names its ordinary common directory.
-      reserveFile(common, ".\n")
+      for (const dir of [...hooks, modules, registry]) mkdirSync(dir, { recursive: true })
       for (const config of configs) reserveFile(config, "")
     }
-    const files = [...hooks, ...configs, common]
+    const files = [...hooks, modules, ...configs, common]
     if (entry !== git.gitDir) files.push(entry)
     if (git.gitDir !== git.commonDir) files.push(join(git.gitDir, "commondir"), join(git.gitDir, "gitdir"))
     if (![...files, registry].every((path) => !lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink()) || !validGitLayout(git)) return closed
@@ -109,8 +109,7 @@ function entryOrNull(path: string) {
 
 function readOrNull(path: string) {
   try {
-    const info = lstatSync(path)
-    return info.isFile() && info.size <= 65536 ? readFileSync(path, "utf8") : null
+    return readGitFile(path, 65536)?.toString("utf8") ?? null
   } catch {
     return null
   }

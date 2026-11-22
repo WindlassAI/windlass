@@ -121,6 +121,7 @@ async function runShell(
   const spillPath = join(spillDir, `shell-${safeName(context.messageId)}-${safeName(context.callId)}.log`)
   const buffer = createOutputBuffer(Bun.file(spillPath).writer(), options.spillLimit, context)
 
+  const inspectGit = await wrapped?.auditGit?.()
   const spawned = spawn(wrapped ?? { argv: [options.shell, "-c", input.command], env: unsandboxedEnv(context, options), cwd: context.cwd })
   if (spawned instanceof Error) {
     void wrapped?.ended?.()
@@ -169,12 +170,14 @@ async function runShell(
   await wrapped?.ended?.()
   const drained = await Promise.race([pumps.then(() => true), Bun.sleep(DRAIN_MS).then(() => false)])
   if (!drained) await Promise.all(readers.map((reader) => reader.cancel().catch(() => {})))
+  const finding = await inspectGit?.()
+  if (finding) reportGitFinding(context, buffer, finding.message)
   await buffer.close()
 
   return finish({
     buffer,
     stopReason,
-    exitCode: child.signalCode === null ? exitCode : null,
+    exitCode: child.signalCode === null ? (finding?.violation && exitCode === 0 ? 1 : exitCode) : null,
     signalCode: child.signalCode === null ? null : String(child.signalCode),
     timeoutSeconds,
     startedAt,
@@ -208,6 +211,7 @@ async function startBackground(
   const sink = Bun.file(logPath).writer()
   // No progress events: the call is over long before the command prints anything.
   const buffer = createOutputBuffer(sink, options.spillLimit, { ...context, progress: () => {} })
+  const inspectGit = await wrapped?.auditGit?.()
   const spawned = spawn(wrapped ?? { argv: [options.shell, "-c", input.command], env: unsandboxedEnv(context, options), cwd: context.cwd })
   if (spawned instanceof Error) {
     void wrapped?.ended?.()
@@ -249,9 +253,11 @@ async function startBackground(
     await wrapped?.ended?.()
     const drained = await Promise.race([pumps.then(() => true), Bun.sleep(DRAIN_MS).then(() => false)])
     if (!drained) await Promise.all(readers.map((reader) => reader.cancel().catch(() => {})))
+    const finding = await inspectGit?.()
+    if (finding) reportGitFinding(context, buffer, finding.message)
     await buffer.close()
     return {
-      exitCode: child.signalCode === null ? exitCode : null,
+      exitCode: child.signalCode === null ? (finding?.violation && exitCode === 0 ? 1 : exitCode) : null,
       signal: child.signalCode === null ? null : String(child.signalCode),
       timedOut,
       durationMs: Math.round(performance.now() - startedAt),
@@ -287,7 +293,12 @@ function sandboxed(command: string, context: ToolContext, options: { shell: stri
   if (options.sandbox === null) return { refused: "it must run in the sandbox, and this build has none" }
   const plan = options.sandbox.plan({ sessionId: context.sessionId, cwd: context.cwd, run: context.sandbox!, command, shellPath: options.shell })
   if (plan.kind !== "ready") return { refused: `it must run in the sandbox, which is unavailable: ${plan.reason}` }
-  return { argv: plan.argv, env: plan.env, cwd: plan.cwd, started: plan.started, ended: plan.ended }
+  return { argv: plan.argv, env: plan.env, cwd: plan.cwd, started: plan.started, ended: plan.ended, auditGit: plan.auditGit }
+}
+
+function reportGitFinding(context: ToolContext, buffer: OutputBuffer, message: string) {
+  buffer.append(new TextEncoder().encode(`\n${message}\n`))
+  context.gitNotice?.(context.redact?.(message).map((piece) => piece.text).join("") ?? message)
 }
 
 /** The environment of a command that runs without the sandbox: the harness's own, without what the session's commands are not given. */

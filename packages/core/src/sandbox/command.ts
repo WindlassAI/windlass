@@ -56,6 +56,7 @@ import { HOME_BINDS, type HomeMounts, homeMounts, homeView } from "./bwrap.ts"
 import { type SandboxDetection, detectSandbox } from "./detect.ts"
 import { type SandboxPlan, type SandboxUnavailable, sandboxCommand } from "./index.ts"
 import type { CommandEnv } from "./config.ts"
+import { auditGit } from "./git-audit.ts"
 import { gitLayout, gitProtection } from "./git.ts"
 import { type SandboxPolicy, defaultPolicy, filterEnv } from "./policy.ts"
 
@@ -234,9 +235,12 @@ export function createCommandSandbox(options: CommandSandboxOptions = {}): Comma
         { shell: input.command, cwd: input.cwd, ...(input.shellPath === undefined ? {} : { shellPath: input.shellPath }) },
         { env, detection, ...(mounts === undefined ? {} : { homeMounts: mounts }) },
       )
-      if (plan.kind !== "ready" || !input.run.network) return plan
+      if (plan.kind !== "ready") return plan
+      const layout = gitLayout(input.cwd)
+      const checked = { ...plan, auditGit: () => auditGit(input.cwd, layout) }
+      if (!input.run.network) return checked
       // A download needs a cache it can write. The user's own stays read-only: what is in it runs outside the sandbox later.
-      return { ...plan, env: { ...plan.env, BUN_INSTALL_CACHE_DIR: join(plan.env.TMPDIR ?? "/tmp", ".bun-install-cache") } }
+      return { ...checked, env: { ...plan.env, BUN_INSTALL_CACHE_DIR: join(plan.env.TMPDIR ?? "/tmp", ".bun-install-cache") } }
     },
     confined: (input) => {
       // Under bubblewrap the root is mounted at /tmp; sandbox-exec leaves paths as they are.

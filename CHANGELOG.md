@@ -8,7 +8,7 @@ All notable changes to Windlass are recorded here. The format follows
 
 ### Added
 
-- ACP clients can mark a prompt or steer containing outside text with `_meta["windlass/untrusted"]: { source }`.
+- ACP clients can mark a prompt, steer, queued message or slash command containing outside text with `_meta["windlass/untrusted"]: { source }`.
   The session records the source before the first step and asks again before a call can send data out.
   An unattended run with `deny` records the refusal.
 - A host can set `WINDLASS_MODEL_BASE_URL` for the model catalog and Responses requests and hand Windlass
@@ -16,6 +16,14 @@ All notable changes to Windlass are recorded here. The format follows
   `WINDLASS_MODEL_ALLOWED_ORIGIN` matching its scheme, host and port.
 
 ### Security
+
+- Subagent merges reject paths through symlinked parents and reserved Git paths. Git worktree operations
+  refuse nested repositories, indexed gitlinks and non-regular or oversized indexes.
+- Sandboxed commands preserve an ordinary repository's absent `commondir`. They report pointer changes
+  and new nested repositories or gitlinks. Absorbed submodules are read-only, and the macOS profile
+  denies hard links to protected metadata.
+- Subagents inherit their parent's untrusted sources. Approval messages name the client source when
+  multiple sources contributed. Model relays require an explicit access-token file.
 
 - Sandboxed commands can still commit, check out branches and run garbage collection, while the repository's
   Git directory and its pointers are protected on Linux and macOS. Windlass pins its own subagent Git
