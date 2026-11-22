@@ -30,8 +30,10 @@ All notable changes to Windlass are recorded here. The format follows
   the session's repository and refuses configuration that could launch external drivers.
 - Each session keeps one Git metadata baseline across its commands. It is checked before and after every
   command and while any command runs, so a process that outlives its command cannot reset it. Pointer changes
-  are undone and reported; new nested repositories and gitlinks are reported once. An index or workspace too
-  large to inspect gives one warning instead of failing every command.
+  are undone and reported; new nested repositories and gitlinks are reported once. What a command outside the
+  sandbox changed, and on Linux a change made while no sandboxed command ran, becomes the baseline instead.
+  A workspace too large to walk still has every gitlink reported and is walked again with every command; an
+  index too large to inspect gives one warning instead of failing every command.
 - Subagents inherit their parent's untrusted sources. Approval messages name the client source when
   multiple sources contributed. Model relays require an explicit access-token file.
 

@@ -95,9 +95,23 @@ An ordinary repository keeps `.git/commondir` absent, so `git rev-parse --git-co
 `.git` at its root. Each session keeps one baseline of the metadata entry and common-directory pointer,
 taken before its first sandboxed command and carried across all later ones. Windlass checks it before and
 after every command, every quarter of a second while any of the session's commands runs (a background one
-included), and, on Linux, as soon as a `commondir` appears. If a pointer was created or replaced, Windlass
-sets it aside, restores the original and reports a failed command. In a workspace opened without a repository, a new root `.git` is also set
-aside for inspection. Initialize the root repository outside the sandbox if you want to keep using it.
+included), and, on Linux, as soon as a `commondir` appears. Each workspace's check is its own: a slow check
+of one workspace, or the nested-repository walk below, does not hold up another. If a pointer was created
+or replaced while a sandboxed command could have done it, Windlass sets it aside, restores the original and
+reports a failed command. In a workspace opened without a repository, a new root `.git` a sandboxed command
+creates is also set aside for inspection. A process that keeps changing the metadata is still undone each
+time, but only the first 8 replacements are kept for inspection, later ones are removed, and one line says it
+is still happening; a command's output lists at most 12 such findings.
+
+What you change yourself is not undone. When a command of the session that ran outside the sandbox (one you
+approved, a hook or a check without the sandbox) has ended, the baseline is taken again, and nothing is
+checked while it runs. A change found before a command while no sandboxed command runs, such as a
+`git init` in your own terminal or an editor's change, is taken as the new baseline on Linux, with a note:
+nothing sandboxed outlives its command there. On macOS a process can, so a valid repository found then is
+kept with a warning to inspect it, and any other change is undone as above. A change made while a sandboxed
+command runs is undone on both, whoever made it: run `git init` and other changes to the metadata through
+the session outside the sandbox, or while none of its commands runs. What a sandboxed background command
+changes while a command outside the sandbox runs is taken as the user's.
 Run linked-worktree creation and removal outside the sandbox. A pre-existing `commondir` is preserved,
 including one containing `.` left by an older build. A bridge that requires its absence still needs that
 legacy file reviewed in an ordinary repository. Linked worktrees use their own Git-managed pointers.
@@ -106,35 +120,46 @@ A command can introduce a nested repository or stage a Git index entry for one (
 when it detects either change, once for each. **Your own root `git status` can execute a nested repository's
 configured programs outside the sandbox.** Inspect the nested metadata before using Git, including through
 an editor or a platform bridge. The warning arrives before or after a command, not while it runs. The walk
-skips directories your `.gitignore` files ignore (a nested repository there is never staged by `git add -A`)
-and stops after 20,000 untracked directories. An index over 64 MiB, or a walk that stops, gives one warning
-for the session and turns the nested-repository check off for it; the commands still run.
+skips directories your `.gitignore` files ignore (a nested repository there is never staged by `git add -A`),
+visits shallow directories first, and stops after 20,000 untracked directories. A command can make it stop
+on purpose, by creating that many directories. A walk that stops still reports every gitlink in the index and
+the nested repositories it reached, and is tried again with every command; you are warned once each time it
+stops being complete. An index over 64 MiB, or one Git cannot list, also gives one warning and is tried
+again with every command; the commands still run.
 
 What this does not close:
 
 - *A pointer a command creates is live until the next check.* On Linux a missing `commondir` cannot be
-  mounted read-only, so a command can create one; it is set aside within a quarter of a second, but a Git
-  client (yours, an editor's) that runs in that window follows it.
+  mounted read-only, so a command can create one; it is set aside within about a quarter of a second (a
+  check another session of the same workspace is making goes first), but a Git client (yours, an editor's)
+  that runs in that window follows it.
+- *A walk that stops misses what lies beyond it.* A nested repository past the first 20,000 untracked
+  directories is not reported until the walk reaches it. A gitlink is always reported.
 - *Between commands nothing watches.* On macOS a process that calls `setsid` leaves its command's process
-  group and survives being stopped. What it changes after its command ended is reported and undone by the
-  session's next command, or not at all if no command follows. On Linux the sandbox ends with its command.
+  group and survives being stopped. What it changes after its command ended is reported by the session's next
+  command, and undone unless it is a valid repository, or not at all if no command follows. On Linux the
+  sandbox ends with its command.
 - *The baseline starts with the session's first sandboxed command.* What changed before it, including by a
   process left over from an earlier session, is taken as it is.
 
 Windlass's subagent worktree operations use the repository opened by the session. They refuse nested
-repositories and gitlinks before staging, check the index type and size, ignore global and system Git
-configuration, and disable hooks, fsmonitor and external diff. They stage through a private copy of the
+repositories and gitlinks before staging, and refuse a workspace with more than 20,000 untracked directories
+to walk (worktree creation, and the commit before a merge or a kept worktree): add the large ones to
+`.gitignore`, or run the subagent without `worktree`. They check the index type and size, ignore global and
+system Git configuration, and disable hooks, fsmonitor and external diff. They stage through a private copy of the
 index, which nothing in the sandbox can add a gitlink to, and refuse a repository that appeared during
 staging. Before a subagent's worktree is merged or kept, the background commands it left running are
-stopped. A Git command that runs for five minutes is stopped, and the operation fails with the reason.
+stopped. A Git command that runs for five minutes is stopped, and the operation fails with the reason; a
+worktree it was creating, and the new branch, are removed.
 Configuration includes, filter drivers, external diff or merge drivers, and a configured work tree also
 prevent these operations. The subagent can still work in the shared workspace.
 
 A merge refuses paths through symlinked directories and any path component a filesystem reads as `.git`:
-other cases, names with code points HFS+ ignores, NTFS names with trailing dots or spaces, and `git~1`. It
+other cases, names with code points HFS+ ignores, NTFS names with trailing dots or spaces, a `:` stream or a
+`\` before the name, and `git~1`. It
 writes only regular files and symlinks: a gitlink, or a file that became a directory, fails the merge
 instead of deleting your file. It never writes inside `.windlass/` (the project's settings, commands and
-agents). A subagent that changed something there fails the merge, and the change stays on its branch for
+agents), under any of those spellings or its NTFS short names `windla~1` to `windla~4`. A subagent that changed something there fails the merge, and the change stays on its branch for
 you to review and apply by hand.
 
 What the protection of the repository's configuration breaks: anything that writes `.git/config` or `.git/hooks`.
