@@ -125,6 +125,8 @@ async function runShell(
   const spawned = spawn(wrapped ?? { argv: [options.shell, "-c", input.command], env: unsandboxedEnv(context, options), cwd: context.cwd })
   if (spawned instanceof Error) {
     void wrapped?.ended?.()
+    // Nothing ran: the check is ended, so that the session's watch no longer counts it as running.
+    void inspectGit?.().catch(() => {})
     await buffer.close()
     await unlink(spillPath).catch(() => {})
     return {
@@ -215,6 +217,8 @@ async function startBackground(
   const spawned = spawn(wrapped ?? { argv: [options.shell, "-c", input.command], env: unsandboxedEnv(context, options), cwd: context.cwd })
   if (spawned instanceof Error) {
     void wrapped?.ended?.()
+    // Nothing ran: the check is ended, so that the session's watch no longer counts it as running.
+    void inspectGit?.().catch(() => {})
     await buffer.close()
     await unlink(logPath).catch(() => {})
     return refused(`Could not start the command: ${spawned.message}`)
