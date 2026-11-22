@@ -4,6 +4,7 @@
  * machine cannot sandbox. It spawns nothing itself; see README.md for how the
  * shell tool is expected to use it.
  */
+import type { GitFinding } from "./git-audit.ts"
 import { type HomeMounts, bwrapArgv, homeCommand } from "./bwrap.ts"
 import { type SandboxBackend, type SandboxDetection, detectSandbox } from "./detect.ts"
 import { type SandboxPolicy, assertValidPolicy, filterEnv } from "./policy.ts"
@@ -66,6 +67,8 @@ export type SandboxPlan = {
    * the mounts it has. `ended` resolves when the command is over, or after a
    * moment when its sandbox is not empty yet (`homeCommand` in `bwrap.ts`).
    */
+  /** Capture the workspace before spawning, then verify it after the process group exits. */
+  readonly auditGit?: () => Promise<() => Promise<GitFinding | null>>
   readonly started?: (pid: number) => void
   readonly ended?: () => Promise<void>
 }

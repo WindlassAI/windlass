@@ -607,7 +607,8 @@ function stepErrorText(error: EventData<"step.failed">["error"]): string {
   }
 }
 
-function noticeTitle(kind: "sandbox_unavailable" | "approval_ignored" | "checks_not_run" | "session_home" | "no_closing_answer"): string {
+function noticeTitle(kind: "sandbox_unavailable" | "approval_ignored" | "checks_not_run" | "session_home" | "no_closing_answer" | "git_metadata"): string {
+  if (kind === "git_metadata") return "Review the workspace’s Git metadata"
   if (kind === "no_closing_answer") return "The model gave no closing answer"
   if (kind === "sandbox_unavailable") return "Commands cannot be sandboxed on this machine"
   if (kind === "approval_ignored") return "A project setting was not followed"

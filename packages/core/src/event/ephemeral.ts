@@ -72,7 +72,7 @@ export type EphemeralEvent =
   | {
       readonly type: "notice"
       readonly sessionId: SessionId
-      readonly kind: "sandbox_unavailable" | "approval_ignored" | "checks_not_run" | "session_home" | "no_closing_answer"
+      readonly kind: "sandbox_unavailable" | "approval_ignored" | "checks_not_run" | "session_home" | "no_closing_answer" | "git_metadata"
       readonly message: string
     }
 

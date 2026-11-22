@@ -1580,7 +1580,12 @@ export function createEngine(options: EngineOptions): Engine {
   // the first hook runs (the sandbox probes the machine once, on first use).
   let hookRunner: HookRunner | null = options.commandHooks?.runner ?? null
   const runHook: HookRunner = (request) =>
-    (hookRunner ??= createHookRunner({ spillDir: join(spillDir, "hooks"), ...(core.approvals === null ? {} : { sandbox: core.approvals.sandbox() }), secrets: () => core.approvals?.secrets ?? [] }))(request)
+    (hookRunner ??= createHookRunner({
+      spillDir: join(spillDir, "hooks"),
+      ...(core.approvals === null ? {} : { sandbox: core.approvals.sandbox() }),
+      secrets: () => core.approvals?.secrets ?? [],
+      gitNotice: (id, message) => core.sessions.get(id as SessionId)?.gitNotice(message),
+    }))(request)
   const core: Core = {
     stores,
     provider: options.provider,
@@ -4013,6 +4018,7 @@ class LiveSession implements EngineSession {
         callId: call.callId,
         cwd: before!.session.cwd,
         signal: stopOf(call).signal,
+        gitNotice: this.gitNotice,
         progress: (update) => {
           if (!abandoned.has(call.callId)) this.ephemeral({ type: "tool.progress", sessionId: this.id, messageId, callId: call.callId, text: update.text })
         },
@@ -4747,6 +4753,7 @@ class LiveSession implements EngineSession {
     if (this.envChoice !== null) child.setCommandEnv(this.envChoice)
     const fromSeq = child.projection().lastSeq
     const forward = child.subscribe((item) => {
+      if (item.type === "notice" && item.kind === "git_metadata") this.gitNotice(item.message)
       if ("seq" in item) this.ephemeral({ type: "child.event", sessionId: this.id, child: child.id, spawnId, title: work.title, event: item })
     })
     let finish = () => {}
@@ -5353,6 +5360,8 @@ class LiveSession implements EngineSession {
     if (!taint.tainted || first === undefined) return
     this.write([event("taint.noticed", { source: first, text: describeTaint(taint) })])
   }
+
+  gitNotice = (message: string) => this.ephemeral({ type: "notice", sessionId: this.id, kind: "git_metadata", message })
 
   /** Says once per process what the user should know about how this session's tools run. */
   private notice(kind: Extract<EphemeralEvent, { type: "notice" }>["kind"], message: string): void {
@@ -6938,6 +6947,7 @@ class LiveSession implements EngineSession {
       signal,
       ...(confined === undefined ? {} : { sandbox: confined }),
       ...(plain === undefined ? {} : { env: plain }),
+      gitNotice: this.gitNotice,
       progress: (name, value) => this.ephemeral({ type: "checks.progress", sessionId: this.id, run: number, check: name, text: value }),
       // A check's output is tool output: what is shown while it runs and what is kept in full are redacted too.
       ...(this.core.approvals === null ? {} : { redact: redactor(this.core.approvals.secrets), unfinishedSecret: (value: string) => unfinishedSecret(value, this.core.approvals!.secrets) }),

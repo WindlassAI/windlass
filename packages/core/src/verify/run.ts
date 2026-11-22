@@ -79,6 +79,7 @@ export interface RunCheckOptions {
    * (`CommandSandbox.environment`). Default: the harness's own.
    */
   readonly env?: Readonly<Record<string, string | undefined>>
+  readonly gitNotice?: ToolContext["gitNotice"]
   /** Ephemeral progress (the tail of the running check's output), for display only. */
   readonly progress?: (check: string, text: string) => void
   /**
@@ -125,6 +126,7 @@ export async function runCheck(check: CheckConfig, options: RunCheckOptions): Pr
       callId: callId(`check-${check.name}`, ""),
       cwd: options.cwd,
       signal: options.signal,
+      ...(options.gitNotice ? { gitNotice: options.gitNotice } : {}),
       progress: (update) => options.progress?.(check.name, update.text),
       // A check is a shell command: it returns text, never media.
       putBlob: noBlobStore,

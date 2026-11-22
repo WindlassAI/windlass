@@ -55,6 +55,7 @@ export interface HookRunRequest {
 export type HookRunner = (request: HookRunRequest) => Promise<HookProcessResult>
 
 export interface HookRunnerOptions {
+  readonly gitNotice?: (sessionId: string, message: string) => void
   /** Where the output is written while a hook runs; each file is deleted afterwards. */
   readonly spillDir: string
   /** Required to run a hook planned in the sandbox. */
@@ -95,6 +96,7 @@ export function createHookRunner(options: HookRunnerOptions): HookRunner {
         { name: `hook-${request.hook.id.replace(/[^A-Za-z0-9_.-]/g, "_")}-${nonce.slice(0, 8)}`, command, timeoutSeconds: request.hook.timeoutSeconds, when: null },
         {
           cwd: request.cwd,
+          gitNotice: (message) => options.gitNotice?.(request.sessionId, message),
           spillDir: options.spillDir,
           signal: interrupt.signal,
           ...(options.shell === undefined ? {} : { shell: options.shell }),
