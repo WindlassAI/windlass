@@ -41,7 +41,8 @@ test("both are advertised where a client looks for what this agent takes", async
   const advertised = answer.agentCapabilities._meta[NS]!
   expect(advertised.methods).toContain(EXT.admit)
   expect(advertised.openMeta).toContain("hostTools")
-  expect(advertised.openMeta).toContain("untrusted")
+  // Opening a session takes no marker: outside text is marked where it arrives, on a prompt, steer or queued message.
+  expect(advertised.openMeta).not.toContain("untrusted")
   expect(advertised.promptMeta).toContain(`${NS}/untrusted`)
 })
 

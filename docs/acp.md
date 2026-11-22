@@ -880,7 +880,8 @@ On `session/prompt`, `_windlass/steer`, `_windlass/queue` and `_windlass/send_co
 to the whole message even when only one content block came from that source. Delivery, step limit, message
 content and turn response keep their usual meanings. The admission records the source and taints the session
 before its next step, with the same approval rules as an untrusted admission below. For capability discovery,
-`agentCapabilities._meta.windlass.openMeta` lists `untrusted` and `promptMeta` lists `windlass/untrusted`.
+`agentCapabilities._meta.windlass.promptMeta` lists `windlass/untrusted`. `session/new`, `session/load` and
+`session/resume` take no marker, so `openMeta` does not list it.
 Clients can omit the marker for their user's own text.
 
 **`_windlass/admit`** (request): a message the client makes itself (a task handed to the session, a note from
