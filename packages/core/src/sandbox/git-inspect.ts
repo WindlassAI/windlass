@@ -5,9 +5,12 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { brand } from "../brand.ts"
 import { readGitFile } from "./git-file.ts"
+import { isDotGit } from "./git-name.ts"
 import { runGit } from "../snapshot/git.ts"
 
 const MAX_INDEX_BYTES = 64 * 1024 * 1024
+/** How many untracked directories one inspection walks before it gives up: a check after every command must stay cheap. */
+export const MAX_SCANNED_DIRECTORIES = 20_000
 
 /** Snapshot ls-files lists an untracked repository as a directory, without visiting its work tree. */
 export const nestedDirectories = (entries: readonly string[]) => entries.filter((name) => name.endsWith("/")).map((name) => name.slice(0, -1))
@@ -19,19 +22,26 @@ export function copyGitIndex(source: string, target: string): void {
 }
 
 /** The private repository keeps ls-files away from the workspace's config, attributes and hooks. */
-export async function repositoryEntries(workTree: string, sourceIndex?: string, indexDirectory = sourceIndex && dirname(sourceIndex)): Promise<Set<string>> {
+export async function repositoryEntries(
+  workTree: string,
+  sourceIndex?: string,
+  indexDirectory = sourceIndex && dirname(sourceIndex),
+  limits: { readonly maxDirectories?: number } = {},
+): Promise<Set<string>> {
   const nested = new Set<string>()
-  // Walk only real directories. Treat both a gitfile and a .git directory as a repository boundary.
+  let budget = limits.maxDirectories ?? MAX_SCANNED_DIRECTORIES
+  // Walk only real directories. Treat both a gitfile and a .git directory as a repository boundary, under any name a filesystem reads as .git.
   async function scan(start: string): Promise<void> {
     const pending = [start]
     while (pending.length) {
       const dir = pending.pop()!
+      if (--budget < 0) throw new Error(`the workspace has more than ${limits.maxDirectories ?? MAX_SCANNED_DIRECTORIES} untracked directories to inspect`)
       const entries = await readdir(join(workTree, dir), { withFileTypes: true })
-      if (dir !== "." && entries.some((entry) => entry.name.toLowerCase() === ".git")) {
+      if (dir !== "." && (lstatSync(join(workTree, dir, ".git"), { throwIfNoEntry: false }) || entries.some((entry) => isDotGit(entry.name)))) {
         nested.add(`nested repository ${JSON.stringify(dir)}`)
         continue
       }
-      for (const entry of entries) if (entry.isDirectory() && entry.name.toLowerCase() !== ".git") pending.push(join(dir, entry.name))
+      for (const entry of entries) if (entry.isDirectory() && !isDotGit(entry.name)) pending.push(join(dir, entry.name))
     }
   }
   if (!sourceIndex) {
@@ -45,7 +55,7 @@ export async function repositoryEntries(workTree: string, sourceIndex?: string, 
     writeFileSync(join(gitDir, "HEAD"), "ref: refs/heads/inspection\n")
     copyGitIndex(sourceIndex, join(gitDir, "index"))
     const context = { git: "git", gitDir, baseEnv: { PATH: process.env.PATH ?? "/usr/bin:/bin" } }
-    const read = () => runGit(context, ["ls-files", "-z", "-t", "--stage", "--others", "--directory"], {
+    const read = () => runGit(context, ["ls-files", "-z", "-t", "--stage", "--others", "--directory", "--exclude-standard"], {
       cwd: workTree, workTree, maxStdout: 64 * 1024 * 1024, okCodes: [0, 128],
     })
     async function list() {
@@ -78,7 +88,7 @@ export async function repositoryEntries(workTree: string, sourceIndex?: string, 
       if (!staged) continue
       const path = staged[2]!
       const components = path.split("/")
-      if (components.some((name) => !name || name === "." || name === ".." || name.toLowerCase() === ".git"))
+      if (components.some((name) => !name || name === "." || name === ".." || isDotGit(name)))
         throw new Error("the Git index contains an unsafe path")
       if (staged[1] === "160000") nested.add(`gitlink ${JSON.stringify(path)}`)
       else components.pop()
