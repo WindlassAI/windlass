@@ -6,9 +6,9 @@
  * user's repository otherwise untouched.
  */
 import { afterAll, afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { createWorktree, repositoryAt } from "../../src/engine/worktree.ts"
+import { createWorktree, mergeWorktree, repositoryAt } from "../../src/engine/worktree.ts"
 import type { StoredEvent } from "../../src/event/durable.ts"
 import type { SessionId } from "../../src/id.ts"
 import type { ModelRequest } from "../../src/request/request.ts"
@@ -141,6 +141,99 @@ describe("subagents in git worktrees", () => {
     const recorded = readFileSync(program + ".log", "utf8").trimEnd().split("\n")
     expect(recorded.slice(0, 5)).toEqual([gitDir, gitDir, cwd, "1", "/dev/null"])
     expect(recorded.slice(5)).toEqual(expect.arrayContaining(["core.fsmonitor=false", "core.hooksPath=/dev/null", "diff.external=", "core.sshCommand=false"]))
+  })
+
+  for (const kind of ["untracked repository", "indexed gitlink"]) {
+    test(`worktree creation refuses an ${kind} before staging`, async () => {
+      const { directory: cwd, data } = repository()
+      if (kind === "untracked repository") sh(cwd, "git init -q packages/vendor && git -C packages/vendor commit --allow-empty -qm first")
+      else sh(cwd, 'git update-index --add --cacheinfo "160000,$(git rev-parse HEAD),vendor"')
+      const directory = join(data, "child")
+      const result = await createWorktree({ cwd, directory, branch: "child", parent: repositoryAt(cwd) })
+      expect(result).toMatchObject({ error: expect.stringMatching(/nested repository|gitlink/i) })
+      expect(existsSync(directory)).toBe(false)
+    })
+  }
+
+  test("merge rejects reserved components in a Git path list before touching the workspace", async () => {
+    const { directory: cwd, data } = repository()
+    const parent = repositoryAt(cwd)!
+    const made = await createWorktree({ cwd, directory: join(data, "child"), branch: "child", parent })
+    if ("error" in made) throw new Error(made.error)
+    writeFileSync(join(made.cwd, "report"), "report")
+    const git = Bun.which("git")!
+    const bin = join(data, "bin")
+    mkdirSync(bin)
+    // Substitute only the path list. No crafted Git object or index is necessary to exercise the merge boundary.
+    writeFileSync(join(bin, "git"), `#!/bin/sh
+case " $* " in
+  *" --name-only "*) printf 'folder/.GiT/result\\0' ;;
+  *) exec "${git}" "$@" ;;
+esac
+`, { mode: 0o755 })
+    const path = process.env.PATH
+    try {
+      process.env.PATH = `${bin}:${path}`
+      const outcome = await mergeWorktree(made.worktree, parent, { title: "report" })
+      expect(outcome.status).toBe("failed")
+      expect(outcome.message).toContain("unsafe merge path")
+    } finally {
+      process.env.PATH = path
+    }
+    expect(existsSync(join(cwd, "folder"))).toBe(false)
+  })
+
+  test("merge refuses nested repositories in the child before committing its work", async () => {
+    const { directory: cwd, data } = repository()
+    const parent = repositoryAt(cwd)!
+    const made = await createWorktree({ cwd, directory: join(data, "child"), branch: "child", parent })
+    if ("error" in made) throw new Error(made.error)
+    sh(made.cwd, "git init -q vendor && git -C vendor commit --allow-empty -qm initial")
+    await expect(mergeWorktree(made.worktree, parent, { title: "report" })).rejects.toThrow("nested repository")
+    expect(existsSync(join(cwd, "vendor"))).toBe(false)
+  })
+
+  test("merge refuses a tracked directory replaced by a relative symlink before it reads any file there", async () => {
+    const { directory: cwd, data } = repository()
+    mkdirSync(join(cwd, "reports"))
+    writeFileSync(join(cwd, "reports", "result"), "original")
+    const parent = repositoryAt(cwd)!
+    const made = await createWorktree({ cwd, directory: join(data, "child"), branch: "child", parent })
+    if ("error" in made) throw new Error(made.error)
+    writeFileSync(join(made.cwd, "reports", "result"), "updated")
+    writeFileSync(join(made.cwd, "a.txt"), "also updated")
+    renameSync(join(cwd, "reports"), join(cwd, "archive"))
+    symlinkSync("archive", join(cwd, "reports"))
+    const result = await mergeWorktree(made.worktree, parent, { title: "report" })
+    expect(result.status).toBe("failed")
+    expect(readFileSync(join(cwd, "archive", "result"), "utf8")).toBe("original")
+    expect(readFileSync(join(cwd, "a.txt"), "utf8")).toBe("a1 edited by the user\n")
+  })
+
+  test("merge checks the parent directory again after computing the result", async () => {
+    const { directory: cwd, data } = repository()
+    const parent = repositoryAt(cwd)!
+    const made = await createWorktree({ cwd, directory: join(data, "child"), branch: "child", parent })
+    if ("error" in made) throw new Error(made.error)
+    mkdirSync(join(made.cwd, "reports"))
+    writeFileSync(join(made.cwd, "reports", "result"), "report")
+    mkdirSync(join(cwd, "archive"))
+    const outcome = await mergeWorktree(made.worktree, parent, { title: "report", probe: (point) => {
+      if (point === "computed") symlinkSync(join(cwd, "archive"), join(cwd, "reports"))
+    } })
+    expect(outcome.status).toBe("failed")
+    expect(existsSync(join(cwd, "archive", "result"))).toBe(false)
+  })
+
+  test("worktree creation promptly rejects a non-regular index", () => {
+    const { directory: cwd, data } = repository()
+    sh(cwd, "rm .git/index && mkfifo .git/index")
+    // Run this check in another process so a blocking read cannot stall the test runner.
+    const module = new URL("../../src/engine/worktree.ts", import.meta.url).href
+    const code = `import { createWorktree, repositoryAt } from ${JSON.stringify(module)};
+      const cwd = process.argv[1]; console.log((await createWorktree({ cwd, parent: repositoryAt(cwd), directory: process.argv[2], branch: "child" })).error)`
+    const result = Bun.spawnSync([process.execPath, "-e", code, cwd, join(data, "child")], { timeout: 5000, killSignal: "SIGKILL" })
+    expect(result.stdout.toString()).toMatch(/regular.*index|index.*regular/i)
   })
 
   function repository() {
