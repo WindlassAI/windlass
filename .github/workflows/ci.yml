@@ -1,12 +1,12 @@
 name: CI
 
-# Pushes to any branch and pull requests. A pushed branch is tested without a pull request, so a commit
-# the Windlass platform pushes to a branch of its own (windlass/**) has CI on its exact commit before the
-# platform builds on it. The release workflow runs the same jobs before it publishes (workflow_call), with
+# Pushes to main and to the Windlass platform's own branches (windlass/**), and pull requests. A platform
+# branch is tested without a pull request, so a commit the platform pushes there has CI on its exact commit
+# before the platform builds on it. Other branches are tested through their pull request only. The release workflow runs the same jobs before it publishes (workflow_call), with
 # `artifacts: true` so the executables it releases are the ones tested here.
 on:
   push:
-    branches: ['**']
+    branches: [main, 'windlass/**']
   pull_request:
   workflow_dispatch:
   workflow_call:
