@@ -20,7 +20,12 @@ It does not stop:
 - reading a hidden file (not a hidden directory) that is replaced by a rename while the command runs (Linux): the file is covered by a mount, and the rename takes the mount away for sandboxes already running. A hidden directory stays hidden whatever is renamed inside it;
 - use of CPU, memory or disk (a private `/tmp` is RAM-backed tmpfs);
 - kernel exploits;
-- writes inside the workspace that run later outside the sandbox: `.git/hooks`, `package.json` scripts, editor task files.
+- writes to workspace files that run later outside the sandbox, such as package scripts and editor tasks.
+
+For a session command, `workspacePolicy` also protects Git metadata. `git.ts` locates the worktree, validates
+its pointers and reserves bind targets on Linux. Both backends apply the read-only worktree registry before
+reopening the current worktree's Git directory, then protect its entry, redirection files, config and hooks.
+The host-visible bind targets and the Git commands this affects are described in [the safety guide](../../../../docs/safety.md).
 
 ## A home of the command's own
 

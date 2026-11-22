@@ -7,7 +7,7 @@
  * Skipped, visibly, where bubblewrap cannot run.
  */
 import { afterAll, beforeAll, describe, expect, test, setDefaultTimeout } from "bun:test"
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { brand } from "../../src/brand.ts"
 import type { CallId, MessageId, SessionId } from "../../src/id.ts"
@@ -28,7 +28,7 @@ afterAll(removeTempDirs)
 const NOTHING: SandboxRun = { network: false, writableRoots: [] }
 const SESSION = "ses_workflows" as SessionId
 
-const base = tempDir("workflows")
+const base = realpathSync(tempDir("workflows"))
 const sandbox = createCommandSandbox({ tempBase: join(base, "session-temp") })
 const tool = shellTool({ spillDir: join(base, "spill"), sandbox, graceMs: 500 })
 let calls = 0
@@ -59,6 +59,55 @@ function project(label: string) {
   expect(host(dir, `git init -q . && git add -A && ${GIT_IDENTITY} commit -qm init`).code).toBe(0)
   return dir
 }
+
+// Exercise the same boundary on either installed backend. Use inert metadata and inspect it from the host.
+describe.skipIf(!sandbox.state.available)("git metadata inside the command sandbox", () => {
+  for (const [name, command] of [
+    ["redirect the common directory", "printf elsewhere > .git/commondir"],
+    ["rename the git directory", "mv .git old-git"],
+    ["replace the git directory with a gitfile", "mv .git original && printf 'gitdir: elsewhere' > .git"],
+  ] as const) {
+    test(`a command cannot ${name}`, async () => {
+      const cwd = project(name.replaceAll(" ", "-"))
+      const head = host(cwd, "git rev-parse HEAD").output
+      const blocked = await sh(cwd, command)
+      expect(blocked.ok).toBe(false)
+      if (process.platform === "linux" && command.startsWith("mv ")) expect(blocked.output).toMatch(/busy/i)
+      expect(host(cwd, "git rev-parse HEAD").output).toBe(head)
+    })
+  }
+
+  test("the host sees the sandbox's commit, checkout and garbage collection", async () => {
+    const cwd = project("normal-git")
+    const commit = await sh(cwd, `echo normal > tracked && git add tracked && ${GIT_IDENTITY} commit -qm normal && git checkout -qb topic && git gc`)
+    expect(commit.ok).toBe(true)
+    expect(host(cwd, "git log -1 --format=%s").output.trim()).toBe("normal")
+  })
+
+  test("a gitfile alone cannot grant writes to another repository's external directory", () => {
+    const other = project("separate")
+    const dir = join(base, "standalone")
+    mkdirSync(dir)
+    writeFileSync(join(dir, ".git"), `gitdir: ${other}/.git\n`)
+    const policy = sandbox.policy({ cwd: dir, sessionId: SESSION, run: NOTHING })
+    expect(policy.writableRoots).toEqual([dir])
+    expect(policy.pinnedDirectories).toEqual([])
+    expect(policy.readOnlyPaths).toContain(join(other, ".git"))
+  })
+
+  test("a linked worktree keeps its gitfile and both pointers", async () => {
+    const main = project("registry")
+    const cwd = join(base, "pinned-worktree")
+    expect(host(main, `git worktree add -qb linked "${cwd}"`).code).toBe(0)
+    const git = gitLayout(cwd)!
+    for (const path of [join(cwd, ".git"), join(git.gitDir, "gitdir"), join(git.gitDir, "commondir"), join(git.commonDir, "commondir")]) {
+      expect((await sh(cwd, `printf elsewhere > "${path}"`)).ok).toBe(false)
+    }
+    expect((await sh(cwd, "printf 'gitdir: unused' > pointer && mv -f pointer .git")).ok).toBe(false)
+    expect((await sh(cwd, `echo normal > tracked && git add tracked && ${GIT_IDENTITY} commit -qm linked`)).ok).toBe(true)
+    expect(host(cwd, "git log -1 --format=%s").output.trim()).toBe("linked")
+  })
+})
 
 describe.skipIf(skipReason !== null)("developer workflows inside the sandbox, without escalation", () => {
   let workspace = ""
@@ -107,7 +156,7 @@ describe.skipIf(skipReason !== null)("developer workflows inside the sandbox, wi
   test("git in a linked worktree: commits go to the main repository's git directory", async () => {
     const tree = join(base, "linked")
     expect(host(workspace, `git worktree add -q ${tree} -b linked`).code).toBe(0)
-    expect(gitLayout(tree)).toEqual({ gitDir: join(workspace, ".git", "worktrees", "linked"), commonDir: join(workspace, ".git") })
+    expect(gitLayout(tree)).toEqual({ workTree: tree, gitDir: join(workspace, ".git", "worktrees", "linked"), commonDir: join(workspace, ".git") })
     writeFileSync(join(tree, "in-tree.txt"), "tree\n")
     const commit = await sh(tree, `git add -A && ${GIT_IDENTITY} commit -qm "from the worktree" && git log --oneline | head -1`)
     expect(commit.output).toContain("from the worktree")
@@ -226,11 +275,13 @@ describe.skipIf(skipReason !== null)("what the sandbox stops, and what the harde
       join(workspace, ".git", "hooks"),
       join(workspace, ".git", "config"),
       join(workspace, ".git", "config.worktree"),
+      join(workspace, ".git", "commondir"),
       join(workspace, `.${brand.directory}`),
     ])
     expect(policy.hiddenPaths).toContain("/home/someone/.ssh")
     const widened = workspacePolicy({ cwd: workspace, tempRoot: "/var/tmp/t", run: { network: true, writableRoots: ["/opt/cache"] }, home: "/home/someone", env: {} })
     expect(widened.writableRoots).toEqual([workspace, "/opt/cache"])
+    expect(widened.pinnedDirectories).toEqual([join(workspace, ".git")])
     expect(widened.network).toEqual({ mode: "on" })
   })
 
@@ -361,13 +412,18 @@ describe.skipIf(skipReason !== null)("the session's home is a setting, off until
     const plan = planned(plain)
     const mask = plan.argv[plan.argv.indexOf(join(home, ".npmrc")) - 1]!
     // The workspace, what is read-only in it, then the masks: first the credential stores of this home, then this machine's own sockets.
-    expect(mounts(plan.argv).slice(0, 16)).toEqual([
-      ...["--bind", workspace, workspace],
-      ...["--ro-bind", join(workspace, ".git", "hooks"), join(workspace, ".git", "hooks")],
-      ...["--ro-bind", join(workspace, ".git", "config"), join(workspace, ".git", "config")],
-      ...["--perms", "0000", "--tmpfs", join(home, ".ssh")],
-      ...["--ro-bind", mask, join(home, ".npmrc")],
-    ])
+    const gitDir = join(workspace, ".git")
+    const expected = [
+      "--bind", workspace, workspace,
+      "--bind", gitDir, gitDir,
+      ...["worktrees", "hooks", "config", "config.worktree", "commondir"].flatMap((name) => {
+        const path = join(gitDir, name)
+        return ["--ro-bind", path, path]
+      }),
+      "--perms", "0000", "--tmpfs", join(home, ".ssh"),
+      "--ro-bind", mask, join(home, ".npmrc"),
+    ]
+    expect(mounts(plan.argv).slice(0, expected.length)).toEqual(expected)
     expect(plan.argv.filter((arg) => arg.startsWith(base) && arg !== workspace && !arg.startsWith(`${workspace}/`))).toEqual([join(tempBase, session), join(home, ".ssh"), join(home, ".npmrc")])
     expect(plan.argv.slice(plan.argv.indexOf("/proc") + 1, plan.argv.indexOf("/tmp") + 1)).toEqual(["--bind", join(tempBase, session), "/tmp"])
     expect(plan.started).toBeUndefined()

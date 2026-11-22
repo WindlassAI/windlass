@@ -204,7 +204,7 @@ import {
   watchTooSlow,
   watchedLine,
 } from "./spawn.ts"
-import { type MergeOutcome, createWorktree, mergeWorktree, removeWorktree, salvageWorktree, worktreeBranch } from "./worktree.ts"
+import { type MergeOutcome, type Repository, repositoryAt, createWorktree, mergeWorktree, removeWorktree, salvageWorktree, worktreeBranch } from "./worktree.ts"
 import {
   CANCELLED,
   STOPPED,
@@ -1686,18 +1686,18 @@ export function createEngine(options: EngineOptions): Engine {
   /** Opens a session that is not open here, repairing what a dead process left (see `recover`). */
   const open = (id: SessionId, resume: ResumeMode, host: HostTools | null = null): LiveSession => {
     const store = storeErrors(() => core.stores.open(id))
-    const session = new LiveSession(core, id, store)
-    // Before recovery, which may take the interrupted turn up at once: its calls of the client's tools reach the client.
-    session.useHost(host)
-    core.sessions.set(id, session)
     try {
+      const session = new LiveSession(core, id, store)
+      // Before recovery, which may take the interrupted turn up at once: its calls of the client's tools reach the client.
+      session.useHost(host)
+      core.sessions.set(id, session)
       session.recover(resume)
+      return session
     } catch (error) {
       core.sessions.delete(id)
       store.close()
       throw error
     }
-    return session
   }
 
   /**
@@ -1751,7 +1751,7 @@ export function createEngine(options: EngineOptions): Engine {
       const start = startAs(core, input)
       const id = core.ids.session()
       const store = storeErrors(() => core.stores.create(id))
-      const session = new LiveSession(core, id, store)
+      const session = new LiveSession(core, id, store, input.cwd)
       try {
         session.write([
           event("session.created", { cwd: input.cwd, title: input.title ?? null, lineage: null, settings: start.settings }),
@@ -2218,7 +2218,12 @@ class LiveSession implements EngineSession {
     readonly id: SessionId,
     /** This session's store, held for writing from the moment it was created or opened until `close`. */
     private readonly store: Store,
-  ) {}
+    cwd = store.getSession(id)?.session.cwd,
+  ) {
+    this.repository = cwd === undefined ? null : repositoryAt(cwd)
+  }
+
+  private readonly repository: Repository | null
 
   // ---- the public surface ----
 
@@ -4602,14 +4607,14 @@ class LiveSession implements EngineSession {
     let worktree: WorktreeRecord | null = null
     let cwd = projection.session.cwd
     if (input.worktree === true) {
-      const made = await createWorktree({ cwd, directory: join(settings.worktreeDir, childId), branch: worktreeBranch(childId) })
+      const made = await createWorktree({ cwd, parent: this.repository, directory: join(settings.worktreeDir, childId), branch: worktreeBranch(childId) })
       if ("error" in made) return toolResult("error", `The subagent was not started: ${made.error}`)
       worktree = made.worktree
       cwd = made.cwd
     }
     const background = input.background === true
     const discard = async (why: unknown) => {
-      if (worktree !== null) await removeWorktree(worktree, { keepBranch: false })
+      if (worktree !== null && this.repository !== null) await removeWorktree(worktree, this.repository, { keepBranch: false })
       return toolResult("error", `The subagent was not started: ${describe(why)}`)
     }
     if (context.signal.aborted) return discard(callStopReasonOf(context.signal) === "call" ? "the user stopped this call" : "the session was interrupted")
@@ -4623,7 +4628,7 @@ class LiveSession implements EngineSession {
     let child: LiveSession
     try {
       const store = storeErrors(() => this.core.stores.create(childId))
-      child = new LiveSession(this.core, childId, store)
+      child = new LiveSession(this.core, childId, store, cwd)
       try {
         child.write([
           event("session.created", { cwd, title, lineage: { kind: "spawn", parentSessionId: this.id, spawnId, depth: depth + 1, worktree }, settings: childSettings }),
@@ -4700,9 +4705,14 @@ class LiveSession implements EngineSession {
   /** Opens a child session of this one for writing, without recovering or resuming it. */
   private openChild(childId: SessionId): LiveSession {
     const store = storeErrors(() => this.core.stores.open(childId))
-    const child = new LiveSession(this.core, childId, store)
-    this.core.sessions.set(childId, child)
-    return child
+    try {
+      const child = new LiveSession(this.core, childId, store)
+      this.core.sessions.set(childId, child)
+      return child
+    } catch (error) {
+      store.close()
+      throw error
+    }
   }
 
   /**
@@ -4795,9 +4805,11 @@ class LiveSession implements EngineSession {
 
   /** What becomes of a subagent's worktree when its work ends: merged into this workspace when it finished, kept on its branch otherwise. */
   private finishWorktree(worktree: WorktreeRecord, title: string, completed: boolean): Promise<MergeOutcome> {
+    if (!this.repository || this.repository.workTree !== worktree.repository)
+      return Promise.resolve({ status: "failed", branch: worktree.branch, commit: null, files: [], conflicts: [], kept: true, message: "The recorded repository is unavailable. The subagent worktree was kept." })
     const work = completed
-      ? mergeWorktree(worktree, { title, probe: (point) => this.probe(point === "computed" ? "merge.computed" : "merge.writing") })
-      : salvageWorktree(worktree, title)
+      ? mergeWorktree(worktree, this.repository, { title, probe: (point) => this.probe(point === "computed" ? "merge.computed" : "merge.writing") })
+      : salvageWorktree(worktree, this.repository, title)
     return work.catch(
       (error: unknown): MergeOutcome => ({ status: "failed", branch: worktree.branch, commit: null, files: [], conflicts: [], kept: true, message: `Its worktree could not be merged or removed (${describe(error)}); nothing was changed in this workspace.` }),
     )
@@ -7614,7 +7626,7 @@ async function forkSession(core: Core, askedId: SessionId, options: ForkOptions)
   }
   core.probe?.("fork.copied", id)
   const store = storeErrors(() => core.stores.create(id))
-  const session = new LiveSession(core, id, store)
+  const session = new LiveSession(core, id, store, cwd)
   try {
     session.write([
       event("session.created", {
@@ -7654,7 +7666,7 @@ async function replaySession(core: Core, sourceId: SessionId, request: ReplayReq
   const copyMade = copy !== null && !existsSync(copy)
   if (copy !== null) mkdirSync(copy, { recursive: true })
   const store = storeErrors(() => core.stores.create(id))
-  const session = new LiveSession(core, id, store)
+  const session = new LiveSession(core, id, store, copy ?? prepared.tape.cwd)
   try {
     session.write([
       event("session.created", {

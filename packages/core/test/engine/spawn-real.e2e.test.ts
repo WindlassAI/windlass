@@ -6,8 +6,9 @@
  * user's repository otherwise untouched.
  */
 import { afterAll, afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
-import { existsSync, readFileSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { createWorktree, repositoryAt } from "../../src/engine/worktree.ts"
 import type { StoredEvent } from "../../src/event/durable.ts"
 import type { SessionId } from "../../src/id.ts"
 import type { ModelRequest } from "../../src/request/request.ts"
@@ -104,6 +105,44 @@ describe("a real background command", () => {
 })
 
 describe("subagents in git worktrees", () => {
+  test("the parent is pinned before snapshotting and external drivers are refused", async () => {
+    const spot = place("wl-wt-pinned-")
+    const cwd = spot.workspace("repo")
+    sh(cwd, "git init -q && git commit --allow-empty -qm first")
+    const parent = repositoryAt(cwd)!
+    const input = { cwd, parent, directory: join(spot.data, "child"), branch: "child" }
+    for (const key of ["filter.test.clean", "diff.test.textconv", "diff.test.command", "merge.test.driver", "include.path", "core.worktree"]) {
+      sh(cwd, `git config --local ${key} unused`)
+      expect(await createWorktree(input)).toMatchObject({ error: expect.stringContaining("repository config") })
+      sh(cwd, `git --work-tree=. config --file .git/config --unset ${key}`)
+    }
+    writeFileSync(join(cwd, ".git", "commondir"), "unrelated\n")
+    expect(await createWorktree(input)).toMatchObject({ error: expect.stringContaining("pointers changed") })
+    expect(existsSync(input.directory)).toBe(false)
+  })
+
+  test("Windlass invokes Git with the pinned paths and its own configuration overrides", async () => {
+    const spot = place("wl-wt-git-")
+    const cwd = spot.workspace("repo")
+    sh(cwd, "git init -q")
+    const gitDir = join(cwd, ".git")
+    const bin = join(spot.root, "bin")
+    mkdirSync(bin)
+    const program = join(bin, "git")
+    writeFileSync(program, '#!/bin/sh\nprintf "%s\\n" "$GIT_DIR" "$GIT_COMMON_DIR" "$GIT_WORK_TREE" "$GIT_CONFIG_NOSYSTEM" "$GIT_CONFIG_GLOBAL" "$@" > "$0.log"\nexit 1\n')
+    chmodSync(program, 0o755)
+    const path = process.env.PATH
+    try {
+      process.env.PATH = bin
+      await createWorktree({ cwd, parent: repositoryAt(cwd), directory: join(spot.data, "child"), branch: "child" })
+    } finally {
+      process.env.PATH = path
+    }
+    const recorded = readFileSync(program + ".log", "utf8").trimEnd().split("\n")
+    expect(recorded.slice(0, 5)).toEqual([gitDir, gitDir, cwd, "1", "/dev/null"])
+    expect(recorded.slice(5)).toEqual(expect.arrayContaining(["core.fsmonitor=false", "core.hooksPath=/dev/null", "diff.external=", "core.sshCommand=false"]))
+  })
+
   function repository() {
     const spot = place("wl-wt-")
     const directory = spot.workspace("repo", { "a.txt": "a1\n", "b.txt": "b1\n", "shared.txt": "line 1\nline 2\nline 3\n", ".gitignore": "ignored/\n" })

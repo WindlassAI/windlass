@@ -23,7 +23,7 @@ import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkS
 import { tmpdir } from "node:os"
 import { basename, dirname, join, relative } from "node:path"
 import { brand } from "../brand.ts"
-import type { SandboxHome, SandboxPolicy } from "./policy.ts"
+import { type SandboxHome, type SandboxPolicy, directoryMounts } from "./policy.ts"
 
 export interface BwrapOptions {
   readonly bwrapPath: string
@@ -72,6 +72,8 @@ export function bwrapArgv(policy: SandboxPolicy, command: readonly string[], cwd
       const real = existingRealpath(root)
       return real && mountable(real) ? ["--bind", real, real] : []
     }),
+    // Parent first: a registry is read-only except for the current worktree's pinned directory.
+    ...directoryMounts(policy).flatMap(({ path, writable }) => mountable(path) ? [writable ? "--bind" : "--ro-bind", path, path] : []),
     // After the writable roots, so they are read-only inside them. A file is bound too: replacing it by rename then fails.
     ...(policy.readOnlyPaths ?? []).flatMap((path) => {
       const real = existingRealpath(path)
