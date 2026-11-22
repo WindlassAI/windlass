@@ -210,7 +210,7 @@ export const EXTENSION_CAPABILITIES = {
   /** Keys of `clientCapabilities._meta[<ns>]` this server reads (`ClientMeta`). */
   clientMeta: ["events", "updates"],
   /** Keys of `_meta[<ns>]` on `session/new`, `session/load` and `session/resume` (`OpenMeta`). With `hostTools`, this server sends `_<ns>/host_call`. */
-  openMeta: ["model", "effort", "agent", "approval", "unattended", "sandboxHome", "withholdEnv", "passEnv", "requiredChecks", "hostTools", "untrusted", "attended", "children"],
+  openMeta: ["model", "effort", "agent", "approval", "unattended", "sandboxHome", "withholdEnv", "passEnv", "requiredChecks", "hostTools", "attended", "children"],
   /** The permission requests this server sends: the hand-edit question of an undo, and the approval of a tool call (the session's own, or a subagent's). */
   permissionRequests: ["revert", APPROVAL_META],
 } as const
