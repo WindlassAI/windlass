@@ -24,7 +24,7 @@
  *   branch are removed. After a conflict or a failure the worktree is removed
  *   and the branch stays, with the child's work committed on it.
  */
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join, relative, resolve } from "node:path"
 import { brand } from "../brand.ts"
@@ -176,8 +176,21 @@ export async function createWorktree(input: { readonly cwd: string; readonly dir
     const base = same ? head : await git(repository, ["commit-tree", text(tree), "-p", text(head), "-m", `${brand.name}: the workspace a subagent started from`])
     if (base.code !== 0) return { error: `the workspace could not be recorded for the worktree: ${lastLine(base)}` }
     mkdirSync(dirname(input.directory), { recursive: true })
+    // What a failed or stopped `worktree add` may leave is removed, but never what was there before it.
+    const branchBefore = (await git(repository, ["rev-parse", "--verify", "--quiet", `refs/heads/${input.branch}`])).code === 0
+    const directoryBefore = existsSync(input.directory)
     const made = await git(repository, ["worktree", "add", "--quiet", "-b", input.branch, input.directory, text(base)])
-    if (made.code !== 0) return { error: `git could not create the worktree: ${lastLine(made)}` }
+    if (made.code !== 0) {
+      // A stop part way leaves a locked entry under .git/worktrees and the new branch: the next attempt would fail on both.
+      if (!directoryBefore) {
+        await git(repository, ["worktree", "remove", "--force", "--force", input.directory])
+        rmSync(input.directory, { recursive: true, force: true })
+        unlockAbandoned(repository, input.directory)
+        await git(repository, ["worktree", "prune"])
+      }
+      if (!branchBefore) await git(repository, ["branch", "-D", "--quiet", input.branch])
+      return { error: `git could not create the worktree: ${lastLine(made)}` }
+    }
     const inside = relative(repository.workTree, await realPath(input.cwd))
     return {
       worktree: { path: input.directory, branch: input.branch, base: text(base), repository: repository.workTree },
@@ -185,6 +198,31 @@ export async function createWorktree(input: { readonly cwd: string; readonly dir
     }
   } finally {
     rmSync(scratch, { recursive: true, force: true })
+  }
+}
+
+/**
+ * A `worktree add` stopped before it wrote the worktree's gitfile leaves its
+ * entry locked, which `worktree prune` skips. Unlock the entry that names
+ * `directory`, gone now, so that prune removes it.
+ */
+function unlockAbandoned(repository: Repository, directory: string) {
+  const registry = join(repository.commonDir, "worktrees")
+  const names = (() => {
+    try {
+      return readdirSync(registry)
+    } catch {
+      return []
+    }
+  })()
+  for (const name of names) {
+    try {
+      const entry = join(registry, name)
+      const named = readFileSync(join(entry, "gitdir"), "utf8").trim()
+      if (resolve(named) === join(directory, ".git") && !existsSync(directory)) rmSync(join(entry, "locked"), { force: true })
+    } catch {
+      // An entry without a readable gitdir is not this one, or is left for the user: `git worktree prune` reports it.
+    }
   }
 }
 
