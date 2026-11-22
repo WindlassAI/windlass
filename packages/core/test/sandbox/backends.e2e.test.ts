@@ -3,6 +3,7 @@ import { afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { lstatSync, mkdirSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { type SandboxPolicy, defaultPolicy, sandboxCommand, seatbeltProfile } from "../../src/sandbox/index.ts"
+import { anyCase } from "../../src/sandbox/seatbelt.ts"
 import { HOME_BINDS, bwrapArgv, homeMounts, homeView } from "../../src/sandbox/bwrap.ts"
 import { removeTempDirs, tempDir } from "./helpers.ts"
 import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
@@ -41,6 +42,22 @@ test("Seatbelt denies replacing a pinned directory and creating its missing comm
   expect(params).toContainEqual(["READONLY_0", common])
   expect(profile).toContain('(deny file-write* (literal (param "ENTRY_0")))')
   expect(profile.indexOf('(subpath (param "READONLY_0"))')).toBeGreaterThan(profile.indexOf('(subpath (param "WRITABLE_0"))'))
+})
+
+test("Seatbelt denies the read-only paths in any case of their letters, with the path escaped for the regex", () => {
+  const l = layout()
+  const git = join(l.workspace, ".git")
+  mkdirSync(git)
+  const { profile } = seatbeltProfile({ ...l.policy, readOnlyPaths: [join(git, "commondir"), join(git, "config.worktree")] })
+  const rule = (path: string) => anyCase(join(realpathSync(git), path.slice(git.length + 1)))[0]!
+  expect(profile).toContain(rule(join(git, "commondir")))
+  expect(profile).toContain(rule(join(git, "config.worktree")))
+  expect(anyCase("/w/.git/commondir")).toEqual(['(regex #"^/[wW]/\\.[gG][iI][tT]/[cC][oO][mM][mM][oO][nN][dD][iI][rR](/.*)?$")'])
+  expect(anyCase("/w/a+b (1)/x")).toEqual(['(regex #"^/[wW]/[aA]\\+[bB] \\(1\\)/[xX](/.*)?$")'])
+  // A path the regex literal cannot hold keeps only its exact rule.
+  expect(anyCase('/w/"quoted"')).toEqual([])
+  const deny = profile.slice(profile.indexOf("(deny file-write* file-link"))
+  expect(deny.indexOf(rule(join(git, "commondir")))).toBeGreaterThan(-1)
 })
 
 describe("bwrap argv", () => {

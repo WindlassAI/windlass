@@ -9,7 +9,8 @@
  *
  * The profile denies by default and allows what ordinary command-line tools
  * need. Paths come in as `-D` parameters rather than being spliced into the
- * profile, so no path needs escaping. Later rules win over earlier ones, so
+ * profile, so no path needs escaping; only the any-case rules for read-only
+ * paths are regex literals, built by `anyCase`, which escapes them. Later rules win over earlier ones, so
  * the hidden-path denials come last. sandbox-exec applies the profile and
  * execs the command in place: the process tree, process group and signals are
  * the same as without the sandbox.
@@ -101,8 +102,12 @@ export function seatbeltProfile(policy: SandboxPolicy): SeatbeltProfile {
     : `(allow file-read*\n  (literal "/")\n  ${[...SYSTEM_READ, ...(policy.readableRoots ?? [])].map((path) => param("READABLE", path)).join("\n  ")})`
   const writableRoots = [...policy.writableRoots, ...(policy.tempRoot ? [policy.tempRoot] : [])]
   const writes = writableRoots.length > 0 ? `(allow file-read* file-write*\n  ${writableRoots.map((path) => param("WRITABLE", path)).join("\n  ")})` : "; no writable roots"
+  // A volume that ignores case (the default on macOS) creates `.git/CommonDir` as `.git/commondir`, and a missing
+  // `hooks` directory as `.git/Hooks`: every read-only path is also denied in any case of its letters.
   const readOnly =
-    (policy.readOnlyPaths ?? []).length > 0 ? `(deny file-write* file-link\n  ${(policy.readOnlyPaths ?? []).map((path) => param("READONLY", path)).join("\n  ")})` : "; no read-only paths"
+    (policy.readOnlyPaths ?? []).length > 0
+      ? `(deny file-write* file-link\n  ${(policy.readOnlyPaths ?? []).flatMap((path) => [param("READONLY", path), ...anyCase(canonical(path))]).join("\n  ")})`
+      : "; no read-only paths"
   const hidden =
     policy.hiddenPaths.length > 0
       ? `(deny file-read* file-write*\n  ${policy.hiddenPaths.map((path) => param("HIDDEN", path)).join("\n  ")})`
@@ -136,6 +141,20 @@ export function seatbeltProfile(policy: SandboxPolicy): SeatbeltProfile {
 export function seatbeltArgv(policy: SandboxPolicy, command: readonly string[], sandboxExecPath = SANDBOX_EXEC_PATH): string[] {
   const generated = seatbeltProfile(policy)
   return [sandboxExecPath, "-p", generated.profile, ...generated.params.map(([name, value]) => `-D${name}=${value}`), "--", ...command]
+}
+
+/**
+ * A rule that matches `path` and everything under it with its ASCII letters
+ * in any case. None for a path the profile's regex literal cannot hold; the
+ * exact path is still denied by its parameter.
+ */
+export function anyCase(path: string): string[] {
+  if (/["\\\x00-\x1f\x7f]/.test(path)) return []
+  const pattern = [...path].map((char) => {
+    if (/[A-Za-z]/.test(char)) return `[${char.toLowerCase()}${char.toUpperCase()}]`
+    return /[.^$*+?()[\]{}|]/.test(char) ? `\\${char}` : char
+  }).join("")
+  return [`(regex #"^${pattern}(/.*)?$")`]
 }
 
 function canonical(path: string): string {

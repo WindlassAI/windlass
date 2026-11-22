@@ -85,10 +85,10 @@ export function gitProtection(git: GitLayout): { directories: string[]; parents:
   const common = join(git.commonDir, "commondir")
   const configs = directories.flatMap((dir) => [join(dir, "config"), join(dir, "config.worktree")])
   try {
-    if (process.platform === "linux") {
-      for (const dir of [...hooks, modules, registry]) mkdirSync(dir, { recursive: true })
-      for (const config of configs) reserveFile(config, "")
-    }
+    // A missing directory could be created under another case of its name on a volume that ignores case (macOS):
+    // these exist on every platform. Linux also needs every bind target to exist; Seatbelt denies a missing file by name.
+    for (const dir of [...hooks, modules, registry]) mkdirSync(dir, { recursive: true })
+    if (process.platform === "linux") for (const config of configs) reserveFile(config, "")
     const files = [...hooks, modules, ...configs, common]
     if (entry !== git.gitDir) files.push(entry)
     if (git.gitDir !== git.commonDir) files.push(join(git.gitDir, "commondir"), join(git.gitDir, "gitdir"))
