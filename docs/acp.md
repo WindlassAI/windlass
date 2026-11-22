@@ -39,6 +39,10 @@ instead of how to sign in on that machine; `authenticate` reads the file again. 
 `data["windlass"].code` ("Errors" below): `handed_in_expired` and `handed_in_rejected` mean the token is no longer
 good, and the other `handed_in_*` codes that the file was not delivered as it should be.
 
+For a placeholder relay, the host starts `windlass acp` with `WINDLASS_MODEL_BASE_URL` and
+`WINDLASS_ACCESS_TOKEN_FILE`. A remote relay also needs `WINDLASS_MODEL_ALLOWED_ORIGIN`.
+See [the token handoff and relay setup](user-guide.md#signing-in).
+
 Sessions are stored one file each, and a process holds only the sessions it is working in. While `windlass acp` runs, an
 `windlass` in another terminal works in its own sessions, and so does a second editor. A session is open in one place at a
 time: loading one that another process is working in fails with an error that names that process (`data` carries

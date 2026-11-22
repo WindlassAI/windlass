@@ -155,6 +155,7 @@ beforeAll(() => {
     async fetch(incoming) {
       const url = new URL(incoming.url)
       const [scenario, endpoint] = url.pathname.slice(1).split("/")
+      if (scenario === "relay-redirect") return Response.redirect(`${base}/text/${endpoint}`, 307)
       if (endpoint === "models") return modelsRoute(incoming, scenario ?? "")
       seen.push({
         method: incoming.method,
@@ -209,6 +210,11 @@ describe("OpenAIResponsesProvider over HTTP", () => {
     expect(last.authorizationMatches).toBe(true)
     expect(last.sessionId).toBe("cache-key-TEST")
     expect(last.body).toBe(encodeRequest(request, new Map()).body)
+  })
+
+  test("an overridden base URL refuses redirects for both the stream and the catalog", async () => {
+    expect(await errorOf("relay-redirect")).toMatchObject({ kind: "transport" })
+    await expect(listModels({ accessToken: async () => TOKEN, baseUrl: `${base}/relay-redirect` })).rejects.toMatchObject({ error: { kind: "transport" } })
   })
 
   test("pre-stream HTTP errors in each observed body shape", async () => {

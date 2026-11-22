@@ -11,6 +11,9 @@ All notable changes to Windlass are recorded here. The format follows
 - ACP clients can mark a prompt or steer containing outside text with `_meta["windlass/untrusted"]: { source }`.
   The session records the source before the first step and asks again before a call can send data out.
   An unattended run with `deny` records the refusal.
+- A host can set `WINDLASS_MODEL_BASE_URL` for the model catalog and Responses requests and hand Windlass
+  a relay placeholder through its existing access-token file. A relay outside loopback needs an explicit
+  `WINDLASS_MODEL_ALLOWED_ORIGIN` matching its scheme, host and port.
 
 ## [0.5.0] - 2026-11-20
 

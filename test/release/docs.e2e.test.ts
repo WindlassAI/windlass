@@ -70,6 +70,8 @@ const loginFlags = ["--no-browser", "--json", "--valid-for"]
 const downloadFlags = ["--remote-name-all", "--ignore-missing"]
 /** npm's option that leaves out the executable's package, which the pages warn about. */
 const npmFlags = ["--omit"]
+/** Bun's source-launch option that keeps a project dotenv file out of the relay configuration. */
+const bunFlags = ["--no-env-file"]
 /** The files a release has (scripts/release.ts collects them). */
 const executables = TARGETS.map(artifactName)
 const releaseFiles = [...executables, "build-info.json", INSTALL_SCRIPT, CHECKSUMS]
@@ -166,7 +168,7 @@ describe("commands in the documentation", () => {
   }, 60_000)
 
   test("every --option the pages name exists", () => {
-    const known = new Set([...helpFlags, ...buildFlags, ...installFlags, ...loginFlags, ...downloadFlags, ...npmFlags])
+    const known = new Set([...helpFlags, ...buildFlags, ...installFlags, ...loginFlags, ...downloadFlags, ...npmFlags, ...bunFlags])
     // A slash command's own options (`/remember [--me] <text>`) are not the program's.
     for (const page of PAGES) for (const [, flag] of text[page].replace(/`\/[a-z][^`\n]*`/g, "").matchAll(/(?<![\w-])(--[a-z][a-z-]*)/g)) expect(known, `${page}: ${flag}`).toContain(flag!)
   })

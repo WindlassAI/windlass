@@ -23,5 +23,5 @@ export function compiled(): boolean {
 
 /** The command line that runs this program with `args` (e.g. `["acp"]`). */
 export function selfCommand(args: readonly string[]): string[] {
-  return compiled() ? [process.execPath, ...args] : [process.execPath, MAIN, ...args]
+  return compiled() ? [process.execPath, ...args] : [process.execPath, ...process.execArgv.filter((flag) => flag === "--no-env-file"), MAIN, ...args]
 }

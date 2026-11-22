@@ -176,6 +176,7 @@ export class OpenAIResponsesProvider implements Provider {
   ): Promise<{ response: Response } | { error: ProviderError }> {
     const sent = this.fetch(`${this.baseUrl}/responses`, {
       method: "POST",
+      ...(this.options.baseUrl === undefined ? {} : { redirect: "error" }),
       headers: { ...headers, "user-agent": userAgent(), authorization: `Bearer ${token}` },
       body,
       signal: controller.signal,
@@ -298,6 +299,7 @@ export async function listModels(options: {
   try {
     response = await fetcher(`${baseUrl}/models`, {
       method: "GET",
+      ...(options.baseUrl === undefined ? {} : { redirect: "error" }),
       headers: { authorization: `Bearer ${token}`, accept: "application/json", "user-agent": userAgent() },
       signal: options.signal,
     })
