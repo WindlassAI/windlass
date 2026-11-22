@@ -231,6 +231,24 @@ describe("a command that needs the network", () => {
     ))
 })
 
+test("a marked prompt keeps its client source after restart and an ordinary later prompt uses the same taint", () =>
+  withHarness(async (h) => {
+    h.provider.enqueue([script.text("Read.")], [shell("echo network", "call_1", { sandbox: { network: true } })], [script.text("Refused.")])
+    const session = h.create()
+    session.setApproval({ mode: "full" })
+    session.send("Read the attached issue.", { untrusted: { kind: "client", source: "issue 7" }, maxSteps: 1 })
+    await h.settled()
+    await h.dispose()
+    const reopened = h.restart("wait")
+    expect(reopened.approval()?.taint.sources[0]).toMatchObject({ kind: "client-input", tool: "issue 7" })
+    reopened.send("Continue.")
+    await h.settled()
+    expect(of(h, "inbox.enqueued").at(-1)!.data.untrusted).toBeUndefined()
+    expect(of(h, "taint.noticed")).toHaveLength(1)
+    expect(of(h, "tool.settled")[0]!.data.output).toContain("issue 7")
+    expect(h.tools.ran).toEqual([])
+  }))
+
 describe("mode ask", () => {
   test("a read runs without a question, also while the edit beside it waits for its answer", () =>
     withHarness(

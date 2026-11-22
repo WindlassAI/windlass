@@ -41,7 +41,29 @@ test("both are advertised where a client looks for what this agent takes", async
   const advertised = answer.agentCapabilities._meta[NS]!
   expect(advertised.methods).toContain(EXT.admit)
   expect(advertised.openMeta).toContain("hostTools")
+  expect(advertised.openMeta).toContain("untrusted")
+  expect(advertised.promptMeta).toContain(`${NS}/untrusted`)
 })
+
+for (const method of [methods.agent.session.prompt, EXT.steer]) {
+  test(`${typeof method === "string" ? method : "session/prompt"} records the client's source before the first step`, async () => {
+    h = await startHarness({ responses: [[script.toolCall("call_1", "shell", { command: "echo allowed", sandbox: { network: true } })], [script.text("Done.")]], clientCapabilities: { _meta: { [NS]: { events: true } } } })
+    await h.initialize()
+    const { sessionId } = await open(h, { approval: "full", attended: false, unattended: "deny" })
+    const input = { sessionId, prompt: [{ type: "text" as const, text: "Read the issue and respond." }] }
+    const key = `${NS}/untrusted`
+    await expect(h.connection.agent.request(method, { ...input, _meta: { [key]: { source: "x".repeat(201) } } })).rejects.toMatchObject({ code: -32602 })
+    expect(events(h, "inbox.enqueued")).toHaveLength(0)
+    await h.connection.agent.request(method, { ...input, _meta: { [key]: { source: "CI log" } } })
+    await until(() => events(h!, "execution.succeeded").length > 0, 10_000, "the marked turn to end")
+    expect(events(h, "inbox.enqueued")[0]).toMatchObject({ origin: null, untrusted: { kind: "client", source: "CI log" } })
+    expect(events(h, "taint.noticed")[0]?.source).toMatchObject({ kind: "client-input", tool: "CI log" })
+    const types = h.ext.filter((note) => note.method === EXT.event).map((note) => (note.params.event as { type: string }).type)
+    expect(types.indexOf("step.started")).toBeGreaterThan(types.indexOf("taint.noticed"))
+    expect(events(h, "tool.settled")[0]).toMatchObject({ outcome: "error", output: expect.stringContaining("CI log") })
+    expect(h.permissions).toHaveLength(0)
+  })
+}
 
 test("an admitted message starts a turn once, however often it is sent, and one marked untrusted taints the session", async () => {
   h = await startHarness({ responses: [[script.text("I will look at the date parser.")]], clientCapabilities: { _meta: { [NS]: { events: true } } } })
@@ -76,6 +98,7 @@ test("a declared tool's call goes to the client after approval by its effect, an
   await h.initialize()
   const { sessionId } = await open(h, { approval: "auto", hostTools: [TICKET_READ, TICKET_COMMENT] })
   expect((await prompt(h, sessionId, "Read ticket 7 and say it is fixed.")).stopReason).toBe("end_turn")
+  expect(h.ext.filter((note) => note.method === EXT.taint)).toEqual([])
   // The read ran without a question; the comment uses the network, so it was asked about first, like any network tool.
   expect(h.permissions.map((asked) => asked.toolCall.title)).toEqual(["Allow ticket_comment to use the network?"])
   const calls = h.of(sessionId, "tool_call") as { toolCallId: string }[]

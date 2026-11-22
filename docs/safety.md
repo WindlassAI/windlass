@@ -436,7 +436,7 @@ counts a conversation as tainted once it holds content from a source it does not
 - the body of a webhook request that fired a wake-up ([wake-ups.md](wake-ups.md));
 - the result of a subagent whose own conversation was tainted ([subagents.md](subagents.md));
 - text a program that drives Windlass over ACP admitted and marked as not your own (`_windlass/admit` with
-  `untrusted`), from its admission on, named by the source the program gave ([acp.md](acp.md));
+  `untrusted`, or `session/prompt` or `_windlass/steer` with `_meta["windlass/untrusted"]`), from its admission on, named by the source the program gave ([acp.md](acp.md));
 - the result of a tool such a program declared and runs itself, when its declaration says its results are
   untrusted (`untrustedResult`). Any other answer of such a tool is the program's own, like your messages: the
   program that started Windlass is one you chose. Its calls are approved by the effect it declares, as any

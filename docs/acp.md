@@ -63,7 +63,7 @@ every command the agent started is stopped, and the session resumes later where 
 | `session/load` | Replays the whole stored conversation as `session/update`s (user messages, reasoning, text, tool calls with their final status), then reports the title (`session_info_update`), the context use (`usage_update`), and the session's state (the `_windlass/state` notification below), then answers. The `cwd` must be the session's own. |
 | `session/resume` | The same without the replay. On load and resume, `_meta["windlass"] = { model, effort }` switches the session to them (checked first, recorded as `settings.changed`), `agent` switches it to that agent (recorded as `agent.switched`; a refusal leaves the session closed), and `archived: true` opens an archived session too. |
 | `session/list` | Sessions (not deleted), newest first, filtered by `cwd`, 100 per page. Each has `_meta["windlass"] = { model, effort, archived?, forkedFrom?, forkedThroughSeq? }` (a fork names the session it was forked from and the last event it inherited). With `_meta["windlass"] = { archived: true }` archived sessions are listed too. The `title` is the session's own, or else derived from its first prompt (below). Each page is read from the engine: `nextCursor` is a place in the order (when a session was last updated, then its ID), so the server keeps nothing between two pages, a session that arrives meanwhile is in no later page, and none is listed twice; a new listing has it at the front. A cursor the server did not give is refused with `-32602`. |
-| `session/prompt` | Text, `resource_link` (named as `[file: /path]` or `[link: uri]` so the model can open it) and embedded text `resource` (the text in a fenced block under the same header). The response is the stop reason of the turn, with how it ended under `_meta["windlass"]` (below). `_meta["windlass/maxSteps"]` sets the step limit of the turn the prompt starts. |
+| `session/prompt` | Text, `resource_link` (named as `[file: /path]` or `[link: uri]` so the model can open it) and embedded text `resource` (the text in a fenced block under the same header). The response is the stop reason of the turn, with how it ended under `_meta["windlass"]` (below). `_meta["windlass/maxSteps"]` sets the step limit of the turn the prompt starts. A client can mark outside text with `_meta["windlass/untrusted"]` (see below). |
 | A prompt while the agent works | Steers it: the message reaches the model at the next step boundary (after the running tool calls), in the same turn. Every prompt the turn took in is answered when it ends, with the same stop reason. |
 | `session/cancel` | Prompts not yet delivered are withdrawn and answered `cancelled` at once; the running turn is interrupted (commands are stopped) and its prompt is answered `cancelled` after its last update. A prompt sent right after a cancel starts the next turn. |
 | `session/close` | Cancels, then frees the session in the agent. With `_meta["windlass"] = { shutdown: true }` it stops running work as a shutdown instead (the session stays resumable, as when the process exits), and every update and event of that is sent before the answer. |
@@ -168,7 +168,7 @@ Before every tool call the harness decides whether it runs, runs in the sandbox,
   (`"stop"`): the prompt is answered with an error whose `data["windlass"].reason` is `approval_required`.
   Nothing waits either way.
 - **Taint.** When content from outside (a file outside the workspace, a command that ran with the network, an MCP
-  tool, text the client admitted as untrusted with `_windlass/admit`, the result of a client's tool declared with
+  tool, text the client marked as untrusted on a prompt, steer or `_windlass/admit`, the result of a client's tool declared with
   `untrustedResult`) enters the conversation, `_windlass/taint` `{ sessionId, tainted: true, text, source }` is
   sent once, and a `notice` to clients that show them. From then on anything that can send data out asks again.
   `_windlass/clear_taint` is the user's "I trust what is there"; it is answered `{ cleared }` and followed by
@@ -868,6 +868,15 @@ is reported by `_windlass/state` and `_windlass/turn`.
 // result
 { messageId: string }                           // the ID the message has once delivered
 ```
+
+On `session/prompt` and `_windlass/steer`, a client can mark a message containing outside text with
+`"_meta": { "windlass/untrusted": { "source": "CI log for build 42" } }`. Use a nonempty source of at most
+200 characters. A malformed marker is refused with `-32602` before anything is admitted. The marker applies
+to the whole message even when only one content block came from that source. Delivery, step limit, message
+content and turn response keep their usual meanings. The admission records the source and taints the session
+before its next step, with the same approval rules as an untrusted admission below. For capability discovery,
+`agentCapabilities._meta.windlass.openMeta` lists `untrusted` and `promptMeta` lists `windlass/untrusted`.
+Clients can omit the marker for their user's own text.
 
 **`_windlass/admit`** (request): a message the client makes itself (a task handed to the session, a note from
 another system) admitted under an ID the client chooses, so that sending it twice is safe. It is admitted as the

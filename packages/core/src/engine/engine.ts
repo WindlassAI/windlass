@@ -777,6 +777,8 @@ export type CompactResult =
   | { readonly kind: "failed"; readonly message: string }
 
 export interface SendOptions {
+  /** A client identified outside text in this prompt. Its admission taints the session before the turn starts. */
+  readonly untrusted?: Extract<UntrustedInput, { kind: "client" }>
   /** User text before a client expanded attachments into the prompt. */
   readonly titlePrompt?: string
   /** `steer` (the default) is delivered at the next step boundary; `queue` once the session would otherwise go idle. */
@@ -2261,7 +2263,8 @@ class LiveSession implements EngineSession {
     if (projection.session.replay !== undefined) throw new EngineError("invalid_request", REPLAY_TEXT.noPrompts)
     const messageId = this.core.ids.message()
     if (options.maxSteps !== undefined) this.turnLimits.set(messageId, options.maxSteps)
-    this.write([event("inbox.enqueued", { messageId, origin: null, delivery: options.delivery ?? "steer", content: text(value), ...this.titleInput(projection, options.titlePrompt ?? value) })])
+    this.write([event("inbox.enqueued", { messageId, origin: null, delivery: options.delivery ?? "steer", ...(options.untrusted === undefined ? {} : { untrusted: options.untrusted }), content: text(value), ...this.titleInput(projection, options.titlePrompt ?? value) })])
+    if (options.untrusted !== undefined) this.noticeTaint()
     this.start()
     return messageId
   }
@@ -2294,9 +2297,10 @@ class LiveSession implements EngineSession {
     // One append: the message never waits without the record of where its text came from, nor without the agent it
     // switches the session to where it is delivered. That switch is the log's to keep, not this process's.
     this.write([
-      event("inbox.enqueued", { messageId, origin: null, delivery: options.delivery ?? "steer", content: text(expansion.text), ...this.titleInput(projection, options.titlePrompt ?? `/${name} ${args}`.trimEnd()) }),
+      event("inbox.enqueued", { messageId, origin: null, delivery: options.delivery ?? "steer", ...(options.untrusted === undefined ? {} : { untrusted: options.untrusted }), content: text(expansion.text), ...this.titleInput(projection, options.titlePrompt ?? `/${name} ${args}`.trimEnd()) }),
       event("command.expanded", { messageId, ...commandUseOf(command, expansion), ...(agent === null ? {} : { agent }) }),
     ])
+    if (options.untrusted !== undefined) this.noticeTaint()
     this.start()
     return { messageId, command, expansion }
   }

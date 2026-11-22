@@ -6,6 +6,12 @@ All notable changes to Windlass are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- ACP clients can mark a prompt or steer containing outside text with `_meta["windlass/untrusted"]: { source }`.
+  The session records the source before the first step and asks again before a call can send data out.
+  An unattended run with `deny` records the refusal.
+
 ## [0.5.0] - 2026-11-20
 
 ### Added

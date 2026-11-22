@@ -98,7 +98,11 @@ export function decide(input: DecisionInput): Decision {
   const scopes = grantScopes(input.call)
   const needs = plan.needs.filter((need) => !isCovered(need, input.grants.filter((grant) => scopes.includes(grant.scope)), taint, input.now))
   if (needs.length === 0) return plan.run
-  if (!input.present) return { kind: "deny", message: unattendedMessage(needs), stop: input.policy.unattended === "stop" }
+  if (!input.present) {
+    const fromClient = taint.sources.some((source) => source.kind === "client-input") && needs.some(isOutbound)
+    const message = unattendedMessage(needs) + (fromClient ? ` ${describeTaint(taint)}` : "")
+    return { kind: "deny", message, stop: input.policy.unattended === "stop" }
+  }
   return { kind: "ask", question: question(input, needs, plan.run, taint), needs, then: plan.run }
 }
 

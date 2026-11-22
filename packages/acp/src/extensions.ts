@@ -136,6 +136,8 @@ export const META = {
   hooks: `${META_NAMESPACE}/hooks`,
   /** On `session/prompt`: the most model calls the turn this prompt starts may make (a whole number of at least 1). */
   maxSteps: `${META_NAMESPACE}/maxSteps`,
+  /** On a prompt or steer, the source of text the client does not vouch for. */
+  untrusted: `${META_NAMESPACE}/untrusted`,
   /** On the `tool_call` of a call a program made (`run_code`): the `toolCallId` of the program's call it is nested under. */
   parent: `${META_NAMESPACE}/parent`,
   /**
