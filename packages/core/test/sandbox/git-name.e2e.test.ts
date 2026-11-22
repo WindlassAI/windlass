@@ -1,8 +1,8 @@
 /** Names Git reads as `.git`, and the inspection's walk (which can start Git, so this file is end-to-end). */
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
-import { mkdirSync, writeFileSync } from "node:fs"
+import { mkdirSync, statSync, utimesSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { repositoryEntries } from "../../src/sandbox/git-inspect.ts"
+import { copyGitIndex, repositoryEntries } from "../../src/sandbox/git-inspect.ts"
 import { isDotGit, reservedName } from "../../src/sandbox/git-name.ts"
 import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
 import { removeTempDirs, tempDir } from "./helpers.ts"
@@ -29,6 +29,16 @@ test("a nested repository under a lookalike .git name is found", async () => {
   mkdirSync(join(root, "other", "GIT~1"), { recursive: true })
   writeFileSync(join(root, "plain"), "")
   expect([...(await repositoryEntries(root))].sort()).toEqual(['nested repository "other"', 'nested repository "vendor"'])
+})
+
+test("a copied index keeps the modification time Git's racy-entry check compares with", () => {
+  const root = tempDir("git-index")
+  const source = join(root, "index")
+  writeFileSync(source, "DIRC")
+  const then = new Date("2026-01-02T03:04:05.678Z")
+  utimesSync(source, then, then)
+  copyGitIndex(source, join(root, "copy"))
+  expect(statSync(join(root, "copy")).mtimeMs).toBe(statSync(source).mtimeMs)
 })
 
 test("the walk of untracked directories is bounded", async () => {
