@@ -14,14 +14,27 @@ const HFS_IGNORED = /[‌-‏‪-‮⁪-⁯﻿]/g
 
 /** Whether `name`, one path component, is `.git` to Git on any filesystem it protects. */
 export function isDotGit(name: string): boolean {
-  return reservedName(name, ".git") || /^(?:\.git|git~1)[. ]*(?:[\\:]|$)/i.test(name)
+  return reservedName(name, ".git", ["git~1"])
 }
 
 /**
- * Whether `name`, one path component, is `reserved` (an ASCII name) on a
- * case-insensitive or HFS+ volume, or on NTFS with trailing dots and spaces.
+ * Whether `name`, one path component, is `reserved` (an ASCII name that
+ * starts with a dot) on a case-insensitive or HFS+ volume, or on NTFS:
+ * where any piece between backslashes is the name, with trailing dots and
+ * spaces or a `:` stream after it, or its short name. The short names are
+ * `shortNames`, by default the first six letters after the dot with `~1`
+ * to `~4` (the ones NTFS gives before it switches to hashed names, which
+ * this does not compute).
  */
-export function reservedName(name: string, reserved: string): boolean {
-  const folded = name.replace(HFS_IGNORED, "").replace(/[A-Z]/g, (letter) => letter.toLowerCase())
-  return folded === reserved || folded.replace(/[. ]+$/, "") === reserved
+export function reservedName(name: string, reserved: string, shortNames: readonly string[] = ntfsShortNames(reserved)): boolean {
+  return name.split(/[\\/]/).some((piece) => {
+    const folded = piece.replace(HFS_IGNORED, "").replace(/[A-Z]/g, (letter) => letter.toLowerCase())
+    const stem = folded.replace(/:[\s\S]*$/, "").replace(/[. ]+$/, "")
+    return folded === reserved || stem === reserved || shortNames.includes(stem)
+  })
+}
+
+function ntfsShortNames(reserved: string): string[] {
+  const letters = reserved.replace(/^\./, "").slice(0, 6)
+  return [1, 2, 3, 4].map((n) => `${letters}~${n}`)
 }
