@@ -17,17 +17,23 @@ All notable changes to Windlass are recorded here. The format follows
 
 ### Security
 
-- Subagent merges reject paths through symlinked parents and reserved Git paths. Git worktree operations
-  refuse nested repositories, indexed gitlinks and non-regular or oversized indexes.
-- Sandboxed commands preserve an ordinary repository's absent `commondir`. They report pointer changes
-  and new nested repositories or gitlinks. Absorbed submodules are read-only, and the macOS profile
-  denies hard links to protected metadata.
+- Subagent merges reject paths through symlinked parents, any name a filesystem reads as `.git` (other cases,
+  HFS+ ignored code points, NTFS trailing dots and `git~1`), changes inside `.windlass/`, and gitlinks or other
+  entries that are not regular files or symlinks. Git worktree operations refuse nested repositories, indexed
+  gitlinks and non-regular or oversized indexes, stage through a private index copy, refuse a repository that
+  appeared while staging, and stop a Git command after five minutes with the reason.
+- A subagent's background commands are stopped before its worktree is merged or kept.
+- Sandboxed commands can still commit, check out branches and run garbage collection, while the repository's
+  Git directory and its pointers are protected on Linux and macOS. An ordinary repository's absent `commondir`
+  stays absent, absorbed submodules are read-only, and the macOS profile denies hard links to protected
+  metadata and protected paths under any case of their names. Windlass pins its own subagent Git operations to
+  the session's repository and refuses configuration that could launch external drivers.
+- Each session keeps one Git metadata baseline across its commands. It is checked before and after every
+  command and while any command runs, so a process that outlives its command cannot reset it. Pointer changes
+  are undone and reported; new nested repositories and gitlinks are reported once. An index or workspace too
+  large to inspect gives one warning instead of failing every command.
 - Subagents inherit their parent's untrusted sources. Approval messages name the client source when
   multiple sources contributed. Model relays require an explicit access-token file.
-
-- Sandboxed commands can still commit, check out branches and run garbage collection, while the repository's
-  Git directory and its pointers are protected on Linux and macOS. Windlass pins its own subagent Git
-  operations to the session's repository and refuses configuration that could launch external drivers.
 
 ## [0.5.0] - 2026-11-20
 
