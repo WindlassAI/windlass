@@ -121,21 +121,59 @@ describe.skipIf(!sandbox.state.available)("git metadata inside the command sandb
     expect(notices).toEqual([expect.stringContaining("Your own root git status")])
   })
 
-  test("the baseline carries across commands: what changed between them is reported by the next one", async () => {
+  test("the baseline carries across commands: what changed between them is the user's where nothing sandboxed outlives its command, and is undone where a process can", async () => {
     const cwd = project("carried-baseline")
     expect((await sh(cwd, "true")).ok).toBe(true)
-    // What a process that outlived its command could do once that command's check was over.
+    // While no sandboxed command runs: on Linux only the user can have done this; on macOS a process that outlived its command could have.
     expect(host(cwd, `git init -q vendor && ${GIT_IDENTITY} -C vendor commit --allow-empty -qm initial`).code).toBe(0)
     writeFileSync(join(cwd, ".git", "commondir"), "elsewhere\n")
     const next = await sh(cwd, "true")
-    expect(next.ok).toBe(false)
-    expect(next.output).toContain('nested repository "vendor"')
-    expect(next.output).toContain("commondir")
-    expect(existsSync(join(cwd, ".git", "commondir"))).toBe(false)
+    if (process.platform === "linux") {
+      expect(next).toMatchObject({ ok: true, exitCode: 0 })
+      expect(next.output).toContain("changed outside the sandbox")
+      expect(next.output).not.toContain("nested repository")
+      expect(existsSync(join(cwd, ".git", "commondir"))).toBe(true)
+      rmSync(join(cwd, ".git", "commondir"))
+    } else {
+      expect(next.ok).toBe(false)
+      expect(next.output).toContain('nested repository "vendor"')
+      expect(next.output).toContain("commondir")
+      expect(existsSync(join(cwd, ".git", "commondir"))).toBe(false)
+    }
     // Reported once: the command after it starts from what was reported.
     const after = await sh(cwd, "true")
-    expect(after).toMatchObject({ ok: true })
     expect(after.output).not.toContain("nested repository")
+  })
+
+  test("a repository the user initializes between commands is kept, and the next command does not fail", async () => {
+    const cwd = join(base, "user-init")
+    mkdirSync(cwd)
+    expect((await sh(cwd, "true")).ok).toBe(true)
+    expect(host(cwd, "git init -q").code).toBe(0)
+    const next = await sh(cwd, "true")
+    expect(next).toMatchObject({ ok: true, exitCode: 0 })
+    expect(next.output).not.toContain("Sandbox violation")
+    expect(existsSync(join(cwd, ".git", "HEAD"))).toBe(true)
+  })
+
+  test("what an approved command outside the sandbox changes is not undone, even while a sandboxed one runs in the background", async () => {
+    const cwd = join(base, "outside-init")
+    mkdirSync(cwd)
+    let started: BackgroundCommand | undefined
+    await tool.execute({ command: "touch started; exec sleep 60", background: true }, {
+      cwd, sessionId: SESSION, callId: "call_outside_bg" as CallId, messageId: "msg_1" as MessageId, signal: new AbortController().signal, progress: () => {}, putBlob: noBlobStore, sandbox: NOTHING,
+      background: { command: (work) => { started = work; return { id: "bg_outside" } } },
+    })
+    await waitFor(() => existsSync(join(cwd, "started")), { what: "the background command to start" })
+    // `null`: the step loop decided to run it outside the sandbox.
+    expect((await sh(cwd, "git init -q", null as unknown as SandboxRun)).ok).toBe(true)
+    await started!.stop()
+    const end = await started!.exited
+    expect(end.output).not.toContain("Sandbox violation")
+    expect(existsSync(join(cwd, ".git", "HEAD"))).toBe(true)
+    const next = await sh(cwd, "true")
+    expect(next).toMatchObject({ ok: true, exitCode: 0 })
+    expect(next.output).not.toContain("Git")
   })
 
   test("a commondir a background command creates is set aside while it still runs", async () => {

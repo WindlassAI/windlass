@@ -105,7 +105,9 @@ export function createHookRunner(options: HookRunnerOptions): HookRunner {
           // A hook's output is tool output: redacted as it arrives, before it is kept, cut or read back.
           redact: (value: string) => redactPieces(value, secrets),
           unfinishedSecret: (value: string) => unfinishedSecret(value, secrets),
-          ...(request.sandbox !== null ? { sandbox: { sandbox: options.sandbox!, run: request.sandbox, sessionId: request.sessionId } } : env === undefined ? {} : { env }),
+          ...(request.sandbox !== null
+            ? { sandbox: { sandbox: options.sandbox!, run: request.sandbox, sessionId: request.sessionId } }
+            : { ...(env === undefined ? {} : { env }), ...(options.sandbox === undefined ? {} : { outside: { sandbox: options.sandbox, sessionId: request.sessionId } }) }),
         },
       )
       if (result.output.path !== null) await rm(result.output.path, { force: true })

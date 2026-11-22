@@ -6950,7 +6950,8 @@ class LiveSession implements EngineSession {
     const runner = this.checkRunner()
     const confined = "sandbox" in runner ? runner.sandbox : undefined
     // Checks that run without the sandbox are commands of the session: they are not given what its commands are not.
-    const plain = confined === undefined ? this.core.approvals?.sandbox().environment?.unsandboxed(this.id) : undefined
+    const outside = confined === undefined ? this.core.approvals?.sandbox() : undefined
+    const plain = outside?.environment?.unsandboxed(this.id)
     const [started] = this.write([event("checks.started", { run: number, checks: checks.map((item) => item.name) })])
     this.probe("checks.started")
 
@@ -6961,6 +6962,7 @@ class LiveSession implements EngineSession {
       signal,
       ...(confined === undefined ? {} : { sandbox: confined }),
       ...(plain === undefined ? {} : { env: plain }),
+      ...(outside === undefined ? {} : { outside: { sandbox: outside, sessionId: this.id } }),
       gitNotice: this.gitNotice,
       progress: (name, value) => this.ephemeral({ type: "checks.progress", sessionId: this.id, run: number, check: name, text: value }),
       // A check's output is tool output: what is shown while it runs and what is kept in full are redacted too.

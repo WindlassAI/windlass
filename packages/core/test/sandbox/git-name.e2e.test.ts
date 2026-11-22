@@ -3,7 +3,7 @@ import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
 import { mkdirSync, statSync, utimesSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { brand } from "../../src/brand.ts"
-import { copyGitIndex, repositoryEntries } from "../../src/sandbox/git-inspect.ts"
+import { copyGitIndex, inspectRepository, repositoryEntries } from "../../src/sandbox/git-inspect.ts"
 import { isDotGit, reservedName } from "../../src/sandbox/git-name.ts"
 import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
 import { removeTempDirs, tempDir } from "./helpers.ts"
@@ -56,3 +56,21 @@ test("the walk of untracked directories is bounded", async () => {
   expect((await repositoryEntries(root, undefined, undefined, { maxDirectories: 100 })).size).toBe(0)
 })
 
+test("a walk that runs out of budget still reports every gitlink, and the shallow repositories before the deep directories", async () => {
+  const root = tempDir("git-partial")
+  const git = (...args: string[]) => {
+    const done = Bun.spawnSync(["git", ...args], { cwd: root, env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } })
+    expect(done.exitCode).toBe(0)
+    return done.stdout.toString().trim()
+  }
+  git("init", "-q")
+  for (let n = 0; n < 12; n++) mkdirSync(join(root, "junk", String(n)), { recursive: true })
+  // After the wide directory, in the listing's order.
+  git("init", "-q", "zz")
+  git("update-index", "--add", "--cacheinfo", `160000,${"1".repeat(40)},evil`)
+  const found = await inspectRepository(root, join(root, ".git", "index"), undefined, { maxDirectories: 6 })
+  expect(found.partial).toContain("more than 6 untracked directories")
+  expect([...found.entries].sort()).toEqual(['gitlink "evil"', 'nested repository "zz"'])
+  // A caller that must refuse what it cannot check still gets an error.
+  await expect(repositoryEntries(root, join(root, ".git", "index"), undefined, { maxDirectories: 6 })).rejects.toThrow("more than 6")
+})

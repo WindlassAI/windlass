@@ -84,9 +84,7 @@ export function createCheckRunner(options: CheckRunnerOptions): CheckRunner {
           ...(secrets.length === 0 ? {} : { redact: (value: string) => redactPieces(value, secrets), unfinishedSecret: (value: string) => unfinishedSecret(value, secrets) }),
           ...(sandboxed && request.run.kind === "sandboxed"
             ? { sandbox: { sandbox: options.sandbox!, run: { network: request.run.network, writableRoots: [...request.run.writableRoots] }, sessionId: request.sessionId } }
-            : env === undefined
-              ? {}
-              : { env }),
+            : { ...(env === undefined ? {} : { env }), ...(options.sandbox === undefined ? {} : { outside: { sandbox: options.sandbox, sessionId: request.sessionId } }) }),
         },
       )
       const path = result.output.path

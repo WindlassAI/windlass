@@ -30,21 +30,59 @@ export function copyGitIndex(source: string, target: string): void {
   if (read.stat) utimesSync(target, read.stat.atime, read.stat.mtime)
 }
 
-/** The private repository keeps ls-files away from the workspace's config, attributes and hooks. */
+/** What one inspection found, and why it is not complete when it is not. */
+export interface Inspection {
+  readonly entries: Set<string>
+  /**
+   * `null`: every untracked directory was walked. Otherwise why the walk
+   * stopped. The gitlinks are always all there (they come from the index),
+   * and so are the nested repositories the walk reached before it stopped.
+   */
+  readonly partial: string | null
+}
+
+/**
+ * The nested repositories and gitlinks of a workspace, or an error when not
+ * all could be checked. For a caller that must refuse what it cannot check.
+ */
 export async function repositoryEntries(
   workTree: string,
   sourceIndex?: string,
   indexDirectory = sourceIndex && dirname(sourceIndex),
   limits: { readonly maxDirectories?: number } = {},
 ): Promise<Set<string>> {
+  const found = await inspectRepository(workTree, sourceIndex, indexDirectory, limits)
+  if (found.partial !== null) throw new Error(found.partial)
+  return found.entries
+}
+
+/**
+ * The private repository keeps ls-files away from the workspace's config, attributes and hooks.
+ * Throws only when the index cannot be listed at all; a walk that runs out of budget is a partial result.
+ */
+export async function inspectRepository(
+  workTree: string,
+  sourceIndex?: string,
+  indexDirectory = sourceIndex && dirname(sourceIndex),
+  limits: { readonly maxDirectories?: number } = {},
+): Promise<Inspection> {
   const nested = new Set<string>()
-  let budget = limits.maxDirectories ?? MAX_SCANNED_DIRECTORIES
-  // Walk only real directories. Treat both a gitfile and a .git directory as a repository boundary, under any name a filesystem reads as .git.
-  async function scan(start: string): Promise<void> {
-    const pending = [start]
-    while (pending.length) {
-      const dir = pending.pop()!
-      if (--budget < 0) throw new Error(`the workspace has more than ${limits.maxDirectories ?? MAX_SCANNED_DIRECTORIES} untracked directories to inspect`)
+  const max = limits.maxDirectories ?? MAX_SCANNED_DIRECTORIES
+  let budget = max
+  let partial: string | null = null
+  /**
+   * Walk only real directories, breadth first across all the starting points: a deep or wide directory cannot
+   * keep the walk from the shallow ones. Treat both a gitfile and a .git directory as a repository boundary,
+   * under any name a filesystem reads as .git.
+   */
+  async function scan(starts: readonly string[]): Promise<void> {
+    const pending = [...starts]
+    for (let next = 0; next < pending.length; next++) {
+      if (--budget < 0) {
+        partial = `the workspace has more than ${max} untracked directories to inspect`
+        return
+      }
+      const dir = pending[next]!
       const entries = await readdir(join(workTree, dir), { withFileTypes: true })
       if (dir !== "." && (lstatSync(join(workTree, dir, ".git"), { throwIfNoEntry: false }) || entries.some((entry) => isDotGit(entry.name)))) {
         nested.add(`nested repository ${JSON.stringify(dir)}`)
@@ -54,8 +92,8 @@ export async function repositoryEntries(
     }
   }
   if (!sourceIndex) {
-    await scan(".")
-    return nested
+    await scan(["."])
+    return { entries: nested, partial }
   }
   const gitDir = mkdtempSync(join(tmpdir(), `${brand.directory}-inspect-`))
   try {
@@ -88,19 +126,21 @@ export async function repositoryEntries(
     }
     if (found.truncated || found.exitCode !== 0) throw new Error("Git could not safely list the workspace index and untracked files")
     const entries = new TextDecoder("utf-8", { fatal: true }).decode(found.stdout).split("\0").filter(Boolean)
-    const untracked = entries.filter((entry) => entry.startsWith("? ")).map((entry) => entry.slice(2))
-    for (const directory of nestedDirectories(untracked)) await scan(directory)
-    // Tracked directories do not appear in the collapsed untracked listing.
+    // The staged entries first: what they say is in hand whatever the walk below costs.
     const checked = new Set<string>(["."])
     for (const entry of entries) {
       const staged = /^[A-Z] (\d{6}) [0-9a-f]+ [0-3]\t([\s\S]+)$/.exec(entry)
       if (!staged) continue
       const path = staged[2]!
       const components = path.split("/")
-      if (components.some((name) => !name || name === "." || name === ".." || isDotGit(name)))
-        throw new Error("the Git index contains an unsafe path")
+      if (components.some((name) => !name || name === "." || name === ".." || isDotGit(name))) {
+        // Git refuses to check such a path out; on another filesystem it would write into .git.
+        nested.add(`unsafe index path ${JSON.stringify(path)}`)
+        continue
+      }
       if (staged[1] === "160000") nested.add(`gitlink ${JSON.stringify(path)}`)
       else components.pop()
+      // Tracked directories do not appear in the collapsed untracked listing.
       let dir = "."
       for (const part of components) {
         dir = join(dir, part)
@@ -110,7 +150,9 @@ export async function repositoryEntries(
         if (lstatSync(join(workTree, dir, ".git"), { throwIfNoEntry: false })) nested.add(`nested repository ${JSON.stringify(dir)}`)
       }
     }
-    return nested
+    const untracked = entries.filter((entry) => entry.startsWith("? ")).map((entry) => entry.slice(2))
+    await scan(nestedDirectories(untracked))
+    return { entries: nested, partial }
   } finally {
     rmSync(gitDir, { recursive: true, force: true })
   }

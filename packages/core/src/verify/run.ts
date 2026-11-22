@@ -79,6 +79,11 @@ export interface RunCheckOptions {
    * (`CommandSandbox.environment`). Default: the harness's own.
    */
   readonly env?: Readonly<Record<string, string | undefined>>
+  /**
+   * Without `sandbox`: the session whose checks these are, and its command
+   * sandbox, told that each check runs outside it (`CommandSandbox.outside`).
+   */
+  readonly outside?: { readonly sandbox: CommandSandbox; readonly sessionId: string }
   readonly gitNotice?: ToolContext["gitNotice"]
   /** Ephemeral progress (the tail of the running check's output), for display only. */
   readonly progress?: (check: string, text: string) => void
@@ -113,13 +118,13 @@ export async function runCheck(check: CheckConfig, options: RunCheckOptions): Pr
     shell: options.shell,
     graceMs: options.graceMs,
     spillLimitBytes: options.spillLimitBytes,
-    ...(options.sandbox === undefined ? {} : { sandbox: options.sandbox.sandbox }),
+    ...(options.sandbox !== undefined ? { sandbox: options.sandbox.sandbox } : options.outside !== undefined ? { sandbox: options.outside.sandbox } : {}),
     ...(options.env === undefined ? {} : { env: options.env }),
   })
   const result = await tool.execute(
     { command: check.command, timeout: check.timeoutSeconds },
     {
-      sessionId: options.sandbox === undefined ? sessionId("verify", "") : sessionId(options.sandbox.sessionId, ""),
+      sessionId: sessionId((options.sandbox ?? options.outside)?.sessionId ?? "verify", ""),
       ...(options.sandbox === undefined ? {} : { sandbox: options.sandbox.run }),
       messageId: messageId("verify", ""),
       // Fixes the shell's working spill file name per check; it is renamed by content below.
