@@ -1,10 +1,13 @@
 import { expect, test } from "bun:test"
+import { ACCESS_TOKEN_FILE_ENV } from "../../src/auth/handed-in.ts"
 import { parseConfigFile } from "../../src/config/schema.ts"
 import { MODEL_ALLOWED_ORIGIN_ENV, MODEL_BASE_URL_ENV, modelEndpoint } from "../../src/provider/relay.ts"
 
-const endpoint = (base: string, origin?: string) => modelEndpoint({ [MODEL_BASE_URL_ENV]: base, [MODEL_ALLOWED_ORIGIN_ENV]: origin }, true)
+const endpoint = (base: string, origin?: string) => modelEndpoint({ [ACCESS_TOKEN_FILE_ENV]: "/synthetic/token", [MODEL_BASE_URL_ENV]: base, [MODEL_ALLOWED_ORIGIN_ENV]: origin }, true)
 
 test("the host can name a loopback relay or one exact origin", () => {
+  for (const file of [undefined, ""])
+    expect(() => modelEndpoint({ [MODEL_BASE_URL_ENV]: "http://localhost", [ACCESS_TOKEN_FILE_ENV]: file }, true)).toThrow(ACCESS_TOKEN_FILE_ENV)
   expect(modelEndpoint({}, false)).toEqual({})
   for (const key of ["modelBaseUrl", MODEL_BASE_URL_ENV, MODEL_ALLOWED_ORIGIN_ENV])
     expect(() => parseConfigFile(JSON.stringify({ [key]: "http://localhost" }), "project.json", "project")).toThrow("unknown key")

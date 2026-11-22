@@ -17,7 +17,7 @@
  */
 import { mkdirSync } from "node:fs"
 import { join } from "node:path"
-import { AUTH_UNREACHABLE, AuthError, HANDED_IN_REJECTED, aboutHandedIn, accessToken as signInToken, dataDir as defaultDataDir, handedInRejected, handedInTokenFile, handedInTokenNow } from "./auth/chatgpt.ts"
+import { AUTH_UNREACHABLE, AuthError, HANDED_IN_REJECTED, aboutHandedIn, accessToken as signInToken, dataDir as defaultDataDir, handedInRejected, handedInTokenFile, handedInTokenNow, readHandedIn } from "./auth/chatgpt.ts"
 import { brand } from "./brand.ts"
 import { loadConfig } from "./config/load.ts"
 import { environmentSecrets } from "./engine/approval.ts"
@@ -211,10 +211,12 @@ export function createHarness(options: HarnessOptions = {}): Harness {
   const tokenFile = options.provider === undefined ? handedInTokenFile() : null
   const secrets = tokenFile === null ? null : secretsWithTokenFile(options.engine?.approval?.secrets ?? environmentSecrets(process.env), tokenFile)
   const accessToken =
-    secrets === null
+    tokenFile === null || secrets === null
       ? signInToken
       : async () => {
-          const token = await signInToken()
+          const handed = await readHandedIn(tokenFile)
+          if (!handed.usable) throw new AuthError(handed.code, handed.message)
+          const token = handed.accessToken
           if (!secrets.includes(token)) secrets.push(token)
           return token
         }

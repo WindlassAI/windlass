@@ -1,3 +1,4 @@
+import { ACCESS_TOKEN_FILE_ENV, handedInTokenFile } from "../auth/handed-in.ts"
 import { brand } from "../brand.ts"
 import { BUILD_STAMP } from "../build-stamp.ts"
 
@@ -9,6 +10,7 @@ export function modelEndpoint(env = process.env, hostEnvironment = BUILD_STAMP !
   const value = env[MODEL_BASE_URL_ENV]
   if (value === undefined) return {}
   if (!hostEnvironment) throw new Error(`Using ${MODEL_BASE_URL_ENV} from source requires bun --no-env-file so a project's .env cannot route model requests.`)
+  if (handedInTokenFile(env) === null) throw new Error(`Using ${MODEL_BASE_URL_ENV} requires ${ACCESS_TOKEN_FILE_ENV} to name the relay token file.`)
   const url = URL.parse(value)
   if (!url || !["http:", "https:"].includes(url.protocol) || url.username || url.password || /[?#]/.test(url.href))
     throw new Error(`${MODEL_BASE_URL_ENV} must be an HTTP or HTTPS base URL without credentials, query or fragment.`)
