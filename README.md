@@ -103,7 +103,8 @@ It prints each tool call as it runs and ends with a line such as `✓ done · no
 - [User guide](docs/user-guide.md): installing, sessions, models, approvals, configuration, checks, the commands
   at the prompt, undo, compaction, exit codes, the data directory, environment variables.
 - [Troubleshooting](docs/troubleshooting.md): the errors you are likely to meet, and what to do.
-- [Safety](docs/safety.md): what the agent may do without asking, and what the sandbox does and does not stop.
+- [Safety](docs/safety.md): what the agent may do without asking, and what the sandbox does and does not stop;
+  [SECURITY.md](SECURITY.md) says how to report a vulnerability.
 - Features: [agents](docs/agents.md), [skills](docs/skills.md), [slash commands](docs/commands.md),
   [hooks](docs/hooks.md), [MCP servers](docs/mcp.md), [diagnostics](docs/diagnostics.md),
   [subagents](docs/subagents.md), [the task list](docs/task-list.md), [forks](docs/forks.md),
