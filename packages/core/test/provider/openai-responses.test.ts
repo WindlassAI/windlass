@@ -29,6 +29,7 @@ const seen: Seen[] = []
 /** Paths whose response body the client cancelled. */
 const cancelled = new Set<string>()
 let server: ReturnType<typeof Bun.serve>
+let redirectTarget: string
 let base: string
 
 const encoder = new TextEncoder()
@@ -155,7 +156,7 @@ beforeAll(() => {
     async fetch(incoming) {
       const url = new URL(incoming.url)
       const [scenario, endpoint] = url.pathname.slice(1).split("/")
-      if (scenario === "relay-redirect") return Response.redirect(`${base}/text/${endpoint}`, 307)
+      if (scenario === "relay-redirect") return Response.redirect(`${redirectTarget}/${endpoint}`, 307)
       if (endpoint === "models") return modelsRoute(incoming, scenario ?? "")
       seen.push({
         method: incoming.method,
@@ -213,8 +214,16 @@ describe("OpenAIResponsesProvider over HTTP", () => {
   })
 
   test("an overridden base URL refuses redirects for both the stream and the catalog", async () => {
-    expect(await errorOf("relay-redirect")).toMatchObject({ kind: "transport" })
-    await expect(listModels({ accessToken: async () => TOKEN, baseUrl: `${base}/relay-redirect` })).rejects.toMatchObject({ error: { kind: "transport" } })
+    let hits = 0
+    const destination = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() { hits++; return Response.json({}) } })
+    redirectTarget = destination.url.origin
+    try {
+      expect(await errorOf("relay-redirect")).toMatchObject({ kind: "transport" })
+      await expect(listModels({ accessToken: async () => TOKEN, baseUrl: `${base}/relay-redirect` })).rejects.toMatchObject({ error: { kind: "transport" } })
+      expect(hits).toBe(0)
+    } finally {
+      await destination.stop(true)
+    }
   })
 
   test("pre-stream HTTP errors in each observed body shape", async () => {

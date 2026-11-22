@@ -654,7 +654,7 @@ work was not merged keeps its `windlass/subagent-<id>` branch.
 | `WINDLASS_TUI_DEBUG` | `1`: the full-screen interface shows events it does not know, dimmed |
 | `WINDLASS_ACP_LOG` | the server's log level on standard error: `debug`, `info` (default), `warn`, `error` |
 | `WINDLASS_ENGINE_START_TIMEOUT_MS` | how long the server child may take to start (default 20000) |
-| `WINDLASS_MODEL_BASE_URL` | host URL prefix for the Responses provider and model catalog |
+| `WINDLASS_MODEL_BASE_URL` | host URL prefix for the Responses provider and model catalog, requires `WINDLASS_ACCESS_TOKEN_FILE` |
 | `WINDLASS_MODEL_ALLOWED_ORIGIN` | exact origin the host allows for a relay outside loopback |
 | `WINDLASS_ACCESS_TOKEN_FILE` | a file with an access token handed in by the `windlass` that holds the ChatGPT sign-in (`windlass login token` there): this process runs on it and does not use a saved sign-in ("One sign-in for several machines" above) |
 | `WINDLASS_WAKE` | `off`: this process's server fires no wake-ups (an interactive `windlass`, `windlass tui` and `windlass acp` fire them; a one-prompt run never does) |
