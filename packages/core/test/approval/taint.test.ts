@@ -148,3 +148,11 @@ describe("what a client brings", () => {
     expect(deriveTaint(inheritableTaint(history.entries), none)).toEqual(taint)
   })
 })
+
+test("the description names the client's source even after another kind of outside content", () => {
+  const taint = deriveTaint([
+    { kind: "subagent_result", at: 1, session: "child" },
+    { kind: "client_input", at: 2, source: "release ticket" },
+  ], { untrustedPaths: [] })
+  expect(describeTaint(taint)).toContain("release ticket")
+})

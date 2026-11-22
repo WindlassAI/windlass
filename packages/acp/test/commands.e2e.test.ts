@@ -110,11 +110,15 @@ test("a preview says what would be sent and what expansion reported, and sends n
 test("a command is sent as its expansion, the log records which file produced it, and the client is told what was left as text", async () => {
   const harness = await start(FILES, { responses: [[script.text("Here are the notes.")]], clientCapabilities: { _meta: { [META.capabilities]: { events: true } } } })
   const sessionId = await harness.newSession()
-  const sent = await request<SendCommandResult>(harness, EXT.sendCommand, { sessionId, name: "release-notes", args: "1.4", builtins: BUILTINS })
+  const invalid = await refusal(request(harness, EXT.sendCommand, { sessionId, name: "release-notes", _meta: { [META.untrusted]: { source: "" } } }))
+  expect(invalid).not.toBeNull()
+  expect(events(harness, "inbox.enqueued")).toHaveLength(0)
+  const sent = await request<SendCommandResult>(harness, EXT.sendCommand, { sessionId, name: "release-notes", args: "1.4", builtins: BUILTINS, _meta: { [META.untrusted]: { source: "release ticket" } } })
   expect(sent.command.name).toBe("release-notes")
   expect(sent.missing).toEqual([2])
   await until(() => events(harness, "execution.succeeded").length === 1, 10_000, "the turn's ending")
   const admitted = events(harness, "inbox.enqueued")[0]!.data as { messageId: string; origin: unknown; content: { text: string }[] }
+  expect(admitted).toMatchObject({ untrusted: { kind: "client", source: "release ticket" } })
   expect(admitted.messageId).toBe(sent.messageId)
   expect(admitted.origin).toBeNull()
   expect(admitted.content[0]!.text).toBe("Draft the release notes for version 1.4.\nLook at the commits since .")

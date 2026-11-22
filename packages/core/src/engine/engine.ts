@@ -70,7 +70,7 @@ import { CallSchedule, type Footprint, type PathKey, footprintOf } from "../sche
 import { type Tape, tapeFromEvents } from "../replay/tape.ts"
 import { type CallRun, type ChoiceId, TaintHistory, inheritableTaint } from "../approval/record.ts"
 import { redact, unfinishedSecret } from "../approval/redact.ts"
-import { type TaintState, deriveTaint, describeTaint } from "../approval/taint.ts"
+import { type HistoryEntry, type TaintState, deriveTaint, describeTaint } from "../approval/taint.ts"
 import { approvedNote, declinedMessage } from "../approval/texts.ts"
 import { chooseTitleModel, cleanTitle, titleExcerpt, titleRequest } from "../titles/title.ts"
 import { brand } from "../brand.ts"
@@ -2262,14 +2262,21 @@ class LiveSession implements EngineSession {
     return projection
   }
 
-  send = (value: string, options: SendOptions = {}): MessageId => {
+  send = (value: string, options: SendOptions = {}): MessageId => this.sendMessage(value, options)
+
+  private sendMessage(value: string, options: SendOptions, inherited: readonly HistoryEntry[] = []): MessageId {
     this.assertOpen()
     const projection = this.projection()
     if (projection.session.replay !== undefined) throw new EngineError("invalid_request", REPLAY_TEXT.noPrompts)
     const messageId = this.core.ids.message()
     if (options.maxSteps !== undefined) this.turnLimits.set(messageId, options.maxSteps)
-    this.write([event("inbox.enqueued", { messageId, origin: null, delivery: options.delivery ?? "steer", ...(options.untrusted === undefined ? {} : { untrusted: options.untrusted }), content: text(value), ...this.titleInput(projection, options.titlePrompt ?? value) })])
-    if (options.untrusted !== undefined) this.noticeTaint()
+    this.write([event("inbox.enqueued", {
+      messageId, origin: null, delivery: options.delivery ?? "steer", content: text(value),
+      ...(options.untrusted === undefined ? {} : { untrusted: options.untrusted }),
+      ...(inherited.length > 0 ? { inheritedTaint: inherited.map((entry) => ({ ...entry, at: projection.lastSeq + 1 })) } : {}),
+      ...this.titleInput(projection, options.titlePrompt ?? value),
+    })])
+    if (options.untrusted !== undefined || inherited.length > 0) this.noticeTaint()
     this.start()
     return messageId
   }
@@ -4630,8 +4637,13 @@ class LiveSession implements EngineSession {
       const store = storeErrors(() => this.core.stores.create(childId))
       child = new LiveSession(this.core, childId, store, cwd)
       try {
+        // A spawn starts its own sequence at 1. Its inherited sources arrive together at creation.
+        const inherited = inheritableTaint(this.historyForTaint().entries).map((entry) => ({ ...entry, at: 1 }))
         child.write([
-          event("session.created", { cwd, title, lineage: { kind: "spawn", parentSessionId: this.id, spawnId, depth: depth + 1, worktree }, settings: childSettings }),
+          event("session.created", {
+            cwd, title, lineage: { kind: "spawn", parentSessionId: this.id, spawnId, depth: depth + 1, worktree }, settings: childSettings,
+            ...(inherited.length === 0 ? {} : { inherited: { taint: inherited } }),
+          }),
           // What it runs as is recorded with it, before its first baseline, which carries the instructions.
           ...(runsAs === null ? [] : [event("agent.switched", { messageId: null, from: null, to: runsAs })]),
         ])
@@ -4657,11 +4669,12 @@ class LiveSession implements EngineSession {
     const childId = matches[0]
     if (childId === undefined || matches.length > 1)
       return toolResult("error", `This session has ${matches.length > 1 ? "more than one" : "no"} subagent ${named}.${children.length === 0 ? " It has started none." : ` Its subagents: ${children.join(", ")}.`}`)
+    const inherited = inheritableTaint(this.historyForTaint().entries)
     const running = spawned?.running.find((entry) => entry.sessionId === childId)
     if (running !== undefined) {
       const child = this.spawns.get(running.spawnId)?.child
       if (child == null || child.closing !== null) return toolResult("error", `Subagent ${childId} cannot be reached right now.`)
-      child.send(input.task)
+      child.sendMessage(input.task, {}, inherited)
       return toolResult(
         "success",
         `Sent to subagent ${childId}, which is still working: it reads the message at its next step. Its answer arrives ${running.background ? "as a message when it finishes" : "as the result of the call that started it"}.`,
@@ -4699,7 +4712,7 @@ class LiveSession implements EngineSession {
     } catch (error) {
       return toolResult("error", `The follow-up was not sent: ${describe(error)}`)
     }
-    return this.runChild({ spawnId, child, title: state.title ?? taskTitle(input.task), worktree: null, background, message: input.task }, context)
+    return this.runChild({ spawnId, child, title: state.title ?? taskTitle(input.task), worktree: null, background, message: input.task, inherited }, context)
   }
 
   /** Opens a child session of this one for writing, without recovering or resuming it. */
@@ -4722,7 +4735,7 @@ class LiveSession implements EngineSession {
    * as a message that wakes this session.
    */
   private async runChild(
-    work: { readonly spawnId: string; readonly child: LiveSession; readonly title: string; readonly worktree: WorktreeRecord | null; readonly background: boolean; readonly message: string },
+    work: { readonly spawnId: string; readonly child: LiveSession; readonly title: string; readonly worktree: WorktreeRecord | null; readonly background: boolean; readonly message: string; readonly inherited?: readonly HistoryEntry[] },
     context: ToolContext,
   ): Promise<ToolResult> {
     const { spawnId, child } = work
@@ -4743,7 +4756,7 @@ class LiveSession implements EngineSession {
 
     const ended = (async () => {
       try {
-        child.send(work.message)
+        child.sendMessage(work.message, {}, work.inherited)
         await child.settled()
       } finally {
         forward()
@@ -5297,8 +5310,11 @@ class LiveSession implements EngineSession {
    * inherited: the parent's file is never read for it.
    */
   private taint(policy: ApprovalPolicy): TaintState {
-    this.taintHistory ??= taintHistoryOf(this.store, this.id)
-    return deriveTaint(this.taintHistory.entries, { untrustedPaths: policy.untrustedPaths })
+    return deriveTaint(this.historyForTaint().entries, { untrustedPaths: policy.untrustedPaths })
+  }
+
+  private historyForTaint(): TaintHistory {
+    return this.taintHistory ??= taintHistoryOf(this.store, this.id)
   }
 
   /** The approvals that may cover a call: this session's, from its log, and the project's, from the user's data directory. */
@@ -7590,6 +7606,7 @@ async function forkSession(core: Core, askedId: SessionId, options: ForkOptions)
   for (const item of events) {
     if (options.throughSeq !== undefined && item.seq > options.throughSeq) break
     state = reduce(state, item)
+    if (item.type === "session.created" && item.data.lineage?.kind === "spawn" && item.data.inherited) taint.seed(item.data.inherited.taint)
     taint.add(item)
     // A boundary: nothing is open, so the history up to here is whole.
     if (state.session.open === null) {

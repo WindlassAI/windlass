@@ -546,7 +546,7 @@ export const durableEvents = {
       lineage: nullable(lineage),
       settings: sessionSettings,
       /**
-       * For a fork: what it needs at run time of the events it inherited,
+       * For a subagent, the parent's taint at creation. For a fork: what it needs at run time of the events it inherited,
        * copied here so that nothing but reading those events themselves
        * needs the parent's file. `taint`: the entries of the inherited
        * history that taint is derived from (`inheritableTaint`); the fork's
@@ -635,7 +635,7 @@ export const durableEvents = {
    * webhook's body, a networked check's output, text a client marked as not
    * its user's): a taint source, recorded with the admission.
    */
-  "inbox.enqueued": define(1, object({ messageId, origin: nullable(nonEmptyString), delivery, content, titlePrompt: optional(string), untrusted: optional(untrustedInput) })),
+  "inbox.enqueued": define(1, object({ messageId, origin: nullable(nonEmptyString), delivery, content, titlePrompt: optional(string), untrusted: optional(untrustedInput), inheritedTaint: optional(array(storedHistoryEntry)) })),
   /**
    * The message admitted by the event right before this one was produced by
    * a slash command: the user typed `/name arguments`, and the content of

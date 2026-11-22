@@ -97,3 +97,53 @@ test("a tainted child's words shown by background_output taint the parent when t
     await h.dispose()
   }
 })
+
+test("a subagent inherits the client marker before its first unattended full-mode call", async () => {
+  const h = new Harness({ spawn: {}, approval })
+  try {
+    converse(h.provider, {
+      "Read the ticket": [[script.toolCall("call_1", "subagent", { task: "Check the build" } as never), U()], [script.text("Done."), U()]],
+      "Check the build": [[script.toolCall("call_1", "shell", { command: "true", sandbox: { network: true } } as never), U()], [script.text("Done."), U()]],
+    })
+    const session = h.create()
+    session.setAttended(false)
+    session.setApproval({ mode: "full", unattended: "deny" })
+    session.send("Read the ticket.", { untrusted: { kind: "client", source: "issue 7" } })
+    await h.settled()
+    const events = h.store.readEvents(CHILD)
+    expect(events[0]).toMatchObject({ type: "session.created", data: { inherited: { taint: [expect.objectContaining({ source: "issue 7" })] } } })
+    expect(events.find((event) => event.type === "tool.settled")).toMatchObject({ data: { outcome: "error", output: expect.stringContaining("issue 7") } })
+    expect(h.tools.ran).toHaveLength(0)
+  } finally {
+    await h.dispose()
+  }
+})
+
+test("a follow-up carries outside text to a child that started clean", async () => {
+  const h = new Harness({ spawn: {}, approval })
+  try {
+    converse(h.provider, {
+      "Review the change": [
+        [script.toolCall("call_1", "subagent", { task: "Review the build" } as never), U()], [script.text("Reviewed."), U()],
+        [script.toolCall("call_2", "subagent", { task: "Check the ticket", session: CHILD } as never), U()], [script.text("Done."), U()],
+      ],
+      "Review the build": [[script.text("Reviewed."), U()],
+        [script.toolCall("call_2", "shell", { command: "true", sandbox: { network: true } } as never), U()], [script.text("Done."), U()]],
+    })
+    const session = h.create()
+    session.setAttended(false)
+    session.setApproval({ mode: "full", unattended: "deny" })
+    session.send("Review the change.")
+    await h.settled()
+    session.send("Follow up on this ticket.", { untrusted: { kind: "client", source: "follow-up ticket" } })
+    await h.settled()
+    const events = h.store.readEvents(CHILD)
+    expect(events.findLast((event) => event.type === "inbox.enqueued")).toMatchObject({
+      data: { inheritedTaint: [expect.objectContaining({ source: "follow-up ticket" })] },
+    })
+    expect(events.findLast((event) => event.type === "tool.settled")).toMatchObject({ data: { outcome: "error", output: expect.stringContaining("follow-up ticket") } })
+    expect(h.tools.ran).toHaveLength(0)
+  } finally {
+    await h.dispose()
+  }
+})

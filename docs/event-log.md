@@ -279,6 +279,7 @@ Input was admitted and is waiting to be delivered. `messageId` is the ID the mes
 | `content` | [content](#content) | yes |
 | `titlePrompt` | string | may be absent |
 | `untrusted` | [untrustedInput](#untrustedinput) | may be absent |
+| `inheritedTaint` | list of [storedHistoryEntry](#storedhistoryentry) | may be absent |
 
 ### `command.expanded`
 
