@@ -62,7 +62,15 @@ const GIT_OPTIONS = [
   "core.hooksPath=/dev/null", "core.fsmonitor=false", "core.sshCommand=false", "diff.external=",
   "protocol.allow=never", "submodule.recurse=false", "commit.gpgsign=false", "tag.gpgsign=false",
   `user.name=${brand.name}`, "user.email=subagent@localhost", "core.quotePath=false", "gc.auto=0", "maintenance.auto=false",
+  "diff.ignoreSubmodules=all", "status.submoduleSummary=false",
 ].flatMap((value) => ["-c", value])
+
+/**
+ * How long one Git command of Windlass's own may run. Staging a large
+ * workspace takes seconds; a command that takes minutes is waiting on
+ * something (a lock, a stalled filesystem) and is stopped, with the reason.
+ */
+export const gitLimits = { timeoutMs: 5 * 60 * 1000 }
 
 const unsafeKey = /^(?:filter\.|diff\..+\.(?:textconv|command)$|merge\..+\.driver$|include(?:if)?\.|core\.(?:worktree|alternaterefscommand)$)/is
 
@@ -70,7 +78,8 @@ const changedRepository = "the repository's git directory or its pointers change
 const stillPinned = (repo: Repository) => repositoryAt(repo.workTree)?.identity === repo.identity
 const refused = (stderr: string): GitResult => ({ code: 128, stderr, stdout: new Uint8Array() })
 
-async function git(repo: Repository, args: readonly string[], options: { readonly index?: string } = {}): Promise<GitResult> {
+/** `checked`, for a test: called after the checks, right before Git runs, as something running beside it could act there. */
+async function git(repo: Repository, args: readonly string[], options: { readonly index?: string; readonly checked?: () => void } = {}): Promise<GitResult> {
   if (!stillPinned(repo)) return refused(changedRepository)
   const env = {
     PATH: process.env.PATH, LC_ALL: "C", HOME: "/dev/null", XDG_CONFIG_HOME: "/dev/null", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1",
@@ -87,16 +96,45 @@ async function git(repo: Repository, args: readonly string[], options: { readonl
       const nested = await repositoryEntries(repo.workTree, options.index ?? join(repo.gitDir, "index"), repo.gitDir)
       if (nested.size) return refused(`the workspace contains ${[...nested].join(", ")}. Inspect it before using a subagent worktree.`)
     }
+    options.checked?.()
     return await run(args)
   } catch (error) {
     return refused(error instanceof Error ? error.message : String(error))
   }
 
   async function run(command: readonly string[]): Promise<GitResult> {
-    const child = Bun.spawn(["git", ...GIT_OPTIONS, ...command], { cwd: repo.workTree, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
-    const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).arrayBuffer(), new Response(child.stderr).text(), child.exited])
-    return { code, stdout: new Uint8Array(stdout), stderr }
+    // Its own process group, so that a stop reaches whatever Git started and nothing keeps the pipes open.
+    const child = Bun.spawn(["git", ...GIT_OPTIONS, ...command], { cwd: repo.workTree, env, stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: true })
+    const seconds = gitLimits.timeoutMs / 1000
+    let timedOut = false
+    const timer = setTimeout(() => {
+      timedOut = true
+      try {
+        process.kill(-child.pid, "SIGKILL")
+      } catch {
+        child.kill("SIGKILL")
+      }
+    }, gitLimits.timeoutMs)
+    try {
+      const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).arrayBuffer(), new Response(child.stderr).text(), child.exited])
+      if (timedOut) throw new Error(`git ${command[0]} did not finish within ${seconds} seconds and was stopped. Check for a stale lock in the repository or a slow filesystem, then try again`)
+      return { code, stdout: new Uint8Array(stdout), stderr }
+    } finally {
+      clearTimeout(timer)
+    }
   }
+}
+
+/**
+ * After staging: a nested repository that appeared between the check and the
+ * staging became a gitlink. Staging a new one runs nothing in it, but every
+ * later Git command that compares the work tree would ask it for its status.
+ */
+async function stagedGitlinks(repo: Repository, index: string): Promise<string | null> {
+  const listed = await git(repo, ["ls-files", "--stage", "-z"], { index })
+  if (listed.code !== 0) return lastLine(listed)
+  const links = new TextDecoder().decode(listed.stdout).split("\0").filter((entry) => entry.startsWith("160000 ")).map((entry) => entry.slice(entry.indexOf("\t") + 1))
+  return links.length === 0 ? null : `the workspace contains ${links.slice(0, 8).map((path) => `gitlink ${JSON.stringify(path)}`).join(", ")}. Inspect it before using a subagent worktree.`
 }
 
 const text = (result: GitResult) => new TextDecoder().decode(result.stdout).trim()
@@ -112,7 +150,7 @@ export function worktreeBranch(childId: string): string {
  * workspace as it stands. Returns the record, with `path` the directory in
  * the worktree that corresponds to `cwd`, or why there is none.
  */
-export async function createWorktree(input: { readonly cwd: string; readonly directory: string; readonly branch: string; readonly parent: Repository | null }): Promise<{ readonly worktree: WorktreeRecord; readonly cwd: string } | { readonly error: string }> {
+export async function createWorktree(input: { readonly cwd: string; readonly directory: string; readonly branch: string; readonly parent: Repository | null; readonly probe?: (point: "staging") => void }): Promise<{ readonly worktree: WorktreeRecord; readonly cwd: string } | { readonly error: string }> {
   const repository = input.parent
   if (!repository) return { error: "the working directory is not in a git repository, so a subagent cannot get a worktree of its own. Run it without `worktree`: it then shares this workspace." }
   const head = await git(repository, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])
@@ -128,8 +166,10 @@ export async function createWorktree(input: { readonly cwd: string; readonly dir
     } catch (error) {
       return { error: error instanceof Error ? error.message : String(error) }
     }
-    const added = await git(repository, ["add", "-A", "--ignore-errors", "."], { index })
+    const added = await git(repository, ["add", "-A", "--ignore-errors", "."], { index, checked: () => input.probe?.("staging") })
     if (added.code !== 0 && added.code !== 1) return { error: `the workspace could not be recorded for the worktree: ${lastLine(added)}` }
+    const linked = await stagedGitlinks(repository, index)
+    if (linked !== null) return { error: linked }
     const tree = await git(repository, ["write-tree"], { index })
     if (tree.code !== 0) return { error: `the workspace could not be recorded for the worktree: ${lastLine(tree)}` }
     const same = text(await git(repository, ["rev-parse", "HEAD^{tree}"])) === text(tree)
@@ -168,8 +208,14 @@ export interface MergeOutcome {
   readonly message: string
 }
 
-/** Commits whatever the worktree holds onto its branch. Returns the tip, or `null` with the reason. */
-async function commitWork(worktree: WorktreeRecord, parent: Repository, message: string): Promise<{ readonly tip: string } | { readonly error: string }> {
+/**
+ * Commits whatever the worktree holds onto its branch. Returns the tip, or
+ * `null` with the reason. It stages through a private copy of the worktree's
+ * index: the index is checked for gitlinks, and nothing the subagent left
+ * running can add one to the copy afterwards, which `git add` would then
+ * ask for its status (running that repository's configured programs).
+ */
+async function commitWork(worktree: WorktreeRecord, parent: Repository, message: string, probe?: (point: "staging") => void): Promise<{ readonly tip: string } | { readonly error: string }> {
   if (!existsSync(worktree.path)) {
     const tip = await git(parent, ["rev-parse", "--verify", "--quiet", `refs/heads/${worktree.branch}`])
     return tip.code === 0 ? { tip: text(tip) } : { error: `the worktree ${worktree.path} and its branch are gone` }
@@ -178,16 +224,31 @@ async function commitWork(worktree: WorktreeRecord, parent: Repository, message:
   if (!stillPinned(parent)) return { error: changedRepository }
   if (!child || child.commonDir !== parent.commonDir || child.gitDir === child.commonDir || child.gitDir === parent.gitDir || child.workTree !== await realPath(worktree.path))
     return { error: "the subagent's worktree no longer points back to its repository" }
-  const added = await git(child, ["add", "-A", "."])
-  if (added.code !== 0) return { error: lastLine(added) }
-  const staged = await git(child, ["diff", "--no-ext-diff", "--no-textconv", "--cached", "--quiet"])
-  if (staged.code > 1) return { error: lastLine(staged) }
-  if (staged.code === 1) {
-    const committed = await git(child, ["commit", "--quiet", "--no-verify", "-m", message])
-    if (committed.code !== 0) return { error: lastLine(committed) }
+  const scratch = mkdtempSync(join(tmpdir(), `${brand.directory}-commit-`))
+  try {
+    const index = join(scratch, "index")
+    copyGitIndex(join(child.gitDir, "index"), index)
+    const added = await git(child, ["add", "-A", "."], { index, checked: () => probe?.("staging") })
+    if (added.code !== 0) return { error: lastLine(added) }
+    const linked = await stagedGitlinks(child, index)
+    if (linked !== null) return { error: linked }
+    const tree = await git(child, ["write-tree"], { index })
+    if (tree.code !== 0) return { error: lastLine(tree) }
+    const head = await git(child, ["rev-parse", "--verify", "HEAD^{commit}"])
+    if (head.code !== 0) return { error: lastLine(head) }
+    const headTree = await git(child, ["rev-parse", "HEAD^{tree}"])
+    if (headTree.code !== 0) return { error: lastLine(headTree) }
+    if (text(headTree) === text(tree)) return { tip: text(head) }
+    const commit = await git(child, ["commit-tree", text(tree), "-p", text(head), "-m", message])
+    if (commit.code !== 0) return { error: lastLine(commit) }
+    // HEAD is the worktree's branch: moved only from the commit it was on.
+    const moved = await git(child, ["update-ref", "-m", message, "HEAD", text(commit), text(head)])
+    return moved.code === 0 ? { tip: text(commit) } : { error: lastLine(moved) }
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) }
+  } finally {
+    rmSync(scratch, { recursive: true, force: true })
   }
-  const tip = await git(child, ["rev-parse", "HEAD"])
-  return tip.code === 0 ? { tip: text(tip) } : { error: lastLine(tip) }
 }
 
 /** Removes the worktree directory and, unless it is kept, its branch. Never throws: what cannot be removed is left. */
@@ -223,12 +284,21 @@ export async function salvageWorktree(worktree: WorktreeRecord, parent: Reposito
   }
 }
 
+/**
+ * The file at `path` in `commit`, or `null` when there is none. A merge
+ * writes regular files and symlinks only: a gitlink, a directory (a file
+ * that became one) or any other entry is refused, never read as an absence.
+ */
 async function versionAt(repository: Repository, commit: string, path: string): Promise<FileVersion | null> {
   const listed = await git(repository, ["--literal-pathspecs", "ls-tree", "-z", commit, "--", path])
   if (listed.code !== 0) throw new Error(lastLine(listed))
-  const entry = text(listed)
-  const match = /^(\d{6}) blob ([0-9a-f]+)\t/.exec(entry)
-  if (match === null) return null
+  const entry = new TextDecoder().decode(listed.stdout).replace(/\0$/, "")
+  if (entry === "") return null
+  const match = /^(100644|100755|120000) blob ([0-9a-f]+)\t/.exec(entry)
+  if (match === null) {
+    const kind = entry.startsWith("160000 ") ? "a gitlink" : entry.startsWith("040000 ") ? "a directory" : `a Git entry of mode ${entry.slice(0, 6)}`
+    throw new Error(`${JSON.stringify(path)} is ${kind} in commit ${commit.slice(0, 12)}; a merge writes only regular files and symlinks`)
+  }
   const blob = await git(repository, ["cat-file", "blob", match[2]!])
   if (blob.code !== 0) throw new Error(lastLine(blob))
   return { bytes: blob.stdout, mode: match[1]! }
@@ -250,7 +320,7 @@ const merging = new Map<string, Promise<unknown>>()
  * moment would otherwise both merge against the same state, and the second
  * to write would undo the first.
  */
-export function mergeWorktree(worktree: WorktreeRecord, parent: Repository, input: { readonly title: string; readonly probe?: (point: "computed" | "writing") => void }): Promise<MergeOutcome> {
+export function mergeWorktree(worktree: WorktreeRecord, parent: Repository, input: { readonly title: string; readonly probe?: (point: "staging" | "computed" | "writing") => void }): Promise<MergeOutcome> {
   const turn = (merging.get(worktree.repository) ?? Promise.resolve()).then(() => mergeNow(worktree, parent, input))
   const settled = turn.catch(() => {})
   merging.set(worktree.repository, settled)
@@ -260,13 +330,13 @@ export function mergeWorktree(worktree: WorktreeRecord, parent: Repository, inpu
   return turn
 }
 
-async function mergeNow(worktree: WorktreeRecord, parent: Repository, input: { readonly title: string; readonly probe?: (point: "computed" | "writing") => void }): Promise<MergeOutcome> {
+async function mergeNow(worktree: WorktreeRecord, parent: Repository, input: { readonly title: string; readonly probe?: (point: "staging" | "computed" | "writing") => void }): Promise<MergeOutcome> {
   const base = { branch: worktree.branch, files: [] as string[], conflicts: [] as string[] }
   const failed = async (reason: string): Promise<MergeOutcome> => {
     await removeWorktree(worktree, parent, { keepBranch: true })
     return { ...base, status: "failed", commit: null, kept: true, message: `Its work could not be merged into this workspace (${reason}); nothing was changed here. It is on branch ${worktree.branch}.` }
   }
-  const work = await commitWork(worktree, parent, `${brand.name} subagent: ${input.title}`)
+  const work = await commitWork(worktree, parent, `${brand.name} subagent: ${input.title}`, input.probe)
   if ("error" in work) throw new Error(work.error)
   const tip = work.tip
   if (tip === worktree.base) {
@@ -280,8 +350,8 @@ async function mergeNow(worktree: WorktreeRecord, parent: Repository, input: { r
   const conflicts: string[] = []
   const scratch = mkdtempSync(join(tmpdir(), `${brand.directory}-merge-`))
   try {
+    for (const path of files) mergeComponents(path)
     for (const path of files) {
-      mergeComponents(path)
       const [origin, theirs] = await Promise.all([versionAt(parent, worktree.base, path), versionAt(parent, tip, path)])
       const ours = versionOnDisk(parent.workTree, path)
       if (same(ours, theirs)) continue
