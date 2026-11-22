@@ -285,6 +285,33 @@ esac
     expect(performance.now() - startedAt).toBeLessThan(30_000)
   })
 
+  test("a worktree add that is stopped part way leaves no locked entry and no branch behind", async () => {
+    const { directory: cwd, data } = repository()
+    const bin = join(data, "bin")
+    mkdirSync(bin, { recursive: true })
+    // Git as it is, except that \`worktree add\` stops in the state a stop part way leaves: registered, locked, and then hung.
+    const real = Bun.which("git")!
+    writeFileSync(join(bin, "git"), `#!/bin/sh\ncase " $* " in *" worktree add "*) "${real}" "$@" || exit; for d in "$GIT_COMMON_DIR"/worktrees/*; do echo initializing > "$d/locked"; done; exec sleep 60;; esac\nexec "${real}" "$@"\n`, { mode: 0o755 })
+    const path = process.env.PATH
+    const limit = gitLimits.timeoutMs
+    const directory = join(data, "child")
+    try {
+      process.env.PATH = `${bin}:${path}`
+      gitLimits.timeoutMs = 5_000
+      const result = await createWorktree({ cwd, directory, branch: "child", parent: repositoryAt(cwd) })
+      expect(result).toMatchObject({ error: expect.stringContaining("did not finish within") })
+    } finally {
+      process.env.PATH = path
+      gitLimits.timeoutMs = limit
+    }
+    expect(existsSync(directory)).toBe(false)
+    expect(sh(cwd, "git worktree list --porcelain").match(/^worktree /gm)).toHaveLength(1)
+    expect(sh(cwd, "git branch --list child").trim()).toBe("")
+    // The next attempt is not refused by what this one left.
+    const again = await createWorktree({ cwd, directory, branch: "child", parent: repositoryAt(cwd) })
+    expect(again).toMatchObject({ worktree: { branch: "child" } })
+  })
+
   test("a background command the child left running is stopped before its worktree is merged", async () => {
     const { data, directory } = repository()
     const { harness } = start(
