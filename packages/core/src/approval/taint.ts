@@ -163,7 +163,7 @@ function sourcesOf(entry: Extract<HistoryEntry, { kind: "tool_result" }>, globs:
 
 /** One line naming where the untrusted content came from, for questions. */
 export function describeTaint(taint: TaintState): string {
-  const first = taint.sources[0]
+  const first = taint.sources.findLast((source) => source.kind === "client-input") ?? taint.sources[0]
   if (first === undefined) return "No untrusted content."
   const what =
     first.kind === "network-tool"

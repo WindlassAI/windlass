@@ -45,7 +45,7 @@ test("both are advertised where a client looks for what this agent takes", async
   expect(advertised.promptMeta).toContain(`${NS}/untrusted`)
 })
 
-for (const method of [methods.agent.session.prompt, EXT.steer]) {
+for (const method of [methods.agent.session.prompt, EXT.steer, EXT.queue]) {
   test(`${typeof method === "string" ? method : "session/prompt"} records the client's source before the first step`, async () => {
     h = await startHarness({ responses: [[script.toolCall("call_1", "shell", { command: "echo allowed", sandbox: { network: true } })], [script.text("Done.")]], clientCapabilities: { _meta: { [NS]: { events: true } } } })
     await h.initialize()

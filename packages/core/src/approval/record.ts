@@ -133,7 +133,7 @@ export type TaintEvent =
   | { readonly type: "tool.started"; readonly data: { readonly messageId: string; readonly callId: string; readonly effect: Infer<typeof toolEffect>; readonly run?: CallRun } }
   | { readonly type: "tool.settled"; readonly seq: number; readonly data: { readonly messageId: string; readonly callId: string; readonly display?: unknown; readonly diagnostics?: { readonly untrusted?: true; readonly noteAdded: boolean; readonly servers: readonly { readonly name: string; readonly origin: "user" | "project"; readonly new: number }[] } } }
   | { readonly type: "hook.ran"; readonly seq: number; readonly data: { readonly name: string; readonly taint: "hook-network" | "hook-untrusted-project" | null } }
-  | { readonly type: "inbox.enqueued"; readonly seq: number; readonly data: { readonly untrusted?: { readonly kind: "wake"; readonly wakeId: string; readonly carries: "webhook_body" | "check_output" } | { readonly kind: "client"; readonly source: string } } }
+  | { readonly type: "inbox.enqueued"; readonly seq: number; readonly data: { readonly inheritedTaint?: readonly HistoryEntry[]; readonly untrusted?: { readonly kind: "wake"; readonly wakeId: string; readonly carries: "webhook_body" | "check_output" } | { readonly kind: "client"; readonly source: string } } }
   | { readonly type: "taint.cleared"; readonly seq: number }
   | { readonly type: "spawn.started"; readonly data: { readonly spawnId: string; readonly work: { readonly kind: string; readonly sessionId?: string } } }
   | { readonly type: "spawn.ended"; readonly seq: number; readonly data: { readonly spawnId: string; readonly tainted: boolean } }
@@ -204,6 +204,7 @@ export class TaintHistory {
         if (event.data.taint !== null) this.entries.push({ kind: "hook_output", at: event.seq, hook: event.data.name, taint: event.data.taint })
         return
       case "inbox.enqueued":
+        if (event.data.inheritedTaint) this.seed(event.data.inheritedTaint)
         const untrusted = event.data.untrusted
         if (untrusted?.kind === "wake") this.entries.push({ kind: "untrusted_input", at: event.seq, wakeId: untrusted.wakeId, carries: untrusted.carries })
         if (untrusted?.kind === "client") this.entries.push({ kind: "client_input", at: event.seq, source: untrusted.source })

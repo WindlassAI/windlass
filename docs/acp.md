@@ -873,7 +873,7 @@ is reported by `_windlass/state` and `_windlass/turn`.
 { messageId: string }                           // the ID the message has once delivered
 ```
 
-On `session/prompt` and `_windlass/steer`, a client can mark a message containing outside text with
+On `session/prompt`, `_windlass/steer`, `_windlass/queue` and `_windlass/send_command`, a client can mark a message containing outside text with
 `"_meta": { "windlass/untrusted": { "source": "CI log for build 42" } }`. Use a nonempty source of at most
 200 characters. A malformed marker is refused with `-32602` before anything is admitted. The marker applies
 to the whole message even when only one content block came from that source. Delivery, step limit, message

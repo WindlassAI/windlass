@@ -152,7 +152,9 @@ function create(state: Projection | null, event: StoredEvent<"session.created">)
     // A root, a subagent and a replay all start a history of their own.
     if (state !== null) throw new ReduceError("out_of_order", "the session already exists", event)
     if (event.seq !== 1) throw new ReduceError("out_of_order", `a ${lineage === null ? "root" : lineage.kind} session starts at seq 1`, event)
-    if (event.data.inherited !== undefined) throw new ReduceError("invalid_transition", "only a fork inherits history: nothing is carried into a session that starts its own", event)
+    if (event.data.inherited !== undefined && lineage?.kind !== "spawn") throw new ReduceError("invalid_transition", "only a fork or subagent inherits taint", event)
+    if (event.data.inherited?.taint.some((entry) => entry.at !== event.seq))
+      throw new ReduceError("invalid_range", "a subagent inherits taint at its creation", event)
     const started: SessionState = lineage?.kind === "replay" ? { ...session, replay: { workspace: null, ended: null } } : session
     return { lastSeq: 1, updatedAt: event.time, session: started, baseline: null, messages: [], inbox: [] }
   }
@@ -556,6 +558,8 @@ function apply(state: Projection, event: AppliedEvent): Projection {
     }
 
     case "inbox.enqueued": {
+      if (event.data.inheritedTaint && (state.session.lineage?.kind !== "spawn" || event.data.origin !== null || event.data.inheritedTaint.some((entry) => entry.at !== event.seq)))
+        fail("invalid_transition", "only a subagent follow-up carries taint from its parent, at the sequence of its admission")
       unused(event.data.messageId)
       const item = {
         messageId: event.data.messageId,

@@ -3222,7 +3222,7 @@ The model hands a task to a subagent. The call starts like any tool (its effect 
 
 #### 93. The subagent's own log
 
-The same situation from the child's side. A subagent is a real session, typed as spawned by its parent: it starts at seq 1 with a fresh conversation (the baseline and its task; nothing of the parent's history), the parent's settings and working directory, and a cache key of its own. Its task is delivered like a prompt, with a note that says who reads its answer. It ends like any turn, but without running the verification gate: its `execution.succeeded` says `left_to_parent`, because the turn of the session that started it is what gets verified, once the child's work is in. That says nothing about whether the project has checks; the parent's ending does. At the depth limit (one level by default) its tool list has no `subagent`.
+The same situation from the child's side. A subagent is a real session, typed as spawned by its parent: it starts at seq 1 with a fresh conversation (the baseline and its task), the parent's settings and working directory, and a cache key of its own. Its first event carries its parent's untrusted sources when there are any. A follow-up carries the sources present when the parent sent it. Its task is delivered like a prompt, with a note that says who reads its answer. It ends like any turn, but without running the verification gate: its `execution.succeeded` says `left_to_parent`, because the turn of the session that started it is what gets verified, once the child's work is in. That says nothing about whether the project has checks; the parent's ending does. At the depth limit (one level by default) its tool list has no `subagent`.
 
 *Provider:* the child answers in one step.
 

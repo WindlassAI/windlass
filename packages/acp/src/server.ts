@@ -235,7 +235,7 @@ function buildAgent(state: ConnectionState): AgentApp {
     .onRequest(methods.agent.session.prompt, ({ params, signal }) => state.prompt(params.sessionId, params.prompt, params._meta ?? null, signal))
     .onNotification(methods.agent.session.cancel, ({ params }) => state.cancel(params.sessionId))
     .onRequest(EXT.steer, parseInputParams, ({ params }) => state.admit(params.sessionId, params.prompt, "steer", params.maxSteps, clientInput(params.meta?.[META.untrusted])))
-    .onRequest(EXT.queue, parseInputParams, ({ params }) => state.admit(params.sessionId, params.prompt, "queue", params.maxSteps))
+    .onRequest(EXT.queue, parseInputParams, ({ params }) => state.admit(params.sessionId, params.prompt, "queue", params.maxSteps, clientInput(params.meta?.[META.untrusted])))
     .onRequest(EXT.admit, parseObject, ({ params }) => state.admitMessage(params))
     .onRequest(EXT.models, (params) => params, () => state.models())
     .onRequest(EXT.revert, parseRevertParams, ({ params }) => state.revert(params, false))
@@ -292,6 +292,7 @@ function buildAgent(state: ConnectionState): AgentApp {
         delivery: oneOfOrNull(params.delivery, ["steer", "queue"] as const, "delivery") ?? "steer",
         maxSteps: stepLimit(params.maxSteps),
         builtins: clientCommands(params.builtins),
+        ...clientInput(params._meta == null ? undefined : parseObject(params._meta)[META.untrusted]),
       }),
     )
     .onRequest(EXT.cancelCall, parseObject, ({ params }) =>
@@ -621,7 +622,7 @@ class ConnectionState {
    * names of the client's own commands and of the files are suggested), the
    * file cannot be used, or the agent it names cannot be found.
    */
-  sendCommand(sessionId: string, name: string, args: string, options: { readonly delivery: "steer" | "queue"; readonly maxSteps: number | undefined; readonly builtins: readonly ClientCommand[] }): SendCommandResult {
+  sendCommand(sessionId: string, name: string, args: string, options: ReturnType<typeof clientInput> & { readonly delivery: "steer" | "queue"; readonly maxSteps: number | undefined; readonly builtins: readonly ClientCommand[] }): SendCommandResult {
     const view = this.requireView(sessionId)
     // Looked up with the client's own commands first: the refusal then names the nearest of both.
     const found = this.engineErrors(() => view.session.findCommand(name, options.builtins))
@@ -629,7 +630,7 @@ class ConnectionState {
       const message = found.kind === "builtin" ? `/${found.name} is a command of the client's own` : found.message
       throw new RequestError(-32602, message, errorData({ reason: "invalid_request", message }))
     }
-    const sent = this.engineErrors(() => view.session.sendCommand(name, args, { delivery: options.delivery, ...(options.maxSteps === undefined ? {} : { maxSteps: options.maxSteps }) }))
+    const sent = this.engineErrors(() => view.session.sendCommand(name, args, { ...(options.untrusted === undefined ? {} : { untrusted: options.untrusted }), delivery: options.delivery, ...(options.maxSteps === undefined ? {} : { maxSteps: options.maxSteps }) }))
     view.echo.add(sent.messageId)
     return { messageId: sent.messageId, command: commandInfo({ ...listed(sent.command), hiddenBy: null }), ...expansionReport(sent.expansion) }
   }
