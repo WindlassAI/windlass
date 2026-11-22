@@ -103,6 +103,15 @@ refreshes or writes `auth.json`. The file holds what `login token --json` printe
 around either is ignored. With the JSON form `windlass` knows when the token expires: `login status` shows the time left, and an
 expired token is refused before anything is sent.
 
+A host can route model traffic through its relay. Start the executable with
+`WINDLASS_MODEL_BASE_URL=http://127.0.0.1:8080/v1` and set `WINDLASS_ACCESS_TOKEN_FILE` to a file containing
+only a session placeholder. Keep the real ChatGPT token at the relay. Windlass sends the file's bearer on
+`GET /v1/models` and `POST /v1/responses`, including title requests. The relay authenticates the placeholder
+and supplies the upstream token. Redirects fail. The URL accepts HTTP or HTTPS on loopback. For a remote relay
+the host must also set `WINDLASS_MODEL_ALLOWED_ORIGIN` to the exact origin, for example `https://relay.example`.
+The port is part of the origin. Credentials, query strings and fragments are refused. These settings are
+process environment variables. When running from source, start Bun with `--no-env-file`.
+
 Keeping the token fresh is the job of whoever hands it in: on a timer, run `login token --json --valid-for
 <duration>` where the sign-in is saved and replace the file with what it prints. Choose the two so that the token
 in the file never runs out between two runs: a duration longer than the timer's period by the time a model call
@@ -645,6 +654,8 @@ work was not merged keeps its `windlass/subagent-<id>` branch.
 | `WINDLASS_TUI_DEBUG` | `1`: the full-screen interface shows events it does not know, dimmed |
 | `WINDLASS_ACP_LOG` | the server's log level on standard error: `debug`, `info` (default), `warn`, `error` |
 | `WINDLASS_ENGINE_START_TIMEOUT_MS` | how long the server child may take to start (default 20000) |
+| `WINDLASS_MODEL_BASE_URL` | host URL prefix for the Responses provider and model catalog |
+| `WINDLASS_MODEL_ALLOWED_ORIGIN` | exact origin the host allows for a relay outside loopback |
 | `WINDLASS_ACCESS_TOKEN_FILE` | a file with an access token handed in by the `windlass` that holds the ChatGPT sign-in (`windlass login token` there): this process runs on it and does not use a saved sign-in ("One sign-in for several machines" above) |
 | `WINDLASS_WAKE` | `off`: this process's server fires no wake-ups (an interactive `windlass`, `windlass tui` and `windlass acp` fire them; a one-prompt run never does) |
 | `DISPLAY`, `WAYLAND_DISPLAY`, `SSH_CONNECTION`, `SSH_TTY` | `windlass login` opens a browser only with a display and not over SSH |

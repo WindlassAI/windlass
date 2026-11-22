@@ -171,6 +171,37 @@ describe("as a process", () => {
     expect(prompt).toEqual({ code: 1, out: "", err: `${brand.binary}: not signed in; run \`${brand.binary} login\` to sign in with ChatGPT, then try again\n` })
   })
 
+  test("the host relay gets the catalog and streamed model calls with the placeholder from the token file", async () => {
+    const at = place("relay")
+    const token = join(at.xdg, "placeholder")
+    await Bun.write(token, "synthetic-session-placeholder")
+    const requests: string[] = []
+    const relay = Bun.serve({
+      hostname: "127.0.0.1", port: 0,
+      fetch(request) {
+        const path = new URL(request.url).pathname
+        requests.push(`${request.method} ${path} ${request.headers.get("authorization")}`)
+        if (path === "/v1/models") return Response.json({ models: [{ slug: "relay-model", display_name: "Relay model", visibility: "list" }] })
+        const event = (type: string, data: object) => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`
+        return new Response(event("response.created", { response: {} }) +
+          event("response.output_item.done", { output_index: 0, item: { type: "message", role: "assistant", content: [{ type: "output_text", text: "From the relay." }] } }) +
+          event("response.completed", { response: { output: [] } }), { headers: { "content-type": "text/event-stream" } })
+      },
+    })
+    try {
+      const proc = Bun.spawn([process.execPath, "--no-env-file", CLI, "-m", "relay-model", "Please answer."], {
+        cwd: at.workspace, stdout: "pipe", stderr: "pipe",
+        env: { ...process.env, XDG_DATA_HOME: at.xdg, [ACCESS_TOKEN_FILE_ENV]: token, [`${brand.envPrefix}MODEL_BASE_URL`]: `${relay.url.origin}/v1` },
+      })
+      const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited])
+      expect([code, err]).toEqual([0, ""])
+      expect(out).toContain("From the relay.")
+      expect(new Set(requests)).toEqual(new Set(["GET /v1/models Bearer synthetic-session-placeholder", "POST /v1/responses Bearer synthetic-session-placeholder"]))
+    } finally {
+      await relay.stop(true)
+    }
+  })
+
   test("an access token handed in that cannot be used: --models, a prompt and login status say to hand in a new one, never to sign in here", async () => {
     const at = place("handed-in")
     const file = join(root, "handed-in", "token")

@@ -25,6 +25,7 @@ import { type Engine, type EngineOptions, type ModelOffer, createEngine } from "
 import type { SessionSettings } from "./event/durable.ts"
 import type { ProviderError } from "./provider/error.ts"
 import { ModelListError, OpenAIResponsesProvider, listModels } from "./provider/openai-responses.ts"
+import { modelEndpoint } from "./provider/relay.ts"
 import { type Provider, SIGNED_IN_PROVIDER } from "./provider/provider.ts"
 import { type CommandSandbox, createCommandSandbox } from "./sandbox/command.ts"
 import { type SessionDirectory, openSessionDirectory } from "./store/directory.ts"
@@ -206,6 +207,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
   // A handed-in access token is a secret this process reads from a file, not from its environment, and the file is
   // replaced while it runs: every token read joins the values removed from tool output, a list the engine reads
   // each time it redacts, and the list itself looks at the file then (`secretsWithTokenFile`).
+  const endpoint = options.provider === undefined ? modelEndpoint() : {}
   const tokenFile = options.provider === undefined ? handedInTokenFile() : null
   const secrets = tokenFile === null ? null : secretsWithTokenFile(options.engine?.approval?.secrets ?? environmentSecrets(process.env), tokenFile)
   const accessToken =
@@ -220,7 +222,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
   const accountModels = async (signal?: AbortSignal): Promise<readonly ModelEntry[]> => {
     if (options.models !== undefined) return options.models(signal)
     if (options.provider !== undefined) return []
-    const models = await listModels({ accessToken, ...(signal === undefined ? {} : { signal }) }).catch((error: unknown) => {
+    const models = await listModels({ ...endpoint, accessToken, ...(signal === undefined ? {} : { signal }) }).catch((error: unknown) => {
       // A handed-in token the provider rejected: the listing says so, and not to sign in here.
       if (secrets === null || !(error instanceof ModelListError)) throw error
       throw new ModelListError(rejectedHandedIn(error.error))
@@ -247,7 +249,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     // The context window the compaction policy measures against: the provider's, per model, asked for once.
     let catalogue: Promise<readonly { readonly slug: string; readonly contextWindow: number | null }[]> | null = null
     const providerWindow = async (model: string) => {
-      catalogue ??= listModels({ accessToken, listedOnly: false }).catch(() => [])
+      catalogue ??= listModels({ ...endpoint, accessToken, listedOnly: false }).catch(() => [])
       return (await catalogue).find((entry) => entry.slug === model)?.contextWindow ?? null
     }
     const lowered = testContextWindow()
@@ -258,6 +260,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     }
     const signedIn = () =>
       new OpenAIResponsesProvider({
+        ...endpoint,
         accessToken,
         readBlob: (ref) => {
           const blob = sessions.getBlob(ref.hash)
