@@ -2029,7 +2029,7 @@ interface LiveSpawn {
    * user stopping the call that waits for it, or a switch of this session to an agent whose restrictions the
    * subagent is not held to (`agent`; the agent's name is in `stoppedFor`).
    */
-  stopping: "interrupt" | "shutdown" | "tool" | "call" | "agent" | null
+  stopping: "interrupt" | "shutdown" | "tool" | "call" | "agent" | "merge" | null
   /** The agent this session was switched to, for a subagent that was stopped because of the switch. */
   stoppedFor?: string
   /** What the model is told about its end, once that is recorded. */
@@ -2040,7 +2040,7 @@ interface LiveSpawn {
   readonly done: Promise<void>
 }
 
-const STOPPED_BY = { interrupt: "this session was interrupted", shutdown: "the harness shut down", tool: "it was asked to stop", call: "the user stopped this call" } as const
+const STOPPED_BY = { interrupt: "this session was interrupted", shutdown: "the harness shut down", tool: "it was asked to stop", call: "the user stopped this call", merge: "the subagent that started it ended, and its worktree is merged or kept only once nothing it started still runs" } as const
 
 /** Why spawned work was stopped, as the sentence part its result carries. */
 /** Whether a shell call's arguments ask for the background, which a program's call may not. */
@@ -4416,8 +4416,19 @@ class LiveSession implements EngineSession {
     }
   }
 
+  /**
+   * For a subagent whose work is about to be merged: stops what it left
+   * running and waits until each end is recorded. A background command still
+   * at work in its worktree could otherwise change it while the merge reads
+   * it, for instance stage a nested repository after the merge checked.
+   */
+  async stopLeftRunning(): Promise<void> {
+    this.stopSpawned("merge")
+    await Promise.all([...this.spawns.values()].map((live) => live.done))
+  }
+
   /** Stops everything this session spawned that still runs: its subagents and its background commands. */
-  private stopSpawned(reason: "interrupt" | "shutdown"): void {
+  private stopSpawned(reason: "interrupt" | "shutdown" | "merge"): void {
     for (const live of this.spawns.values()) {
       if (live.result !== null) continue
       live.stopping ??= reason
@@ -4772,6 +4783,7 @@ class LiveSession implements EngineSession {
       // Stopped on request is said as that, whatever the child's log makes of the interrupt.
       if (live.stopping !== null && found.outcome !== "completed") found = { ...found, outcome: "stopped", detail: `It was stopped before it finished: ${stoppedBy(live)}.` }
       const tainted = child.approval()?.taint.tainted ?? false
+      if (work.worktree !== null) await child.stopLeftRunning()
       const merge = work.worktree === null ? null : await this.finishWorktree(work.worktree, work.title, found.outcome === "completed")
       const shown = renderChildResult(child.id, found, merge, tainted)
       live.result = shown
@@ -4828,7 +4840,9 @@ class LiveSession implements EngineSession {
     if (!this.repository || this.repository.workTree !== worktree.repository)
       return Promise.resolve({ status: "failed", branch: worktree.branch, commit: null, files: [], conflicts: [], kept: true, message: "The recorded repository is unavailable. The subagent worktree was kept." })
     const work = completed
-      ? mergeWorktree(worktree, this.repository, { title, probe: (point) => this.probe(point === "computed" ? "merge.computed" : "merge.writing") })
+      ? mergeWorktree(worktree, this.repository, { title, probe: (point) => {
+          if (point !== "staging") this.probe(point === "computed" ? "merge.computed" : "merge.writing")
+        } })
       : salvageWorktree(worktree, this.repository, title)
     return work.catch(
       (error: unknown): MergeOutcome => ({ status: "failed", branch: worktree.branch, commit: null, files: [], conflicts: [], kept: true, message: `Its worktree could not be merged or removed (${describe(error)}); nothing was changed in this workspace.` }),

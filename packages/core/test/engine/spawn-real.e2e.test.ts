@@ -6,9 +6,10 @@
  * user's repository otherwise untouched.
  */
 import { afterAll, afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { createWorktree, mergeWorktree, repositoryAt } from "../../src/engine/worktree.ts"
+import { brand } from "../../src/brand.ts"
+import { createWorktree, gitLimits, mergeWorktree, repositoryAt } from "../../src/engine/worktree.ts"
 import type { StoredEvent } from "../../src/event/durable.ts"
 import type { SessionId } from "../../src/id.ts"
 import type { ModelRequest } from "../../src/request/request.ts"
@@ -155,7 +156,7 @@ describe("subagents in git worktrees", () => {
     })
   }
 
-  test.each(["folder/.GiT/result", "../result"])("merge rejects the reserved Git path %s before touching the workspace", async (listed) => {
+  test.each(["folder/.GiT/result", "../result", "folder/.git./result", "folder/git~1/result", "folder/.g\u200cit/result", "folder/.git\ufeff/result"])("merge rejects the reserved Git path %s before touching the workspace", async (listed) => {
     const { directory: cwd, data } = repository()
     const parent = repositoryAt(cwd)!
     const made = await createWorktree({ cwd, directory: join(data, "child"), branch: "child", parent })
@@ -182,6 +183,127 @@ esac
       process.env.PATH = path
     }
     expect(existsSync(join(cwd, "folder"))).toBe(false)
+  })
+
+  /** A repository at `path` whose status runs a clean filter that leaves `marker`: one of its tracked files is stat-dirty with the same size. */
+  const armedRepository = (path: string, marker: string) => {
+    sh(path, `git init -q && echo same > f && git add f && git commit -qm initial && git config filter.armed.clean "touch '${marker}'; cat" && echo "* filter=armed" > .git/info/attributes && echo diff > f`)
+    const later = new Date(Date.now() + 3_600_000)
+    utimesSync(join(path, "f"), later, later)
+  }
+
+  test("worktree creation refuses a repository that appeared after the check and before staging", async () => {
+    const { directory: cwd, data } = repository()
+    const directory = join(data, "child")
+    const result = await createWorktree({ cwd, directory, branch: "child", parent: repositoryAt(cwd), probe: () => {
+      mkdirSync(join(cwd, "late"))
+      sh(join(cwd, "late"), "git init -q && git commit --allow-empty -qm initial")
+    } })
+    expect(result).toMatchObject({ error: expect.stringContaining('gitlink "late"') })
+    expect(existsSync(directory)).toBe(false)
+  })
+
+  test("committing the child's work runs nothing in a gitlink staged after the check", async () => {
+    const { directory: cwd, data } = repository()
+    const parent = repositoryAt(cwd)!
+    const made = await createWorktree({ cwd, directory: join(data, "child"), branch: "child", parent })
+    if ("error" in made) throw new Error(made.error)
+    writeFileSync(join(made.cwd, "report"), "report")
+    const marker = join(data, "driver-ran")
+    // What a command the child left running could do between Windlass's check and its staging: stage a repository whose status runs a driver.
+    const plant = () => {
+      mkdirSync(join(made.cwd, "vendor"))
+      armedRepository(join(made.cwd, "vendor"), marker)
+      sh(made.cwd, 'git update-index --add --cacheinfo "160000,$(git -C vendor rev-parse HEAD),vendor"')
+    }
+    await expect(mergeWorktree(made.worktree, parent, { title: "report", probe: (point) => point === "staging" && plant() })).rejects.toThrow('gitlink "vendor"')
+    expect(existsSync(marker)).toBe(false)
+    expect(existsSync(join(cwd, "report"))).toBe(false)
+  })
+
+  test("merge refuses a gitlink in the child's commit instead of deleting the parent's file", async () => {
+    const { directory: cwd, data } = repository()
+    const parent = repositoryAt(cwd)!
+    const made = await createWorktree({ cwd, directory: join(data, "child"), branch: "child", parent })
+    if ("error" in made) throw new Error(made.error)
+    sh(made.cwd, 'git rm -q --cached b.txt && git update-index --add --cacheinfo "160000,$(git rev-parse HEAD),b.txt" && git commit -qm gitlink')
+    // The worktree is gone and its branch holds the commit: the merge reads the branch as it is.
+    sh(cwd, `git worktree remove --force "${made.worktree.path}"`)
+    const outcome = await mergeWorktree(made.worktree, parent, { title: "gitlink" })
+    expect(outcome.status).toBe("failed")
+    expect(outcome.message).toContain('"b.txt" is a gitlink')
+    expect(readFileSync(join(cwd, "b.txt"), "utf8")).toBe("b1\n")
+    sh(cwd, `git branch -D ${made.worktree.branch}`)
+  })
+
+  test("merge refuses a directory that replaced a file and keeps the file", async () => {
+    const { directory: cwd, data } = repository()
+    const parent = repositoryAt(cwd)!
+    const made = await createWorktree({ cwd, directory: join(data, "child"), branch: "child", parent })
+    if ("error" in made) throw new Error(made.error)
+    sh(made.cwd, "rm b.txt && mkdir b.txt && echo inside > b.txt/file")
+    const outcome = await mergeWorktree(made.worktree, parent, { title: "directory" })
+    expect(outcome.status).toBe("failed")
+    expect(outcome.message).toContain('"b.txt" is a directory')
+    expect(readFileSync(join(cwd, "b.txt"), "utf8")).toBe("b1\n")
+    sh(cwd, `git branch -D ${made.worktree.branch}`)
+  })
+
+  test("merge refuses changes to the project's own settings, commands and agents", async () => {
+    const { directory: cwd, data } = repository()
+    const parent = repositoryAt(cwd)!
+    const made = await createWorktree({ cwd, directory: join(data, "child"), branch: "child", parent })
+    if ("error" in made) throw new Error(made.error)
+    mkdirSync(join(made.cwd, `.${brand.directory}`, "commands"), { recursive: true })
+    writeFileSync(join(made.cwd, `.${brand.directory}`, "commands", "deploy.md"), "run this")
+    writeFileSync(join(made.cwd, "b.txt"), "b2\n")
+    const outcome = await mergeWorktree(made.worktree, parent, { title: "settings" })
+    expect(outcome.status).toBe("failed")
+    expect(outcome.message).toContain(`inside .${brand.directory}/, which a merge never writes`)
+    expect(existsSync(join(cwd, `.${brand.directory}`))).toBe(false)
+    expect(readFileSync(join(cwd, "b.txt"), "utf8")).toBe("b1\n")
+    sh(cwd, `git branch -D ${made.worktree.branch}`)
+  })
+
+  test("a Git command that does not finish is stopped with the reason", async () => {
+    const { directory: cwd, data } = repository()
+    const bin = join(data, "bin")
+    mkdirSync(bin, { recursive: true })
+    writeFileSync(join(bin, "git"), "#!/bin/sh\nsleep 60\n", { mode: 0o755 })
+    const path = process.env.PATH
+    const limit = gitLimits.timeoutMs
+    const startedAt = performance.now()
+    try {
+      process.env.PATH = `${bin}:${path}`
+      gitLimits.timeoutMs = 300
+      const result = await createWorktree({ cwd, directory: join(data, "child"), branch: "child", parent: repositoryAt(cwd) })
+      expect(result).toMatchObject({ error: expect.stringContaining("did not finish within") })
+    } finally {
+      process.env.PATH = path
+      gitLimits.timeoutMs = limit
+    }
+    expect(performance.now() - startedAt).toBeLessThan(30_000)
+  })
+
+  test("a background command the child left running is stopped before its worktree is merged", async () => {
+    const { data, directory } = repository()
+    const { harness } = start(
+      data,
+      converse({
+        "Start the watcher": [[call("subagent", { task: "Watch the files", worktree: true })], say("Merged.")],
+        "Watch the files": [[call("shell", { command: "echo $$ > watcher.pid; exec sleep 300", background: true })], say("Watching.")],
+      }),
+    )
+    const session = harness.engine.createSession({ cwd: directory, settings: SETTINGS })
+    session.send("Start the watcher in a worktree.")
+    await session.settled()
+    const merge = of(session.readEvents(), "spawn.ended")[0]!.data.merge
+    expect(merge?.status).toBe("merged")
+    const pid = Number(readFileSync(join(directory, "watcher.pid"), "utf8"))
+    expect(alive(pid)).toBe(false)
+    const child = of(session.readEvents(), "spawn.started")[0]!.data.work
+    const command = of(harness.engine.readEvents(child.kind === "subagent" ? child.sessionId : ("" as SessionId)), "spawn.ended")[0]!.data
+    expect(command.outcome).toBe("stopped")
   })
 
   test("merge refuses nested repositories in the child before committing its work", async () => {

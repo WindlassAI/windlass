@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto"
 import { dlopen } from "bun:ffi"
 import { closeSync, constants as fs, fchmodSync, fstatSync, lstatSync, openSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
+import { brand } from "../brand.ts"
+import { isDotGit, reservedName } from "../sandbox/git-name.ts"
 
 export interface FileVersion {
   readonly bytes: Uint8Array
@@ -11,8 +13,11 @@ export interface FileVersion {
 
 export function mergeComponents(path: string): string[] {
   const parts = path.split("/")
-  if (parts.some((part) => !part || part === "." || part === ".." || part.toLowerCase() === ".git" || part.includes("\0")))
+  if (parts.some((part) => !part || part === "." || part === ".." || isDotGit(part) || part.includes("\0")))
     throw new Error(`unsafe merge path ${JSON.stringify(path)}`)
+  // The project's own settings, commands and agents change what later sessions run. Only the user writes them there.
+  if (parts.some((part) => reservedName(part, `.${brand.directory}`)))
+    throw new Error(`the subagent changed ${JSON.stringify(path)}, inside .${brand.directory}/, which a merge never writes. Review that change on its branch and apply it by hand`)
   return parts
 }
 
