@@ -86,30 +86,56 @@ hooks, absorbed submodules (`.git/modules`) and linked-worktree registry read-on
 worktree can still write its own index and refs. Linux creates missing bind targets such as `config.worktree`
 and the `worktrees` and `modules` directories. A workspace whose `.git` is a symlink is read-only on Linux.
 A standalone gitfile naming an external directory needs a matching worktree back-pointer for write access.
-On macOS, Seatbelt protects the metadata paths, including missing pointers, and denies hard links to
-protected files.
+On macOS, Seatbelt protects the metadata paths, including missing pointers, under any case of their names
+(a volume that ignores case would otherwise create `.git/CommonDir` as `.git/commondir`), and denies hard
+links to protected files. Windlass creates missing `hooks`, `modules` and `worktrees` directories on both
+platforms before a command runs.
 
 An ordinary repository keeps `.git/commondir` absent, so `git rev-parse --git-common-dir` still prints
-`.git` at its root. When a sandboxed command finishes, Windlass checks the original metadata entry and
-common-directory pointer. If the command created a pointer, Windlass sets it aside, restores its absence
-and reports a failed command. In a workspace opened without a repository, a new root `.git` is also set
+`.git` at its root. Each session keeps one baseline of the metadata entry and common-directory pointer,
+taken before its first sandboxed command and carried across all later ones. Windlass checks it before and
+after every command, every quarter of a second while any of the session's commands runs (a background one
+included), and, on Linux, as soon as a `commondir` appears. If a pointer was created or replaced, Windlass
+sets it aside, restores the original and reports a failed command. In a workspace opened without a repository, a new root `.git` is also set
 aside for inspection. Initialize the root repository outside the sandbox if you want to keep using it.
 Run linked-worktree creation and removal outside the sandbox. A pre-existing `commondir` is preserved,
 including one containing `.` left by an older build. A bridge that requires its absence still needs that
 legacy file reviewed in an ordinary repository. Linked worktrees use their own Git-managed pointers.
 
 A command can introduce a nested repository or stage a Git index entry for one (a gitlink). Windlass warns
-when it detects either change. **Your own root `git status` can execute a nested repository's configured
-programs outside the sandbox.** Inspect the nested metadata before using Git, including through an editor
-or a platform bridge. The warning arrives after the command exits. A concurrent Git client can see changes
-while a command is still running.
+when it detects either change, once for each. **Your own root `git status` can execute a nested repository's
+configured programs outside the sandbox.** Inspect the nested metadata before using Git, including through
+an editor or a platform bridge. The warning arrives before or after a command, not while it runs. The walk
+skips directories your `.gitignore` files ignore (a nested repository there is never staged by `git add -A`)
+and stops after 20,000 untracked directories. An index over 64 MiB, or a walk that stops, gives one warning
+for the session and turns the nested-repository check off for it; the commands still run.
+
+What this does not close:
+
+- *A pointer a command creates is live until the next check.* On Linux a missing `commondir` cannot be
+  mounted read-only, so a command can create one; it is set aside within a quarter of a second, but a Git
+  client (yours, an editor's) that runs in that window follows it.
+- *Between commands nothing watches.* On macOS a process that calls `setsid` leaves its command's process
+  group and survives being stopped. What it changes after its command ended is reported and undone by the
+  session's next command, or not at all if no command follows. On Linux the sandbox ends with its command.
+- *The baseline starts with the session's first sandboxed command.* What changed before it, including by a
+  process left over from an earlier session, is taken as it is.
 
 Windlass's subagent worktree operations use the repository opened by the session. They refuse nested
 repositories and gitlinks before staging, check the index type and size, ignore global and system Git
-configuration, and disable hooks, fsmonitor and external diff. Configuration includes, filter drivers,
-external diff or merge drivers, and a configured work tree also prevent these operations. A merge refuses
-paths through symlinked directories and paths with a `.git` component. The subagent can still work in the
-shared workspace.
+configuration, and disable hooks, fsmonitor and external diff. They stage through a private copy of the
+index, which nothing in the sandbox can add a gitlink to, and refuse a repository that appeared during
+staging. Before a subagent's worktree is merged or kept, the background commands it left running are
+stopped. A Git command that runs for five minutes is stopped, and the operation fails with the reason.
+Configuration includes, filter drivers, external diff or merge drivers, and a configured work tree also
+prevent these operations. The subagent can still work in the shared workspace.
+
+A merge refuses paths through symlinked directories and any path component a filesystem reads as `.git`:
+other cases, names with code points HFS+ ignores, NTFS names with trailing dots or spaces, and `git~1`. It
+writes only regular files and symlinks: a gitlink, or a file that became a directory, fails the merge
+instead of deleting your file. It never writes inside `.windlass/` (the project's settings, commands and
+agents). A subagent that changed something there fails the merge, and the change stays on its branch for
+you to review and apply by hand.
 
 What the protection of the repository's configuration breaks: anything that writes `.git/config` or `.git/hooks`.
 That is `git config` without `--global`, `git remote add`, `git branch --set-upstream-to` (and a checkout that sets
