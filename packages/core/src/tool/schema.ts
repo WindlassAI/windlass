@@ -5,7 +5,9 @@
  *
  * Supported: `type` (a name or a list of names), `properties`, `required`,
  * `additionalProperties` (boolean or schema), `enum`, `items`, `minimum`,
- * `maximum`, `minLength`, `maxLength`, `minItems`, `maxItems`. `description`,
+ * `maximum`, `exclusiveMinimum`, `exclusiveMaximum` (numbers, as in JSON
+ * Schema draft 6 and later; the draft 4 boolean form is refused), `multipleOf`
+ * (greater than 0), `minLength`, `maxLength`, `minItems`, `maxItems`. `description`,
  * `default` and `title` are accepted and ignored: the runtime does not apply
  * defaults, so a tool reads an absent optional value as "use the default".
  */
@@ -31,6 +33,9 @@ const KEYWORDS = new Set([
   "items",
   "minimum",
   "maximum",
+  "exclusiveMinimum",
+  "exclusiveMaximum",
+  "multipleOf",
   "minLength",
   "maxLength",
   "minItems",
@@ -70,6 +75,10 @@ function compile(schema: Json, at: string): Node {
   const enumValues = schema.enum === undefined ? null : readEnum(schema.enum, at)
   const minimum = readNumber(schema, "minimum", at)
   const maximum = readNumber(schema, "maximum", at)
+  const exclusiveMinimum = readExclusive(schema, "exclusiveMinimum", at)
+  const exclusiveMaximum = readExclusive(schema, "exclusiveMaximum", at)
+  const multipleOf = readNumber(schema, "multipleOf", at)
+  if (multipleOf !== null && !(multipleOf > 0)) throw new SchemaError(at, "multipleOf must be greater than 0")
   const minLength = readNumber(schema, "minLength", at)
   const maxLength = readNumber(schema, "maxLength", at)
   const minItems = readNumber(schema, "minItems", at)
@@ -91,6 +100,12 @@ function compile(schema: Json, at: string): Node {
     if (typeof value === "number") {
       if (minimum !== null && value < minimum) issues.push({ path, message: `must be at least ${minimum}, got ${value}` })
       if (maximum !== null && value > maximum) issues.push({ path, message: `must be at most ${maximum}, got ${value}` })
+      if (exclusiveMinimum !== null && value <= exclusiveMinimum)
+        issues.push({ path, message: `must be greater than ${exclusiveMinimum}, got ${value}` })
+      if (exclusiveMaximum !== null && value >= exclusiveMaximum)
+        issues.push({ path, message: `must be less than ${exclusiveMaximum}, got ${value}` })
+      if (multipleOf !== null && !isMultiple(value, multipleOf))
+        issues.push({ path, message: `must be a multiple of ${multipleOf}, got ${value}` })
     }
     if (typeof value === "string") {
       const length = [...value].length
@@ -153,6 +168,25 @@ function readNumber(schema: { readonly [key: string]: Json }, key: string, at: s
   if (value === undefined) return null
   if (typeof value !== "number") throw new SchemaError(at, `${key} must be a number`)
   return value
+}
+
+function readExclusive(schema: { readonly [key: string]: Json }, key: string, at: string): number | null {
+  if (typeof schema[key] === "boolean")
+    throw new SchemaError(at, `${key} must be a number (the boolean form of JSON Schema draft 4 is not supported)`)
+  return readNumber(schema, key, at)
+}
+
+/**
+ * Whether `value` is a whole multiple of `step`. A decimal step such as 0.1
+ * has no exact binary form, so the quotient is compared to the nearest whole
+ * number with a tolerance of a few units in the last place: 0.3 is a multiple
+ * of 0.1, 0.35 is not.
+ */
+function isMultiple(value: number, step: number): boolean {
+  const quotient = value / step
+  if (!Number.isFinite(quotient)) return false
+  if (Number.isInteger(quotient)) return true
+  return Math.abs(quotient - Math.round(quotient)) <= 4 * Number.EPSILON * Math.max(1, Math.abs(quotient))
 }
 
 function readProperties(properties: Json | undefined, at: string): Map<string, Node> {

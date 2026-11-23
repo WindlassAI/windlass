@@ -10,6 +10,16 @@ afterEach(removeTempDirs)
 
 const READ: HostToolDeclaration = { name: "ticket_read", description: "Read a ticket.", inputSchema: { type: "object", properties: { id: { type: "integer" } }, required: ["id"] }, effect: "read", untrustedResult: true }
 const POST: HostToolDeclaration = { ...READ, name: "ticket_post", effect: "network", untrustedResult: false }
+const RATE: HostToolDeclaration = {
+  ...POST,
+  name: "ticket_rate",
+  inputSchema: {
+    type: "object",
+    properties: { stars: { type: "number", exclusiveMinimum: 0, exclusiveMaximum: 5, multipleOf: 0.5 } },
+    required: ["stars"],
+    additionalProperties: false,
+  },
+}
 
 describe("declarations", () => {
   const taken = new Set(["read", "mcp_call"])
@@ -22,6 +32,14 @@ describe("declarations", () => {
     expect(hostToolsProblem([READ, READ], taken)).toBe(`the host tool "ticket_read" is declared twice`)
     expect(hostToolsProblem([{ ...READ, name: "ticket/read" }], taken)).toContain("is not 1 to 64 letters")
     expect(hostToolsProblem([{ ...READ, inputSchema: { type: "string" } }], taken)).toContain('is not a JSON Schema of type "object"')
+  })
+
+  test("a schema with exclusive bounds and multiples is taken; one in the draft 4 form is refused with a sentence", () => {
+    expect(hostToolsProblem([RATE], taken)).toBeNull()
+    const draft4 = { ...RATE, inputSchema: { type: "object", properties: { stars: { type: "number", minimum: 0, exclusiveMinimum: true } } } }
+    expect(hostToolsProblem([draft4], taken)).toBe(
+      'the inputSchema of the host tool "ticket_rate" cannot be used: schema at .properties.stars: exclusiveMinimum must be a number (the boolean form of JSON Schema draft 4 is not supported)',
+    )
   })
 
   test("a time limit of its own is whole seconds from 1 to an hour", () => {
@@ -80,5 +98,25 @@ describe("a call", () => {
     const stop = new AbortController()
     const { outcome } = run(POST, () => new Promise<HostAnswer>(() => stop.abort()), undefined, stop.signal)
     expect((await outcome).settlement).toMatchObject({ outcome: "error", output: "The call to ticket_post was stopped before the client answered. It may or may not have taken effect; check before calling it again." })
+  })
+
+  test("arguments are checked against exclusive bounds and multiples before the client is asked", async () => {
+    const asked: unknown[] = []
+    const root = tempDir()
+    const client: HostTools["call"] = async (request) => (asked.push(request.input), { status: "success", output: "Rated." })
+    const runtime = createToolRuntime({ tools: [hostTool(RATE, client, () => new Promise(() => {}))], spillDir: join(root, "spill"), putBlob: noBlobStore })
+    const call = (argumentsText: string) => runtime.run({ name: RATE.name, argumentsText, context: context(root) })
+
+    expect((await call('{"stars":4.5}')).settlement).toMatchObject({ outcome: "success", output: "Rated." })
+    for (const [stars, problem] of [
+      ["0", "must be greater than 0, got 0"],
+      ["5", "must be less than 5, got 5"],
+      ["2.25", "must be a multiple of 0.5, got 2.25"],
+    ] as const)
+      expect((await call(`{"stars":${stars}}`)).settlement).toMatchObject({
+        outcome: "error",
+        output: `Invalid arguments for ticket_rate:\n- stars: ${problem}\nFix them and call ticket_rate again.`,
+      })
+    expect(asked).toEqual([{ stars: 4.5 }])
   })
 })

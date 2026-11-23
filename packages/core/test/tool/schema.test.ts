@@ -54,6 +54,29 @@ describe("schema validator", () => {
     expect(check("😀😀😀")).toHaveLength(1)
   })
 
+  test("enforces exclusive bounds and multiples", () => {
+    const check = compileSchema({ type: "number", exclusiveMinimum: 0, exclusiveMaximum: 1, multipleOf: 0.1 })
+    expect(check(0.5)).toEqual([])
+    expect(check(0.3)).toEqual([])
+    expect(check(0.7)).toEqual([])
+    expect(check(0)).toEqual([{ path: "", message: "must be greater than 0, got 0" }])
+    expect(check(1)).toEqual([{ path: "", message: "must be less than 1, got 1" }])
+    expect(check(0.35)).toEqual([{ path: "", message: "must be a multiple of 0.1, got 0.35" }])
+    const steps = compileSchema({ type: "integer", multipleOf: 5 })
+    expect(steps(15)).toEqual([])
+    expect(steps(-10)).toEqual([])
+    expect(steps(12)).toEqual([{ path: "", message: "must be a multiple of 5, got 12" }])
+  })
+
+  test("refuses exclusive bounds that are not numbers and a multipleOf that is not positive", () => {
+    expect(() => compileSchema({ type: "number", minimum: 0, exclusiveMinimum: true })).toThrow(
+      "schema: exclusiveMinimum must be a number (the boolean form of JSON Schema draft 4 is not supported)",
+    )
+    expect(() => compileSchema({ type: "number", exclusiveMaximum: "1" })).toThrow("schema: exclusiveMaximum must be a number")
+    expect(() => compileSchema({ type: "number", multipleOf: 0 })).toThrow("schema: multipleOf must be greater than 0")
+    expect(() => compileSchema({ type: "number", multipleOf: -2 })).toThrow("schema: multipleOf must be greater than 0")
+  })
+
   test("rejects schemas that use unsupported keywords", () => {
     expect(() => compileSchema({ type: "string", pattern: "^a" })).toThrow(SchemaError)
     expect(() => compileSchema({ type: "object", properties: { a: { oneOf: [] } } })).toThrow('schema at .properties.a: unsupported keyword "oneOf"')
