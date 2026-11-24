@@ -21,7 +21,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { accessToken } from "../packages/core/src/auth/chatgpt.ts"
 import { brand } from "../packages/core/src/brand.ts"
-import { type EngineEvent, type Provider, OpenAIResponsesProvider, createEngine, createStandardTools, openSqliteStore } from "../packages/core/src/index.ts"
+import { OpenAIResponsesProvider } from "../packages/core/src/provider/openai-responses.ts"
+import { type EngineEvent, type Provider, createEngine, createStandardTools, openSqliteStore } from "../packages/core/src/index.ts"
 import { FakeProvider, script } from "../packages/core/src/testing/fake-provider.ts"
 
 const args = process.argv.slice(2)

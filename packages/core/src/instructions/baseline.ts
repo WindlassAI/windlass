@@ -25,9 +25,15 @@ import systemPrompt from "./system-prompt.txt"
  */
 export const BASE_SYSTEM_PROMPT: string = systemPrompt.replace(/\r\n?/g, "\n").trim()
 
+/** Family instructions apply to any provider serving the model. */
+export function familyPrompt(_model: string): string {
+  return ""
+}
+
 export interface BaselineInput {
   /** The base system prompt. Defaults to `BASE_SYSTEM_PROMPT`. */
   readonly prompt?: string
+  readonly familyPrompt?: string
   /** Every tool of the session, in any order. Only the model-facing part of each is kept. */
   readonly tools: readonly ToolSpec[]
   /** The instruction sources as discovered now, in the order the model should read them. */
@@ -36,7 +42,8 @@ export interface BaselineInput {
 
 /** Builds the data of a `baseline.set` event. Pure: the same input gives the same text and the same tool order. */
 export function buildBaseline(input: BaselineInput): EventData<"baseline.set"> {
-  const prompt = input.prompt ?? BASE_SYSTEM_PROMPT
+  const base = input.prompt ?? BASE_SYSTEM_PROMPT
+  const prompt = input.familyPrompt ? `${base}\n\n${input.familyPrompt}` : base
   // A section in the prompt would read to the model as a source, but no source is recorded for it.
   if (parseSections(prompt).length > 0) throw new Error("the base system prompt contains an instruction section")
   const tools = sortTools(input.tools.map(specOf))

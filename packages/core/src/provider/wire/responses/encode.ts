@@ -24,7 +24,7 @@
  *   every delta.
  *
  * Replay of provider-owned items (`providerData`, produced by the decoder in
- * openai-responses-decode.ts):
+ * wire/responses/decode.ts):
  * - Reasoning: `providerData` is the complete `output_item.done` reasoning
  *   item without its `type` (`id`, `summary`, `content`, `encrypted_content`).
  *   It is replayed verbatim as `{type: "reasoning", ...providerData}`. This is
@@ -40,11 +40,12 @@
  * - Tool calls: `providerData` holds the item `id` (and `namespace`, if the
  *   call had one); `status` is not replayed (accepted live without it).
  */
-import type { BlobRef, Content } from "../content.ts"
-import type { ProviderProfile } from "./provider.ts"
-import type { Json } from "../json.ts"
-import { canonicalJson } from "../request/canonical.ts"
-import type { InputItem, ModelRequest } from "../request/request.ts"
+import type { BlobRef, Content } from "../../../content.ts"
+import type { ResponsesWireOptions } from "../../descriptor.ts"
+import { chatgpt } from "../../providers/chatgpt.ts"
+import type { Json } from "../../../json.ts"
+import { canonicalJson } from "../../../request/canonical.ts"
+import type { InputItem, ModelRequest } from "../../../request/request.ts"
 
 /** Bytes of the blobs a request refers to, by hash. */
 export type BlobBytes = ReadonlyMap<string, Uint8Array>
@@ -56,9 +57,10 @@ export interface EncodedRequest {
   readonly headers: Readonly<Record<string, string>>
 }
 
-export function encodeRequest(request: ModelRequest, blobs: BlobBytes, profile: ProviderProfile = "chatgpt"): EncodedRequest {
+export function encodeRequest(request: ModelRequest, blobs: BlobBytes, options: ResponsesWireOptions = chatgpt.wireOptions): EncodedRequest {
   const params = request.params
-  const reasoning = profile === "chatgpt" || params.reasoningEffort !== null
+  const effort = params.reasoningEffort
+  const reasoning = options.forceReasoning || effort !== null
   const body: Record<string, Json | undefined> = {
     model: params.model,
     store: false,
@@ -75,7 +77,7 @@ export function encodeRequest(request: ModelRequest, blobs: BlobBytes, profile: 
     })),
     tool_choice: request.toolChoice,
     parallel_tool_calls: params.parallelToolCalls,
-    reasoning: reasoning ? { effort: params.reasoningEffort ?? undefined, summary: "auto" } as Json : undefined,
+    reasoning: reasoning ? { effort: effort ?? undefined, summary: "auto" } as Json : undefined,
     text: params.textVerbosity === null ? undefined : { verbosity: params.textVerbosity },
     prompt_cache_key: params.cacheKey ?? undefined,
     input: request.input.flatMap((item) => encodeItem(item, blobs)),
@@ -84,7 +86,7 @@ export function encodeRequest(request: ModelRequest, blobs: BlobBytes, profile: 
     "content-type": "application/json",
     accept: "text/event-stream",
   }
-  if (profile === "chatgpt" && params.cacheKey !== null) headers["session-id"] = params.cacheKey
+  if (options.sessionIdHeader !== null && params.cacheKey !== null) headers[options.sessionIdHeader] = params.cacheKey
   return { body: canonicalJson(body), headers }
 }
 

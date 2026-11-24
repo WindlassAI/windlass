@@ -7,7 +7,7 @@
 import type { ApprovalAnswer, ApprovalAsk } from "@windlass/acp/client"
 import type { AgentsResult, ClientCommand, CommandsResult, CompactResult } from "@windlass/acp/extensions"
 import type { DiffResult, HooksStateResult, LspStateResult, McpStateResult, MemoryChangeParams, MemoryChangeResult, MemoryStateResult, SkillsResult, TurnNotification, WakeCreateParams, WakeCreateResult, WakeListResult, WakeSecretResult, WatchSetResult, WatchesResult } from "@windlass/acp/extensions"
-import type { RevertResult } from "@windlass/core"
+import type { ProviderProfile, RevertResult } from "@windlass/core"
 import type { EngineEvent } from "./cli.ts"
 
 export type { AgentsResult, ApprovalAnswer, ApprovalAsk, CompactResult, DiffResult, HooksStateResult, LspStateResult, McpStateResult, MemoryStateResult, SkillsResult, TurnNotification, WakeListResult, WakeSecretResult }
@@ -202,6 +202,7 @@ export class BackendError extends Error {
     message: string,
     readonly reason: string | null = null,
     readonly code: string | null = null,
+    readonly profile?: ProviderProfile,
   ) {
     super(message)
     this.name = "BackendError"

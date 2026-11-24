@@ -34,11 +34,10 @@
  * Exit codes: 0 done, 1 failed (or `status`: signed out; `token`: nothing to
  * hand on), 2 usage, 130 the paste was abandoned with Ctrl-C.
  */
-import { brand } from "@windlass/core"
+import { AuthError, brand } from "@windlass/core"
 import {
   ACCESS_TOKEN_FILE_ENV,
   type AuthConfig,
-  AuthError,
   CHATGPT_AUTH,
   type Credentials,
   LOGIN_PORT,

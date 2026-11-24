@@ -26,6 +26,7 @@ import {
   unreadableSession,
   brand,
   createHarness,
+  providerDescriptor,
   restrictionTag,
 } from "@windlass/core"
 import { titleFromEvents } from "@windlass/acp/extensions"
@@ -149,7 +150,7 @@ export function createRealEngine(options: RealEngineOptions = {}): Engine {
       } catch (error) {
         if (error instanceof ModelListError)
           throw error.error.kind === "auth"
-            ? new EngineUnavailable(signInSentence(error.message, "the models cannot be listed (they come from your ChatGPT plan)", error.error.code), "auth")
+            ? new EngineUnavailable(signInSentence(error.message, harness.profile, true), "auth")
             : new EngineUnavailable(`could not list the models: ${error.message}`)
         throw error
       }
@@ -166,11 +167,11 @@ async function sessionFor(harness: Harness, request: OpenRequest): Promise<Engin
   if (target.kind === "continue" && id === undefined) throw new EngineUnavailable(`there is no session to continue in ${request.cwd}`)
   const profile = id === undefined ? harness.profile : engine.sessionProfile(id)
   const signIn = await harness.signIn(profile)
-  if (!signIn.signedIn) throw new EngineUnavailable(signInSentence(signIn.message, null, signIn.code), "auth")
+  if (!signIn.signedIn) throw new EngineUnavailable(signInSentence(signIn.message, profile), "auth")
   const agent = request.agent ?? null
   if (id === undefined) {
     const settings = await harness.settingsFor(request.cwd, asked)
-    if (profile === "openai" || request.model !== null || request.effort !== null) await engine.validateSettings(settings, profile)
+    if (providerDescriptor(profile).catalog.validateDefault || request.model !== null || request.effort !== null) await engine.validateSettings(settings, profile)
     return engine.createSession({ cwd: request.cwd, settings, ...(agent === null ? {} : { agent }) })
   }
   if (request.model !== null) await engine.validateSettings(await harness.settingsFor(request.cwd, asked), profile)

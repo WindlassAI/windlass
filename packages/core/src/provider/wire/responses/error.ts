@@ -9,7 +9,7 @@
  * limit). An unknown code falls back to the status, and a failure with
  * neither (a stream `error` event with an unknown code) is `provider_internal`.
  */
-import { type ProviderError, type ProviderErrorKind, makeProviderError } from "./error.ts"
+import { type ProviderError, type ProviderErrorKind, makeProviderError } from "../../error.ts"
 
 const CODES: Record<string, ProviderErrorKind> = {
   // Plan usage.
@@ -163,4 +163,15 @@ function parseJson(text: string): unknown {
 
 function clip(text: string) {
   return text.length > 500 ? `${text.slice(0, 500)}…` : text
+}
+
+export function httpError(response: Response, text: string | undefined, requestId: string | null): ProviderError {
+  const body = typeof text === "string" ? readErrorBody(text) : { code: null, message: `HTTP ${response.status}` }
+  return classify({
+    status: response.status,
+    code: body.code,
+    message: `HTTP ${response.status}: ${body.message}`,
+    retryAfterMs: retryAfterMs(response.headers),
+    requestId,
+  })
 }

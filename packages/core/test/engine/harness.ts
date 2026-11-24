@@ -386,6 +386,8 @@ export interface HarnessOptions {
   readonly hooks?: HooksSetup
   /** Language-server diagnostics. Without it the engine starts no server. */
   readonly lsp?: LspSetup
+  /** Ledger identity for a scenario that exercises a registered provider's capabilities. */
+  readonly providerId?: string
   /** The models the provider lists, with the efforts each accepts, for the tests about settings. Without it nothing is checked. */
   readonly models?: readonly (string | ModelOffer)[]
   /** The tools the client declares when it creates and opens the session, and how it answers them. Without it there are none. */
@@ -393,7 +395,7 @@ export interface HarnessOptions {
 }
 
 export class Harness {
-  readonly provider = new FakeProvider()
+  readonly provider: FakeProvider
   readonly clock = new ManualClock()
   readonly tools: ScriptedTools
   readonly checks = new ScriptedChecks()
@@ -423,6 +425,7 @@ export class Harness {
   private alive = false
 
   constructor(private readonly options: HarnessOptions = {}) {
+    this.provider = new FakeProvider([], { id: options.providerId })
     this.tools = options.tools ?? new ScriptedTools()
     this.workspace = options.workspace ?? null
     this.config = options.config === undefined ? null : resolveConfig(options.config)

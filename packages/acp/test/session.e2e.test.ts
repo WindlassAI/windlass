@@ -4,7 +4,7 @@ import { methods } from "@agentclientprotocol/sdk"
 import { ACCESS_TOKEN_FILE_ENV, FAILURE_TEXT, brand } from "@windlass/core"
 import { HANDED_IN_REJECTED, HAND_IN_ADVICE } from "@windlass/core/auth/chatgpt"
 import { E2E_TIMEOUT_MS, script } from "@windlass/core/testing"
-import { SIGN_IN_HINT } from "../src/server.ts"
+import { SIGN_IN_HINT } from "../../core/src/provider/providers/chatgpt.ts"
 import { EXT, META } from "../src/extensions.ts"
 import { type Harness, startHarness } from "./helpers.ts"
 

@@ -1,6 +1,6 @@
 import { afterEach, expect, setDefaultTimeout, test } from "bun:test"
 import { type ContentBlock, methods } from "@agentclientprotocol/sdk"
-import { type EngineOptions, SIGNED_IN_PROVIDER, type SessionId } from "@windlass/core"
+import { type EngineOptions, providerDescriptor, type SessionId } from "@windlass/core"
 import { E2E_TIMEOUT_MS, FakeProvider, type ScriptItem, script, waitFor } from "@windlass/core/testing"
 import { parseConfigFile, resolveConfig } from "../../core/src/config/schema.ts"
 import { exportSession } from "../../core/src/trace/export.ts"
@@ -28,8 +28,7 @@ async function start(options: {
   const respond = (request: { tools: readonly unknown[] }) => request.tools.length
     ? [script.text("Turn finished.")]
     : options.answer ?? [script.text(`“${title}!”\nDo not show this line`), script.usage({ inputTokens: 37, outputTokens: 6 })]
-  const provider = new FakeProvider(Array.from({ length: 10 }, () => respond))
-  if (!options.scripted) Object.assign(provider, { id: SIGNED_IN_PROVIDER })
+  const provider = new FakeProvider(Array.from({ length: 10 }, () => respond), { id: options.scripted ? undefined : providerDescriptor().ledgerId })
   const h = await startHarness({
     provider,
     ...(options.dataDir ? { dataDir: options.dataDir } : {}),

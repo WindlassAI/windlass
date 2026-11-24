@@ -58,6 +58,7 @@ import {
   type EventData,
   type Harness,
   type ProviderProfile,
+  providerDescriptor,
   type HandEditPolicy,
   type MessageId,
   type ModelEntry,
@@ -92,7 +93,6 @@ import {
   renderReplayReport,
   restrictionTag,
 } from "@windlass/core"
-import { ACCESS_TOKEN_FILE_ENV, HAND_IN_ADVICE, aboutHandedIn, handedInTokenFile } from "../../core/src/auth/handed-in.ts"
 import { type FileChange, type SnapshotId, type Snapshots, openSnapshots } from "../../core/src/snapshot/index.ts"
 import { DEFAULT_NORMALISERS } from "../../core/src/engine/replay.ts"
 import { describeWatch } from "../../core/src/engine/spawn.ts"
@@ -142,18 +142,6 @@ import { type Logger, describeError } from "./log.ts"
 import { type ModelCatalog, catalogOf } from "./models.ts"
 import { promptText, slashEntry } from "./prompt.ts"
 import { type Output, Translator, type TurnEnd } from "./translate.ts"
-
-/** The instruction a signed-out user gets. */
-export const SIGN_IN_HINT = `run \`${brand.binary} login\` and finish the ChatGPT sign-in, then try again`
-
-/**
- * A sign-in problem with the way forward. A message about a handed-in access token says its own: the sign-in is
- * held elsewhere, and signing in here would change nothing.
- */
-const withSignInHint = (message: string) => (aboutHandedIn(message) ? message : `${message} To sign in, ${SIGN_IN_HINT}.`)
-
-/** The one auth method: the ChatGPT-plan sign-in, which the user completes outside the client. */
-export const AUTH_METHOD_ID = "chatgpt"
 
 export const CONFIG = { model: "model", effort: "effort", approval: "approval", agent: "agent" } as const
 /** The value of the `agent` option that means no agent (the engine's `NO_AGENT`). */
@@ -380,20 +368,12 @@ class ConnectionState {
       sessionCapabilities: { list: {}, resume: {}, close: {}, delete: {} },
       _meta: { [META.capabilities]: EXTENSION_CAPABILITIES },
     }
+    const { id, authMethod: { name, description } } = providerDescriptor(this.harness.profile)
     return {
       protocolVersion: PROTOCOL_VERSION,
       agentCapabilities,
       agentInfo: { name: brand.binary, title: brand.name, version: this.options.version ?? "0.0.0" },
-      authMethods: [
-        this.harness.profile === "openai" ? { id: "openai", name: "OpenAI API key", description: "Set OPENAI_API_KEY to use the openai provider." } : {
-          id: AUTH_METHOD_ID,
-          name: "Sign in with ChatGPT",
-          description:
-            handedInTokenFile() === null
-              ? `Uses the ChatGPT plan sign-in saved on this machine. To sign in, ${SIGN_IN_HINT}.`
-              : `Uses the access token of a ChatGPT plan sign-in held elsewhere, handed in through ${ACCESS_TOKEN_FILE_ENV}. ${HAND_IN_ADVICE}`,
-        },
-      ],
+      authMethods: [{ id, name, description }],
     }
   }
 
@@ -411,7 +391,7 @@ class ConnectionState {
     if (mcpServers > 0) this.log.warn(`ignoring ${mcpServers} MCP server(s): ${brand.name} does not connect to MCP servers yet`)
     const asked = { model: meta?.model ?? null, effort: meta?.effort ?? null }
     const settings = await this.harness.settingsFor(cwd, asked)
-    if (this.harness.profile === "openai" || asked.model !== null || asked.effort !== null) await this.validate(settings)
+    if (providerDescriptor(this.harness.profile).catalog.validateDefault || asked.model !== null || asked.effort !== null) await this.validate(settings)
     // As the agent the client names; without one, as the default of the user's configuration, if any.
     const agent = meta?.agent ?? null
     const session = this.engineErrors(() => this.harness.engine.createSession({ cwd, settings, ...(agent === null ? {} : { agent }), host: this.host(meta) }))
@@ -1749,7 +1729,7 @@ class SessionView {
 }
 
 function authRequired(profile: ProviderProfile, message: string, code: string | null | undefined): RequestError {
-  return RequestError.authRequired({ methodId: profile, ...errorData({ reason: "auth_required", message, ...coded(code) }) }, profile === "openai" ? message : withSignInHint(message))
+  return RequestError.authRequired({ methodId: profile, ...errorData({ reason: "auth_required", message, ...coded(code) }) }, providerDescriptor(profile).authMethod.requiredText(message))
 }
 
 /** A failed turn, as the error `session/prompt` answers with. Signed out is the protocol's auth-required error. */

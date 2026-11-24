@@ -28,7 +28,7 @@
  * evidence of a run of checks may gain keys that an earlier build keeps
  * without knowing them (`verify/evidence.ts`).
  */
-import { PROVIDER_PROFILES } from "../provider/provider.ts"
+import { PROVIDER_PROFILES } from "../provider/registry.ts"
 import { agentRefusal } from "../agents/restrictions.ts"
 import { agentRecord } from "../agents/use.ts"
 import { grant } from "../approval/grants.ts"

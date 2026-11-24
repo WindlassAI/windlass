@@ -55,6 +55,7 @@
  * Structure is shared: parts of the state an event does not touch are returned
  * as the same objects, so `projectionChanges` can find what to write.
  */
+import { DEFAULT_PROFILE } from "../provider/registry.ts"
 import { AGENT_KEY } from "../agents/use.ts"
 import { type HookEnding, type RetiredResult, type StepError, type StoredEvent, HARNESS_ORIGIN, WATCH_LIMITS } from "../event/durable.ts"
 import type { MessageId } from "../id.ts"
@@ -137,7 +138,7 @@ function create(state: Projection | null, event: StoredEvent<"session.created">)
     archived: false,
     createdAt: event.time,
     settings: event.data.settings,
-    provider: event.data.provider ?? "chatgpt",
+    provider: event.data.provider ?? DEFAULT_PROFILE,
     execution: null,
     open: null,
     compaction: null,

@@ -6,6 +6,11 @@ All notable changes to Windlass are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Import ChatGPT auth from `@windlass/core/auth/chatgpt` and the Responses adapter from `@windlass/core/provider/openai-responses`.
+  `HarnessOptions.apiKey` is now `apiKeys`, keyed by environment variable. ACP no longer exports `AUTH_METHOD_ID` or `SIGN_IN_HINT`.
+
 ## [0.6.0] - 2026-11-22
 
 ### Added

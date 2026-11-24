@@ -10,8 +10,8 @@
 // computer, so the page fails to load there. The address bar still holds the full
 // callback URL: paste it into a file and run `finish`.
 
+import { AuthError } from "../packages/core/src/auth/error.ts"
 import {
-  AuthError,
   RESOURCE,
   accessToken,
   beginLogin,

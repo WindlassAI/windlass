@@ -8,8 +8,8 @@
  * byte for byte from then on, so changing one here never changes a stored
  * session.
  */
-import type { ProviderProfile } from "../provider/provider.ts"
-import { ACCESS_TOKEN_FILE_ENV, handedInTokenFile } from "../auth/handed-in.ts"
+import { handedInFailure, signedOut } from "../provider/providers/chatgpt.ts"
+import { type ProviderProfile, providerDescriptor } from "../provider/registry.ts"
 import { type SummaryProblem, describeProblem, summaryPrompt } from "../context/summary.ts"
 import type { ProviderError } from "../provider/error.ts"
 
@@ -213,9 +213,9 @@ export const NOTICE_TEXT = {
 export const FAILURE_TEXT = {
   refused: "The provider refused the request.",
   emptyTwice: "The model returned an empty response twice.",
-  signedOut: "Signed out: sign in again to continue.",
+  signedOut,
   /** The sign-in is held elsewhere and its token was handed in: signing in again here would change nothing. */
-  handedInRejected: `Signed out: the access token handed in through ${ACCESS_TOKEN_FILE_ENV} was rejected or cannot be used. Hand in a new token to continue.`,
+  handedInRejected: handedInFailure,
   budget: (attempts: number, error: ProviderError) => `The model call failed ${attempts} times: ${error.message}`,
   crashCap: (cap: number) => `Gave up after the harness restarted ${cap} times during this turn.`,
   overflow: "The conversation no longer fits the model's context window, even after compacting it.",
@@ -239,8 +239,7 @@ function listProblems(problems: readonly SummaryProblem[]): string {
 
 /** The message for a model call that failed with an error that is never retried. */
 export function failureText(error: ProviderError, profile?: ProviderProfile): string {
-  if (error.kind === "auth" && profile === "openai") return error.message
-  if (error.kind === "auth") return handedInTokenFile() === null ? FAILURE_TEXT.signedOut : FAILURE_TEXT.handedInRejected
+  if (error.kind === "auth") return providerDescriptor(profile).authMethod.failureText(error.message)
   if (error.kind === "usage_limit" && error.retryAfterMs !== null) return `${error.message} It resets in ${duration(error.retryAfterMs)}.`
   return error.message
 }

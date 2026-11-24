@@ -8,7 +8,8 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { type AuthConfig, AuthError, type Credentials, accessToken, savedAccessToken } from "../../src/auth/chatgpt.ts"
+import { AuthError } from "../../src/auth/error.ts"
+import { type AuthConfig, type Credentials, accessToken, savedAccessToken } from "../../src/auth/chatgpt.ts"
 
 const cleanups: (() => void)[] = []
 afterEach(() => {

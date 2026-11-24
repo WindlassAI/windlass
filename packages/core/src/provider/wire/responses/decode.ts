@@ -20,12 +20,12 @@
  * - `response.metadata`, `response.created`/`in_progress`/`queued`, content
  *   and summary part boundaries, annotation events and unknown types are ignored.
  */
-import type { Json } from "../json.ts"
-import { type ProviderError, makeProviderError } from "./error.ts"
-import { classify, isRecord, stringOr } from "./openai-responses-error.ts"
-import type { ResponseFacts, StreamEvent } from "./provider.ts"
-import type { SseEvent } from "./sse.ts"
-import type { Usage } from "./usage.ts"
+import type { Json } from "../../../json.ts"
+import { type ProviderError, makeProviderError } from "../../error.ts"
+import { classify, isRecord, stringOr } from "./error.ts"
+import type { ResponseFacts, StreamEvent } from "../../provider.ts"
+import type { SseEvent } from "../../sse.ts"
+import type { Usage } from "../../usage.ts"
 
 type Record_ = Record<string, unknown>
 

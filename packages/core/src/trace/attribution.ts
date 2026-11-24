@@ -364,7 +364,7 @@ function name(row: RequestRecord, start: StartPoint | null, options: Attribution
   let sources: readonly ItemSource[]
   try {
     if (row.purpose === "title") {
-      request = storedTitleRequest(start.projection, row.messageId, row.model)
+      request = storedTitleRequest(start.projection, row.messageId, row.model, row.provider)
       sources = []
     } else if (row.purpose === "compaction") {
       request = buildCompactionRequest(start.projection, options.callOptions, row.messageId as never)

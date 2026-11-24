@@ -307,7 +307,7 @@ Every key:
 | `model` | the model for new sessions |
 | `effort` | the reasoning effort for new sessions |
 | `titles` | `generate` (default) asks for a short session title in the background. `off` keeps the first-prompt title. |
-| `titleModel` | Optional model ID from the signed-in account’s `--models` catalog. By default, titles use `gpt-6-luna` at low effort when offered. Next come models described as fast, affordable or suited to simple tasks, then models named nano, then mini or small. Ties and unmarked models follow catalog order. Other models use their default effort. |
+| `titleModel` | Optional model ID from the session provider’s `--models` catalog. By default, titles use `gpt-6-luna` at low effort when offered. Next come models described as fast, affordable or suited to simple tasks, then models named nano, then mini or small. Ties and unmarked models follow catalog order. Other models use their default effort. |
 | `checks` | the project's checks, a list (below) |
 | `requiredChecks` | checks that a project's file cannot replace or switch off, a list like `checks` ("Required checks" below). Only your own file: a project's is not followed |
 | `verify` | what is done with the checks (below) |

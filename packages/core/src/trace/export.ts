@@ -40,8 +40,9 @@ import type { StoredEvent } from "../event/durable.ts"
 import type { SessionId } from "../id.ts"
 import type { Projection } from "../message/message.ts"
 import { reduce } from "../message/reducer.ts"
-import { blobRefs, encodeRequest } from "../provider/openai-responses-encode.ts"
-import { OPENAI_KEY_PROVIDER, type ProviderProfile, SIGNED_IN_PROVIDER } from "../provider/provider.ts"
+import { wires } from "../provider/wire/index.ts"
+import type { ProviderDescriptor } from "../provider/descriptor.ts"
+import { ledgerProvider, providerDescriptor } from "../provider/registry.ts"
 import { type BuildOptions, type CallOptions, buildCompactionRequest, buildRequest } from "../request/build.ts"
 import { type PrefixBreakCause, prefixBreakCauses } from "../request/build-break.ts"
 import { type BlockHash, hashRequest } from "../request/prefix.ts"
@@ -55,7 +56,6 @@ import {
   TRACE_VERSION,
   type TraceHint,
   type TraceRecord,
-  canonicalResponsesRequest,
   traceUsage,
 } from "./format.ts"
 
@@ -156,11 +156,13 @@ export function exportSession(store: Store, sessionId: SessionId, options: Expor
   let previousRow: RequestRecord | null = null
   const calls = rows.map((row): ExportedCall => {
     const start = starts.get(row)
-    const rebuilt = rebuild(store, row, start, starts.failure, options)
+    const descriptor = ledgerProvider(row.provider) ?? providerDescriptor(start?.projection.session.provider)
+    const wire = wires[descriptor.wire]
+    const rebuilt = rebuild(store, row, start, starts.failure, options, descriptor)
     const request = "request" in rebuilt ? rebuilt.request : null
     if (row.purpose === "title") {
       // The title has its own prefix. A call in this lane never changes what the next turn is compared with.
-      const record = row.usage === null ? null : toRecord(row, rebuilt, [], { ...options, lane: options.lane ? `${options.lane}/title` : "title" }, sessionId)
+      const record = row.usage === null ? null : toRecord(row, wire.traceProvider, rebuilt, [], { ...options, lane: options.lane ? `${options.lane}/title` : "title" }, sessionId)
       return { row, startSeq: start?.seq ?? null, request, unverified: "unverified" in rebuilt ? rebuilt.unverified : null, breaks: [], declared: [], hinted: [], record }
     }
     const before = previousStart
@@ -177,7 +179,7 @@ export function exportSession(store: Store, sessionId: SessionId, options: Expor
       ...hinted.filter((hint) => hint.reason === "compaction" && hint.after === undefined).map((hint) => ({ kind: "compaction" as const, detail: hint.detail })),
       ...hinted,
     ]
-    const record = row.usage === null ? null : toRecord(row, rebuilt, hints, options, sessionId)
+    const record = row.usage === null ? null : toRecord(row, wire.traceProvider, rebuilt, hints, options, sessionId)
     carried = record === null ? hinted : []
     return { row, startSeq: start?.seq ?? null, request, unverified: "unverified" in rebuilt ? rebuilt.unverified : null, breaks, declared, hinted, record }
   })
@@ -271,6 +273,7 @@ function rebuild(
   start: StartPoint | null,
   foldFailure: string | null,
   options: ExportOptions,
+  descriptor: ProviderDescriptor,
 ): Rebuilt {
   const fail = (reason: Unverified["reason"], message: string, block?: Unverified["block"]): Rebuilt => ({
     unverified: { requestId: row.id, ordinal: row.ordinal, reason, ...(block ? { block } : {}), message },
@@ -280,7 +283,7 @@ function rebuild(
       ? fail("fold_failed", `cannot rebuild: ${foldFailure}`)
       : fail("no_start_event", `no event starts ${row.purpose} call ${row.messageId} attempt ${row.attempt}`)
   const built = attempt(() => {
-    if (row.purpose === "title") return storedTitleRequest(start.projection, row.messageId, row.model)
+    if (row.purpose === "title") return storedTitleRequest(start.projection, row.messageId, row.model, row.provider)
     return row.purpose === "compaction"
       ? buildCompactionRequest(start.projection, options.callOptions, row.messageId)
       : (options.buildStep ?? buildRequest)(start.projection, { ...options.callOptions, toolChoice: "auto" })
@@ -297,20 +300,9 @@ function rebuild(
       { number: index + 1, stored, rebuilt },
     )
   }
-  const encoded = attempt(() => encode(store, built.value, row.provider === OPENAI_KEY_PROVIDER ? "openai" : "chatgpt"))
+  const encoded = attempt(() => wires[descriptor.wire].traceEncode(store, built.value, descriptor.wireOptions))
   if ("error" in encoded) return fail("blob_missing", `cannot encode the request: ${encoded.error}`)
-  return { request: encoded.value }
-}
-
-function encode(store: Store, request: ModelRequest, profile: ProviderProfile): CanonicalTraceRequest {
-  const blobs = new Map(
-    blobRefs(request).flatMap((ref) => {
-      const blob = store.getBlob(ref.hash)
-      return blob === null ? [] : [[ref.hash, blob.bytes] as const]
-    }),
-  )
-  const canonical = canonicalResponsesRequest(JSON.parse(encodeRequest(request, blobs, profile).body))
-  return { ...canonical, params: withoutToolChoice(canonical.params) }
+  return { request: { ...encoded.value, params: withoutToolChoice(encoded.value.params) } }
 }
 
 function firstDifference(stored: readonly BlockHash[], rebuilt: readonly BlockHash[]) {
@@ -338,6 +330,7 @@ function attempt<T>(run: () => T): { readonly value: T } | { readonly error: str
 
 function toRecord(
   row: RequestRecord,
+  traceProvider: string,
   rebuilt: Rebuilt,
   hints: readonly TraceHint[],
   options: ExportOptions,
@@ -362,11 +355,10 @@ function toRecord(
     session: sessionId,
     lane: options.lane ?? "main",
     ts: new Date(row.startedAt).toISOString(),
-    // The request is a Responses request whoever answered it; who did is in the extension, and decides the billing.
-    provider: "openai",
+    provider: traceProvider,
     model: request?.model ?? row.model,
-    // The one real provider is the ChatGPT-plan sign-in. A scripted provider billed nothing: left unknown.
-    ...(row.provider === SIGNED_IN_PROVIDER ? { billing: "subscription" as const } : {}),
+    // Preserve the trace format: only subscription billing is written explicitly.
+    ...(ledgerProvider(row.provider)?.billing === "subscription" ? { billing: "subscription" as const } : {}),
     fidelity: request === null ? "usage-only" : "full-request",
     ...(request === null ? {} : { params: request.params, request: { blocks: request.blocks } }),
     usage: traceUsage(row.usage!),

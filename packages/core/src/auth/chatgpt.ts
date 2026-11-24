@@ -11,6 +11,7 @@ import type { webcrypto } from "node:crypto"
 import { chmod, mkdir, rename, rm } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
+import { AUTH_UNREACHABLE, AuthError } from "./error.ts"
 import { brand } from "../brand.ts"
 import { handedInTokenFile, readHandedIn } from "./handed-in.ts"
 
@@ -50,23 +51,6 @@ export type PendingLogin = {
   clientId?: string
   createdAt: number
 }
-
-export class AuthError extends Error {
-  constructor(
-    readonly code: string,
-    message: string,
-  ) {
-    super(message)
-    this.name = "AuthError"
-  }
-}
-
-/**
- * The code of the one sign-in failure that says nothing about the sign-in: the sign-in service could not be
- * reached (no name lookup, no connection, a connection that broke before the answer was whole). The saved sign-in
- * is as it was, and the same request can be made again.
- */
-export const AUTH_UNREACHABLE = "network_error"
 
 export function dataDir() {
   return join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"), brand.directory)

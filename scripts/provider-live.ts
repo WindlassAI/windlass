@@ -12,7 +12,8 @@
 // logs or writes the access token; the provider only puts it in the Authorization header.
 
 import { RESOURCE, accessToken } from "../packages/core/src/auth/chatgpt.ts"
-import { OpenAIResponsesProvider, listModels } from "../packages/core/src/provider/openai-responses.ts"
+import { listModels } from "../packages/core/src/provider/registry.ts"
+import { OpenAIResponsesProvider } from "../packages/core/src/provider/openai-responses.ts"
 import type { StreamEvent } from "../packages/core/src/provider/provider.ts"
 import type { Usage } from "../packages/core/src/provider/usage.ts"
 import type { InputItem, ModelRequest } from "../packages/core/src/request/request.ts"

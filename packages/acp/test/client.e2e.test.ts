@@ -12,6 +12,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { DEFAULT_MODEL, brand, openSessionDirectory, type SessionId } from "@windlass/core"
+import { exportSession } from "../../core/src/trace/export.ts"
 import { FakeProvider, type ScriptedResponse, script, within } from "@windlass/core/testing"
 import { type ApprovalAsk, ClientError, type ClientSession, HarnessClient, HarnessConnection, type SessionItem } from "../src/client.ts"
 import { EXT } from "../src/extensions.ts"
@@ -96,6 +97,7 @@ test("an OpenAI key serves the catalog, a shell tool round trip and a resumed se
   const config = join(configDir, "config.json")
   writeFileSync(config, JSON.stringify({ provider: "openai" }))
   const bodies: { input: { type: string; call_id?: string; output?: string }[] }[] = []
+  const titles: string[] = []
   let catalog = [model]
   let rejectKey = false
   const server = Bun.serve({
@@ -107,9 +109,11 @@ test("an OpenAI key serves the catalog, a shell tool round trip and a resumed se
       if (request.method === "GET" && path === "/v1/models") return Response.json({ data: catalog.map((id) => ({ id })) })
       if (request.method !== "POST" || path !== "/v1/responses") return new Response("wrong path", { status: 400 })
       if (request.headers.has("session-id")) return new Response("unexpected session-id", { status: 400 })
-      const body = await request.json()
-      bodies.push(body as (typeof bodies)[number])
-      const item = bodies.length === 1
+      const body = await request.json() as (typeof bodies)[number] & { model: string; tool_choice: string; tools: unknown[] }
+      const title = body.tool_choice === "none" && body.tools.length === 0
+      if (title) titles.push(body.model)
+      else bodies.push(body)
+      const item = !title && bodies.length === 1
         ? { type: "function_call", call_id: "call_env", id: "fc_env", name: "shell", arguments: JSON.stringify({ command: 'test -z "${OPENAI_API_KEY+x}" && printf "child-%s-clean" env' }) }
         : { type: "message", id: `msg_${bodies.length}`, role: "assistant", content: [{ type: "output_text", text: "Done." }] }
       const response = { output: [item], usage: { input_tokens: 20, input_tokens_details: { cached_tokens: 8 }, output_tokens: 3, output_tokens_details: { reasoning_tokens: 1 } } }
@@ -133,7 +137,7 @@ test("an OpenAI key serves the catalog, a shell tool round trip and a resumed se
   const start = async (profile?: string, apiKey = key) => {
     const link = await HarnessConnection.start({
       transport: {
-        kind: "child", command: [process.execPath, "--no-env-file", "--preload", preload, MAIN, "acp"], apiKey,
+        kind: "child", command: [process.execPath, "--no-env-file", "--preload", preload, MAIN, "acp"], apiKeys: { OPENAI_API_KEY: apiKey },
         env: { PATH: process.env.PATH, HOME: root, XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: dataDir,
           WINDLASS_WAKE: "off", WINDLASS_PROVIDER: profile },
       },
@@ -176,8 +180,17 @@ test("an OpenAI key serves the catalog, a shell tool round trip and a resumed se
       const id = session.id as SessionId
       expect(directory.get(id)?.session.provider).toBe("openai")
       const rows = directory.read(id, (store) => store.readRequests(id))
-      expect(rows).toHaveLength(3)
-      for (const row of rows) expect(row).toMatchObject({ purpose: "step", provider: "openai-api-key", providerRequestId: "req_local", usage: { inputTokens: 20, cachedInputTokens: 8, outputTokens: 3, reasoningTokens: 1 } })
+      expect(titles).toEqual([model])
+      expect(rows.filter((row) => row.purpose === "title")).toMatchObject([{ model, provider: "openai-api-key", outcome: "ok" }])
+      const trace = directory.read(id, (store) => exportSession(store, id))
+      expect(trace.unverified).toEqual([])
+      for (const { record } of trace.calls) {
+        expect(record?.x_windlass?.served_by).toBe("openai-api-key")
+        expect(record?.params).not.toHaveProperty("reasoning")
+      }
+      const steps = rows.filter((row) => row.purpose === "step")
+      expect(steps).toHaveLength(3)
+      for (const row of steps) expect(row).toMatchObject({ purpose: "step", provider: "openai-api-key", providerRequestId: "req_local", usage: { inputTokens: 20, cachedInputTokens: 8, outputTokens: 3, reasoningTokens: 1 } })
     } finally {
       directory.close()
     }
@@ -186,8 +199,8 @@ test("an OpenAI key serves the catalog, a shell tool round trip and a resumed se
     await expect(wrong.openSession(session.id, workspace, { replay: false })).rejects.toThrow("This session uses openai")
     await expect(wrong.fork({ sessionId: session.id, model })).rejects.toThrow("This session uses openai")
     const missing = await start("openai", "")
-    await expect(missing.newSession(workspace)).rejects.toMatchObject({ reason: "auth_required", code: "missing_api_key" })
-    await expect(missing.listModels()).rejects.toMatchObject({ reason: "auth_required", code: "missing_api_key" })
+    await expect(missing.newSession(workspace)).rejects.toMatchObject({ reason: "auth_required", code: "missing_api_key", profile: "openai" })
+    await expect(missing.listModels()).rejects.toMatchObject({ reason: "auth_required", code: "missing_api_key", profile: "openai" })
     const byEnv = await start("openai")
     rejectKey = true
     await expect(byEnv.listModels()).rejects.toThrow("Check OPENAI_API_KEY")
