@@ -1074,7 +1074,7 @@ export class App {
     if (backend.listModels === undefined || session?.setConfig === undefined) return this.unavailable("/model")
     let groups: readonly ProviderChoice[]
     try {
-      groups = providerGroups(await backend.listModels(session.id))
+      groups = providerGroups(await backend.listModels(session.id, { providers: true }))
       if (this.session !== session) return
     } catch (error) {
       return this.say(`could not list the models: ${error instanceof Error ? error.message : String(error)}`, "error")

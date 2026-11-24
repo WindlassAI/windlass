@@ -196,7 +196,8 @@ export interface Backend {
   readonly demo?: boolean
   open(target: OpenTarget, cwd: string, settings: OpenSettings): Promise<BackendSession>
   listSessions?(cwd: string): Promise<SessionChoice[]>
-  listModels?(sessionId?: string): Promise<ModelListing>
+  /** `providers`: also every other provider with a usable credential (the picker); without it, the session's provider only. */
+  listModels?(sessionId?: string, options?: { readonly providers?: boolean }): Promise<ModelListing>
   /** Who answers the agent's questions. Set by the app before the first open. */
   onQuestion: QuestionHandler
   /** Who answers tool calls' approval questions. Set by the app before the first open. */

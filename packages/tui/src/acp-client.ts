@@ -139,10 +139,10 @@ export class AcpBackend implements Backend {
     }
   }
 
-  async listModels(sessionId?: string): Promise<ModelListing> {
+  async listModels(sessionId?: string, options: { readonly providers?: boolean } = {}): Promise<ModelListing> {
     const link = await this.connect()
     try {
-      const listed = await link.listModels(sessionId, { providers: true })
+      const listed = await link.listModels(sessionId, options)
       const choice = (group: ProviderModels): ProviderChoice => ({ provider: group.provider, defaultModel: group.defaultModel, models: group.models.map((model) => ({ ...model, isDefault: model.id === group.defaultModel })) })
       return { ...choice(listed), ...(listed.providers === undefined ? {} : { providers: listed.providers.map(choice) }) }
     } catch (error) {
