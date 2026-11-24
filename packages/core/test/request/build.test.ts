@@ -6,7 +6,7 @@ import type { MessageId, SessionId } from "../../src/id.ts"
 import { selectModelHistory } from "../../src/message/history.ts"
 import type { AssistantMessage, Projection } from "../../src/message/message.ts"
 import { reduce } from "../../src/message/reducer.ts"
-import { encodeRequest } from "../../src/provider/openai-responses-encode.ts"
+import { encodeRequest } from "../../src/provider/wire/responses/encode.ts"
 import { checkPrefix } from "../../src/request/build-break.ts"
 import {
   RequestBuildError,

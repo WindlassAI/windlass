@@ -1,3 +1,4 @@
+export * from "./auth/error.ts"
 export { brand } from "./brand.ts"
 export { ACCESS_TOKEN_FILE_ENV, aboutHandedIn } from "./auth/handed-in.ts"
 export * from "./json.ts"

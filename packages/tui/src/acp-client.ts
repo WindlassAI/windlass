@@ -38,7 +38,7 @@ import { handEditChoices, signInReason } from "./cli.ts"
 import { type ClientSession, ClientError, HarnessClient, openWhenReleased } from "@windlass/acp/client"
 import { type ClientCommand, type CommandsResult, EXT, type MemoryChangeParams, type MemoryChangeResult, type WakeCreateParams, type WakeCreateResult } from "@windlass/acp/extensions"
 import { handEditLines, handEditTitle } from "./features.ts"
-import { type RevertResult, brand } from "@windlass/core"
+import { type ProviderKeys, type RevertResult, brand } from "@windlass/core"
 import type { EngineEvent } from "./cli.ts"
 import {
   type AgentsResult,
@@ -77,7 +77,7 @@ export const START_TIMEOUT_MS = 20_000
 export interface AcpClientOptions {
   /** The command that serves ACP on stdio, such as `[bun, .../cli/src/main.ts, "acp"]`. */
   readonly command: readonly string[]
-  readonly apiKey?: string
+  readonly apiKeys?: ProviderKeys
   readonly env: Record<string, string | undefined>
   readonly version: string
   readonly startTimeoutMs?: number
@@ -93,7 +93,7 @@ export class AcpBackend implements Backend {
 
   constructor(options: AcpClientOptions) {
     this.client = new HarnessClient({
-      transport: { kind: "child", command: options.command, env: options.env, apiKey: options.apiKey },
+      transport: { kind: "child", command: options.command, env: options.env, apiKeys: options.apiKeys },
       clientInfo: { name: `${brand.binary}-tui`, title: `${brand.name} TUI`, version: options.version },
       log: (line, level) => {
         if (level === "raw") return line.trim() === "" ? undefined : this.onLog(line, "warn")

@@ -11,7 +11,7 @@ import { join } from "node:path"
 import { buildRequest } from "../../src/request/build.ts"
 import { requestBlocks } from "../../src/request/request.ts"
 import type { SessionId } from "../../src/id.ts"
-import { SIGNED_IN_PROVIDER } from "../../src/provider/provider.ts"
+import { providerDescriptor } from "../../src/provider/registry.ts"
 import type { SqliteStore } from "../../src/store/sqlite.ts"
 import { type ExportResult, describeUnverified, exportSession } from "../../src/trace/export.ts"
 import { canonicalResponsesRequest, serializeTrace, traceHash } from "../../src/trace/format.ts"
@@ -145,7 +145,7 @@ describe.each(SCRIPTS.map((script) => [script.name, script] as const))("%s", (na
       // The same session in a store of its own, with the ledger as the real provider would have left it.
       for (const item of store.readEvents(loop.id)) copy.append(loop.id, [{ type: item.type, v: item.v, data: item.data } as never])
       for (const row of store.readRequests(loop.id)) {
-        copy.beginRequest({ id: row.id, sessionId: row.sessionId, messageId: row.messageId, attempt: row.attempt, purpose: row.purpose, model: row.model, provider: SIGNED_IN_PROVIDER, blocks: row.blocks })
+        copy.beginRequest({ id: row.id, sessionId: row.sessionId, messageId: row.messageId, attempt: row.attempt, purpose: row.purpose, model: row.model, provider: providerDescriptor().ledgerId, blocks: row.blocks })
         if (row.outcome !== null)
           copy.finishRequest(row.id, {
             outcome: row.outcome,
@@ -162,7 +162,7 @@ describe.each(SCRIPTS.map((script) => [script.name, script] as const))("%s", (na
         const written = usage.cacheWriteTokens!
         expect(call.record!.billing).toBe("subscription")
         expect(call.record!.provider).toBe("openai")
-        expect(call.record!.x_windlass?.served_by).toBe(SIGNED_IN_PROVIDER)
+        expect(call.record!.x_windlass?.served_by).toBe("openai-responses")
         expect(call.record!.usage).toEqual({
           input_tokens: usage.inputTokens - usage.cachedInputTokens - written,
           cache_read_tokens: usage.cachedInputTokens,

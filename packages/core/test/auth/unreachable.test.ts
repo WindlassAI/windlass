@@ -11,7 +11,8 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { AUTH_UNREACHABLE, type AuthConfig, AuthError, type Credentials, accessToken, savedAccessToken } from "../../src/auth/chatgpt.ts"
+import { AUTH_UNREACHABLE, AuthError } from "../../src/auth/error.ts"
+import { type AuthConfig, type Credentials, accessToken, savedAccessToken } from "../../src/auth/chatgpt.ts"
 
 const cleanups: (() => void)[] = []
 afterEach(() => {

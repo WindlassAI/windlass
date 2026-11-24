@@ -57,6 +57,13 @@ describe("buildBaseline", () => {
     expect(parseSections(baseline.instructions)).toEqual(sources)
   })
 
+  test("a model-family add-on follows the base prompt and precedes the instruction sources", () => {
+    const input = { tools: [read], sources }
+    expect(buildBaseline({ ...input, familyPrompt: "" })).toEqual(buildBaseline(input))
+    expect(buildBaseline({ ...input, familyPrompt: "Use the edit tool." }).instructions)
+      .toBe([BASE_SYSTEM_PROMPT, "Use the edit tool.", ...sources.map(renderSection)].join("\n\n"))
+  })
+
   test("tools are sorted by name and reduced to what the model is told", () => {
     const tool: Tool = { ...shell, effect: "exec", execute: async () => ({ status: "success", output: "", truncation: null, attachments: [], display: null }) }
     const baseline = buildBaseline({ prompt: "p", tools: [tool, read, grep], sources: [] })

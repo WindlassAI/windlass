@@ -11,7 +11,7 @@
 import { afterAll, afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { createHash } from "node:crypto"
 import { deflateSync } from "node:zlib"
-import { blobRefs, encodeRequest } from "../../src/provider/openai-responses-encode.ts"
+import { blobRefs, encodeRequest } from "../../src/provider/wire/responses/encode.ts"
 import { hashRequest } from "../../src/request/prefix.ts"
 import { script } from "../../src/testing/fake-provider.ts"
 import { describeUnverified, exportSession } from "../../src/trace/export.ts"

@@ -1,6 +1,6 @@
 import { readdirSync } from "node:fs"
 import { join } from "node:path"
-import { ResponsesStreamMapper } from "../../src/provider/openai-responses-decode.ts"
+import { ResponsesStreamMapper } from "../../src/provider/wire/responses/decode.ts"
 import type { StreamEvent } from "../../src/provider/provider.ts"
 import { SseParser } from "../../src/provider/sse.ts"
 

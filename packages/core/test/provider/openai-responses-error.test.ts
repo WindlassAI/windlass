@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { classify, readErrorBody, retryAfterMs } from "../../src/provider/openai-responses-error.ts"
+import { classify, readErrorBody, retryAfterMs } from "../../src/provider/wire/responses/error.ts"
 import { FIXTURES } from "./responses-helpers.ts"
 
 const kindOf = (detail: Parameters<typeof classify>[0]) => classify(detail).kind

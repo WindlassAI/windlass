@@ -8,7 +8,7 @@
  */
 import { homedir } from "node:os"
 import { createCliRenderer } from "@opentui/core"
-import { brand } from "@windlass/core"
+import { type ProviderKeys, brand } from "@windlass/core"
 import type { Scenario } from "@windlass/core/testing/scenarios"
 import { AcpBackend } from "./acp-client.ts"
 import { App } from "./app.ts"
@@ -31,7 +31,7 @@ export interface TuiOptions {
   readonly cwd: string
   readonly target: OpenTarget
   readonly settings: OpenSettings
-  readonly apiKey?: string
+  readonly apiKeys?: ProviderKeys
   readonly env: Record<string, string | undefined>
   readonly version: string
   /** The command that serves ACP on stdio. */
@@ -47,7 +47,7 @@ export async function runTui(options: TuiOptions): Promise<number> {
   }
   const backend: Backend =
     options.demo === null
-      ? new AcpBackend({ command: options.serverCommand, env: options.env, apiKey: options.apiKey, version: options.version })
+      ? new AcpBackend({ command: options.serverCommand, env: options.env, apiKeys: options.apiKeys, version: options.version })
       : new DemoBackend(options.demo.scenario, options.demo.name, { speed: options.demo.speed, ...(options.demo.graceMs === null ? {} : { graceMs: options.demo.graceMs }) })
   const renderer = await createCliRenderer({
     exitOnCtrlC: false,

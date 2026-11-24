@@ -40,8 +40,8 @@ import type { StoredEvent } from "../event/durable.ts"
 import type { SessionId } from "../id.ts"
 import type { Projection } from "../message/message.ts"
 import { reduce } from "../message/reducer.ts"
-import { blobRefs, encodeRequest } from "../provider/openai-responses-encode.ts"
-import { OPENAI_KEY_PROVIDER, type ProviderProfile, SIGNED_IN_PROVIDER } from "../provider/provider.ts"
+import { blobRefs, encodeRequest } from "../provider/wire/responses/encode.ts"
+import { type ProviderDescriptor, ledgerProvider, providerDescriptor } from "../provider/registry.ts"
 import { type BuildOptions, type CallOptions, buildCompactionRequest, buildRequest } from "../request/build.ts"
 import { type PrefixBreakCause, prefixBreakCauses } from "../request/build-break.ts"
 import { type BlockHash, hashRequest } from "../request/prefix.ts"
@@ -279,8 +279,9 @@ function rebuild(
     return foldFailure !== null
       ? fail("fold_failed", `cannot rebuild: ${foldFailure}`)
       : fail("no_start_event", `no event starts ${row.purpose} call ${row.messageId} attempt ${row.attempt}`)
+  const descriptor = ledgerProvider(row.provider) ?? providerDescriptor(start.projection.session.provider)
   const built = attempt(() => {
-    if (row.purpose === "title") return storedTitleRequest(start.projection, row.messageId, row.model)
+    if (row.purpose === "title") return storedTitleRequest(start.projection, row.messageId, row.model, row.provider)
     return row.purpose === "compaction"
       ? buildCompactionRequest(start.projection, options.callOptions, row.messageId)
       : (options.buildStep ?? buildRequest)(start.projection, { ...options.callOptions, toolChoice: "auto" })
@@ -297,19 +298,20 @@ function rebuild(
       { number: index + 1, stored, rebuilt },
     )
   }
-  const encoded = attempt(() => encode(store, built.value, row.provider === OPENAI_KEY_PROVIDER ? "openai" : "chatgpt"))
+  const encoded = attempt(() => encode(store, built.value, descriptor))
   if ("error" in encoded) return fail("blob_missing", `cannot encode the request: ${encoded.error}`)
   return { request: encoded.value }
 }
 
-function encode(store: Store, request: ModelRequest, profile: ProviderProfile): CanonicalTraceRequest {
+function encode(store: Store, request: ModelRequest, descriptor: ProviderDescriptor): CanonicalTraceRequest {
+  if (descriptor.wire !== "responses") throw new Error(`unsupported trace wire ${descriptor.wire}`)
   const blobs = new Map(
     blobRefs(request).flatMap((ref) => {
       const blob = store.getBlob(ref.hash)
       return blob === null ? [] : [[ref.hash, blob.bytes] as const]
     }),
   )
-  const canonical = canonicalResponsesRequest(JSON.parse(encodeRequest(request, blobs, profile).body))
+  const canonical = canonicalResponsesRequest(JSON.parse(encodeRequest(request, blobs, descriptor).body))
   return { ...canonical, params: withoutToolChoice(canonical.params) }
 }
 
@@ -365,8 +367,8 @@ function toRecord(
     // The request is a Responses request whoever answered it; who did is in the extension, and decides the billing.
     provider: "openai",
     model: request?.model ?? row.model,
-    // The one real provider is the ChatGPT-plan sign-in. A scripted provider billed nothing: left unknown.
-    ...(row.provider === SIGNED_IN_PROVIDER ? { billing: "subscription" as const } : {}),
+    // Preserve the trace format: only subscription billing is written explicitly.
+    ...(ledgerProvider(row.provider)?.billing === "subscription" ? { billing: "subscription" as const } : {}),
     fidelity: request === null ? "usage-only" : "full-request",
     ...(request === null ? {} : { params: request.params, request: { blocks: request.blocks } }),
     usage: traceUsage(row.usage!),

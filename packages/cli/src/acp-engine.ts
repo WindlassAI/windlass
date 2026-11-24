@@ -56,7 +56,7 @@ import {
   titleFromEvents,
 } from "@windlass/acp/extensions"
 import { forkPointOfTurn, isUndone, startedByText, turnsOf } from "@windlass/acp/turns"
-import { type CallId, type HarnessOptions, type MessageId, type Question, type RevertResult, type SessionId, brand } from "@windlass/core"
+import { type ProviderKeys, type CallId, type HarnessOptions, type MessageId, type Question, type RevertResult, type SessionId, brand } from "@windlass/core"
 import { selfCommand } from "./self.ts"
 import {
   type Approver,
@@ -84,7 +84,7 @@ export interface AcpEngineOptions {
   /** `child`: the command that serves ACP on stdio. Defaults to this Bun running this CLI's `acp` subcommand. */
   readonly command?: readonly string[]
   /** `child`: its environment. Defaults to this process's. */
-  readonly apiKey?: string
+  readonly apiKeys?: ProviderKeys
   readonly env?: Record<string, string | undefined>
   /** `memory`: the harness the in-process server runs on. */
   readonly harness?: HarnessOptions
@@ -106,7 +106,7 @@ export function createAcpEngine(options: AcpEngineOptions = {}): Engine {
   const stderr = options.stderr ?? ((text: string) => void process.stderr.write(text))
   const link = () =>
     (started ??= HarnessConnection.start({
-      transport: options.transport === "memory" ? { kind: "memory", ...(options.harness === undefined ? {} : { harness: options.harness }) } : { kind: "child", command: options.command ?? selfCommand(["acp"]), env: options.env ?? process.env, apiKey: options.apiKey },
+      transport: options.transport === "memory" ? { kind: "memory", ...(options.harness === undefined ? {} : { harness: options.harness }) } : { kind: "child", command: options.command ?? selfCommand(["acp"]), env: options.env ?? process.env, apiKeys: options.apiKeys },
       clientInfo: { name: brand.binary, title: brand.name, version: options.version ?? "0.0.0" },
       // Only what the user should see: the server's warnings and errors, as the CLI's own lines.
       log: (line, level) => {

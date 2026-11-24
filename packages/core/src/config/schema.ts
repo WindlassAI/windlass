@@ -19,7 +19,7 @@
  * when it opens a session). It is read from the user's file only and never
  * merged: `verify/required.ts` is handed both files as written.
  */
-import { PROVIDER_PROFILES, type ProviderProfile } from "../provider/provider.ts"
+import { PROVIDER_PROFILES, type ProviderProfile } from "../provider/registry.ts"
 import { type AgentsConfigSection, parseAgentsSection } from "../agents/config.ts"
 import { approvalSection } from "../approval/policy.ts"
 import { type CommandsConfigSection, parseCommandsSection } from "../commands/config.ts"

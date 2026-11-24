@@ -121,7 +121,8 @@ import { selectModelHistory } from "../message/history.ts"
 import { type AssistantMessage, type InboxItem, type Projection, type ToolCallPart, hasSideEffect, watchInForce } from "../message/message.ts"
 import { reduce } from "../message/reducer.ts"
 import { type ProviderError, makeProviderError } from "../provider/error.ts"
-import { SIGNED_IN_PROVIDER, type ProviderProfile, type FinishReason, type Provider, type ResponseFacts, type StreamEvent } from "../provider/provider.ts"
+import { type ProviderDescriptor, type ProviderProfile, ledgerProvider, providerDescriptor } from "../provider/registry.ts"
+import { type FinishReason, type Provider, type ResponseFacts, type StreamEvent } from "../provider/provider.ts"
 import { type Usage, sumUsage } from "../provider/usage.ts"
 import type { CommandSandbox } from "../sandbox/command.ts"
 import { type CommandEnv, type SandboxHomeChoice, resolveCommandEnv, resolveSandboxHome } from "../sandbox/config.ts"
@@ -1363,6 +1364,7 @@ export interface Engine {
 // ---------------------------------------------------------------- engine
 
 interface Core {
+  readonly descriptor?: ProviderDescriptor
   readonly profile?: ProviderProfile
   readonly stores: SessionStores
   readonly provider: Provider
@@ -1450,6 +1452,7 @@ interface Core {
 }
 
 function modelServices(options: ModelBackend, profile?: ProviderProfile) {
+  const descriptor = profile === undefined ? ledgerProvider(options.provider.id) : providerDescriptor(profile)
   // The provider's models, as last listed: what settings are checked against without another request.
   let offered: readonly ModelOffer[] | null = null
   const readOffers = async (signal?: AbortSignal): Promise<readonly ModelOffer[] | null> => {
@@ -1462,10 +1465,11 @@ function modelServices(options: ModelBackend, profile?: ProviderProfile) {
   }
   const listOffered = async (pending?: Promise<readonly ModelOffer[] | null> | null) => {
     const models = await (pending ?? readOffers())
-    if (models !== null && (models.length > 0 || profile === "openai")) offered = models
+    if (models !== null && (models.length > 0 || descriptor?.catalog.validateDefault)) offered = models
     return offered
   }
   return {
+    descriptor,
     provider: options.provider,
     windows: new Map<string, number | null>(),
     contextWindow: options.contextWindow,
@@ -1876,7 +1880,7 @@ export function createEngine(options: EngineOptions): Engine {
       const selected = profile === undefined ? core : coreFor(profile)
       if (selected.listOffered === null) return
       const models = await selected.listOffered()
-      if (selected.profile === "openai" && models?.length === 0)
+      if (selected.descriptor?.catalog.validateDefault && models?.length === 0)
         throw new EngineError("unknown_model", `model ${settings.model} is not available; the API key offers no text models`)
       const problem = models === null ? null : settingsProblem(settings, models)
       if (problem !== null) throw problem
@@ -2620,13 +2624,13 @@ class LiveSession implements EngineSession {
 
   /** Keep the user's words separately from expanded prompts. Old sessions have no such excerpt. */
   private titleInput(state: Projection, value: string): { titlePrompt?: string } {
-    if (this.core.provider.id !== SIGNED_IN_PROVIDER || this.titleChecked) return {}
+    if (!this.core.descriptor?.defaults.titleModel || this.titleChecked) return {}
     if (state.session.title !== null || state.messages.some((message) => message.kind === "user")) return {}
     return { titlePrompt: titleExcerpt(value) }
   }
 
   private startTitle(ready: Projection, arriving: readonly InboxItem[]): void {
-    if (this.titleChecked || this.core.provider.id !== SIGNED_IN_PROVIDER || this.director !== null) return
+    if (this.titleChecked || !this.core.descriptor?.defaults.titleModel || this.director !== null) return
     const first = ready.messages.find((message) => message.kind === "user")
     if (!first) return
     this.titleChecked = true
@@ -2638,6 +2642,8 @@ class LiveSession implements EngineSession {
   }
 
   private async generateTitle(messageId: MessageId, prompt: string, firstDelivery: boolean, signal: AbortSignal): Promise<void> {
+    const defaults = this.core.descriptor?.defaults
+    if (!defaults?.titleModel) return
     const previous = this.store.lastRequest(this.id, "title")
     if (previous?.outcome === "ok" || (previous?.attempt ?? 0) >= 2) return
     const configured = this.config?.config.titleModel ?? null
@@ -2650,7 +2656,7 @@ class LiveSession implements EngineSession {
       const offers = await this.titleOffers
       this.titleOffers = null
       if (offers === null || lookup.aborted) return
-      model = chooseTitleModel(offers, configured)
+      model = chooseTitleModel(offers, configured, defaults.titleModel)
       if (model === null) {
         if (configured !== null) this.core.debug(`Skipping session title: configured titleModel ${JSON.stringify(configured)} is unavailable.`)
         return
@@ -2659,7 +2665,7 @@ class LiveSession implements EngineSession {
       // A retry after resume can only use the already selected model.
       return
     }
-    const request = titleRequest(prompt, model)
+    const request = titleRequest(prompt, model, defaults)
     const blocks = hashRequest(request)
     // The ledger reserves each attempt before contacting the provider, including one cut short by a crash.
     for (let attempt = (previous?.attempt ?? 0) + 1; attempt <= 2 && !signal.aborted; attempt++) {
@@ -3353,7 +3359,8 @@ class LiveSession implements EngineSession {
       const building = waiting.baseline === null || (waiting.session.compaction?.seq ?? 0) > waiting.baseline.seq
       const runsAs = waiting.session.agent ?? null
       const prepared = waiting.session.replay !== undefined ? [] : prepareInstructions(waiting, {
-        ...(this.core.prompt === undefined ? {} : { prompt: this.core.prompt }),
+        prompt: this.core.prompt,
+        familyPrompt: this.core.descriptor?.familyPrompt(waiting.session.settings.model),
         tools: this.offeredTools(waiting),
         sources: [
           ...this.core.discover({

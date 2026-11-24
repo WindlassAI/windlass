@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { ResponsesStreamMapper } from "../../src/provider/openai-responses-decode.ts"
+import { ResponsesStreamMapper } from "../../src/provider/wire/responses/decode.ts"
 import type { StreamEvent } from "../../src/provider/provider.ts"
 import { decodeChunks, fixtureBytes, splitAt, sseFixtures } from "./responses-helpers.ts"
 

@@ -26,7 +26,7 @@ import { E2E_TIMEOUT_MS, waitFor as waitUntil } from "../../src/testing/wait.ts"
 import type { CommandSandbox } from "../../src/sandbox/command.ts"
 import { createToolRuntime } from "../../src/tool/runtime.ts"
 import { noBlobStore } from "../../src/tool/tool.ts"
-import { SIGNED_IN_PROVIDER } from "../../src/provider/provider.ts"
+import { providerDescriptor } from "../../src/provider/registry.ts"
 import { allFamilies as families } from "../scenarios/index.ts"
 import {
   ATTEMPT_BUDGET,
@@ -205,7 +205,6 @@ const PLAYS: Record<string, Play> = {
   },
 
   "A title arrives after the turn and the user replaces it": async (h, say) => {
-    Object.assign(h.provider, { id: SIGNED_IN_PROVIDER })
     const stream = h.provider.stream
     h.provider.stream = async function* (request, signal) {
       if (request.tools.length === 0) await h.seen((event) => event.type === "execution.succeeded")
@@ -2114,7 +2113,7 @@ describe("the loop writes each scenario's events", () => {
       hostCalls.length = 0
       exportedSpans = []
       const h = new Harness({
-        ...(family === "Session titles" ? { models: ["gpt-test", "gpt-6-luna"] } : {}),
+        ...(family === "Session titles" ? { providerId: providerDescriptor().ledgerId, models: ["gpt-test", "gpt-6-luna"] } : {}),
         ...(cwd === undefined ? {} : { cwd }),
         ...(features?.skills === true ? { skills: { configDir: join(dirname(cwd!), "config") } } : {}),
         // One scripted server of the user's own, slow to start, so that the first request is out before it connects.

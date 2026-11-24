@@ -9,7 +9,8 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, w
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { brand } from "../../src/brand.ts"
-import { ACCESS_TOKEN_FILE_ENV, type AuthConfig, AuthError, type Credentials, HAND_IN_ADVICE, aboutHandedIn, accessToken, handedInTokenFile, handedInTokenNow, readHandedIn, savedAccessToken } from "../../src/auth/chatgpt.ts"
+import { AuthError } from "../../src/auth/error.ts"
+import { ACCESS_TOKEN_FILE_ENV, type AuthConfig, type Credentials, HAND_IN_ADVICE, aboutHandedIn, accessToken, handedInTokenFile, handedInTokenNow, readHandedIn, savedAccessToken } from "../../src/auth/chatgpt.ts"
 import { FAILURE_TEXT, failureText } from "../../src/engine/constants.ts"
 import { makeProviderError } from "../../src/provider/error.ts"
 

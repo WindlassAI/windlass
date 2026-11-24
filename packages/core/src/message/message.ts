@@ -6,7 +6,7 @@
  * Every type here is declared as a validator, because projection rows are
  * also read back from SQLite JSON.
  */
-import { PROVIDER_PROFILES } from "../provider/provider.ts"
+import { DEFAULT_PROFILE, PROVIDER_PROFILES } from "../provider/registry.ts"
 import { agentRefusal } from "../agents/restrictions.ts"
 import { agentRecord } from "../agents/use.ts"
 import { grant } from "../approval/grants.ts"
@@ -549,7 +549,7 @@ export type SessionState = Infer<typeof projectedSession>
 /** Cached projections from before provider selection belong to ChatGPT sessions. */
 export function sessionState(input: unknown, path: string): SessionState {
   if (typeof input === "object" && input !== null && !Array.isArray(input) && !("provider" in input))
-    return projectedSession({ ...input, provider: "chatgpt" }, path)
+    return projectedSession({ ...input, provider: DEFAULT_PROFILE }, path)
   return projectedSession(input, path)
 }
 

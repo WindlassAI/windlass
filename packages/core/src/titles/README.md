@@ -5,9 +5,9 @@ The step loop keeps a bounded excerpt of the first user input for an independent
 expanded a command. Older prompts without an excerpt keep their derived title.
 
 Once that input is delivered and the configuration for the turn is known, the engine starts the request
-through the signed-in provider. Only the first delivery looks up the offered models. An explicit
+through the session’s provider when it has a title model. Only the first delivery looks up the offered models. An explicit
 `titleModel` must be available or the engine logs one debug line and skips the request. Automatic
-selection prefers `gpt-6-luna`, then fast or inexpensive descriptions, then small model names, with
+selection prefers the provider’s title model (currently `gpt-6-luna`), then fast or inexpensive descriptions, then small model names, with
 catalog order breaking ties. An empty or unreadable catalog leaves the derived title in place.
 
 `titleRequest` builds the request from the excerpt and chosen model alone. The ledger

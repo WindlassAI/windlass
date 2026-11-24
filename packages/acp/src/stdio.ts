@@ -13,7 +13,7 @@
  * still kills the commands' process groups.
  */
 import { ndJsonStream } from "@agentclientprotocol/sdk"
-import { brand, createHarness, PROVIDER_ENV } from "@windlass/core"
+import { type ProviderKeys, keyVariables, brand, createHarness, PROVIDER_ENV } from "@windlass/core"
 import { LOG_LEVEL_ENV, createLogger, describeError, levelFromEnv } from "./log.ts"
 import { SCRIPT_ENV, scriptedProvider } from "./scripted.ts"
 import { serve } from "./server.ts"
@@ -45,7 +45,7 @@ export function firesWakeUps(env: Record<string, string | undefined>): boolean {
 }
 
 export interface StdioOptions {
-  readonly apiKey?: string
+  readonly apiKeys?: ProviderKeys
   readonly env: Record<string, string | undefined>
   readonly version?: string
 }
@@ -66,8 +66,8 @@ export async function serveStdio(options: StdioOptions): Promise<number> {
   // (the engine's diagnostics, notices about the data directory) are what the command line prints as warnings too.
   const fires = firesWakeUps(options.env)
   // The trusted CLI hands the key across a private pipe, outside the child's environment and ACP transcript.
-  const apiKey = options.env[`${brand.envPrefix}ACP_KEY_IPC`] === "1" ? await receiveApiKey() : options.apiKey
-  const harness = createHarness({ profile: options.env[PROVIDER_ENV], apiKey, log: (line) => log.warn(line), ...(provider === undefined ? {} : { provider }), engine: { debug: log.debug, ...(fires ? { wake: { run: true } } : {}) } })
+  const apiKeys = options.env[`${brand.envPrefix}ACP_KEY_IPC`] === "1" ? await receiveApiKeys() : options.apiKeys
+  const harness = createHarness({ profile: options.env[PROVIDER_ENV], apiKeys, log: (line) => log.warn(line), ...(provider === undefined ? {} : { provider }), engine: { debug: log.debug, ...(fires ? { wake: { run: true } } : {}) } })
   // The scheduler and the webhook listener start with the engine, not with the first session: a wake-up that is
   // due is delivered although the client has opened nothing yet.
   if (fires) void harness.engine.wake()
@@ -115,7 +115,7 @@ export async function serveStdio(options: StdioOptions): Promise<number> {
   return 0
 }
 
-function receiveApiKey(): Promise<string> {
+function receiveApiKeys(): Promise<ProviderKeys> {
   return new Promise((resolve, reject) => {
     if (!process.connected) throw new Error("Expected an API key over IPC, but the channel is closed")
     const timer = setTimeout(() => {
@@ -126,8 +126,13 @@ function receiveApiKey(): Promise<string> {
     function received(key: unknown) {
       clearTimeout(timer)
       process.disconnect?.()
-      if (typeof key === "string") resolve(key)
-      else reject(new Error("Expected an API key string over IPC"))
+      if (typeof key !== "object" || key === null || Array.isArray(key)) return reject(new Error("Expected provider keys over IPC"))
+      const keys: Record<string, string> = {}
+      for (const [variable, value] of Object.entries(key)) {
+        if (!keyVariables.includes(variable) || typeof value !== "string") return reject(new Error("Invalid provider key over IPC"))
+        keys[variable] = value
+      }
+      resolve(keys)
     }
     process.once("message", received)
   })

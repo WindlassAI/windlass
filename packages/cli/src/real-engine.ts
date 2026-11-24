@@ -26,6 +26,7 @@ import {
   unreadableSession,
   brand,
   createHarness,
+  providerDescriptor,
   restrictionTag,
 } from "@windlass/core"
 import { titleFromEvents } from "@windlass/acp/extensions"
@@ -170,7 +171,7 @@ async function sessionFor(harness: Harness, request: OpenRequest): Promise<Engin
   const agent = request.agent ?? null
   if (id === undefined) {
     const settings = await harness.settingsFor(request.cwd, asked)
-    if (profile === "openai" || request.model !== null || request.effort !== null) await engine.validateSettings(settings, profile)
+    if (providerDescriptor(profile).catalog.validateDefault || request.model !== null || request.effort !== null) await engine.validateSettings(settings, profile)
     return engine.createSession({ cwd: request.cwd, settings, ...(agent === null ? {} : { agent }) })
   }
   if (request.model !== null) await engine.validateSettings(await harness.settingsFor(request.cwd, asked), profile)

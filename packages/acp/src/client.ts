@@ -36,7 +36,7 @@ import {
 } from "@agentclientprotocol/sdk"
 import { readFileSync } from "node:fs"
 import type { EphemeralEvent, HarnessOptions, Need, RevertPlan, RevertResult, RunDecision, StoredEvent } from "@windlass/core"
-import { brand } from "@windlass/core"
+import { type ProviderKeys, takeProviderKeys, brand } from "@windlass/core"
 import {
   type AgentsResult,
   APPROVAL_META,
@@ -151,7 +151,7 @@ export type Transport =
       readonly kind: "child"
       /** The command that serves ACP on stdio, such as `[bun, .../cli/src/main.ts, "acp"]`. */
       readonly command: readonly string[]
-      readonly apiKey?: string
+      readonly apiKeys?: ProviderKeys
       readonly env: Record<string, string | undefined>
     }
   | {
@@ -969,19 +969,22 @@ export class HarnessClient {
 }
 
 function childTransport(transport: Extract<Transport, { kind: "child" }>, log: ConnectOptions["log"]): Transported {
-  const { apiKey, env } = transport
+  const env = { ...transport.env }
+  takeProviderKeys(env)
+  const { apiKeys } = transport
+  const passKeys = apiKeys !== undefined && Object.values(apiKeys).some(Boolean)
   // Only what the user should see, unless asked for more: the server's warnings and errors.
   const level = `${brand.envPrefix}ACP_LOG`
   const child = Bun.spawn([...transport.command], {
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...env, OPENAI_API_KEY: undefined, [level]: env[level] ?? "warn", ...(apiKey && { [`${brand.envPrefix}ACP_KEY_IPC`]: "1" }) },
-    ...(apiKey && { ipc() {} }),
+    env: { ...env, [level]: env[level] ?? "warn", ...(passKeys && { [`${brand.envPrefix}ACP_KEY_IPC`]: "1" }) },
+    ...(passKeys && { ipc() {} }),
     // Its own process group: Ctrl-C at the terminal is the client's to handle (a cancel, not a shutdown).
     detached: true,
   })
-  if (apiKey) child.send(apiKey)
+  if (passKeys) child.send(apiKeys)
   // The client may leave while the server still shuts down; that is the server's own business by then.
   child.unref()
   const tail: string[] = []

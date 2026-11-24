@@ -1,5 +1,6 @@
+import { providerDescriptor } from "../../src/provider/registry.ts"
 import { describe, expect, test } from "bun:test"
-import { MissingBlobError, blobRefs, encodeRequest } from "../../src/provider/openai-responses-encode.ts"
+import { MissingBlobError, blobRefs, encodeRequest } from "../../src/provider/wire/responses/encode.ts"
 import type { StreamEvent } from "../../src/provider/provider.ts"
 import { canonicalJson } from "../../src/request/canonical.ts"
 import type { InputItem, ModelRequest } from "../../src/request/request.ts"
@@ -100,7 +101,7 @@ describe("encodeRequest", () => {
 
   test("API-key reasoning fields follow the requested effort for any model", () => {
     const body = (model: string, reasoningEffort: string | null) =>
-      JSON.parse(encodeRequest({ ...stepTwo(), params: { ...params, model, reasoningEffort } }, new Map(), "openai").body)
+      JSON.parse(encodeRequest({ ...stepTwo(), params: { ...params, model, reasoningEffort } }, new Map(), providerDescriptor("openai")).body)
     const byDefault = body("gpt-6.1-sol", null)
     expect(byDefault).not.toHaveProperty("reasoning")
     expect(byDefault).not.toHaveProperty("include")
