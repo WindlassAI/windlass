@@ -8,7 +8,7 @@ export interface ResponsesWireOptions {
 
 type WireSettings =
   | { readonly wire: "responses"; readonly wireOptions: ResponsesWireOptions }
-  | { readonly wire: "anthropic" | "gemini"; readonly wireOptions?: undefined }
+  | { readonly wire: "anthropic" | "gemini" | "chat"; readonly wireOptions?: undefined }
 export type Wire = WireSettings["wire"]
 
 export type ProviderDescriptor = WireSettings & {

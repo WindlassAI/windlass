@@ -31,6 +31,7 @@ export function responseRequestId(response: Response, descriptor: ProviderDescri
 }
 
 export interface StreamWire {
+  readonly jsonErrorOnSuccess?: boolean
   readonly path: (request: ModelRequest) => string
   readonly httpError: (response: Response, text: string | undefined, requestId: string | null) => ProviderError
   readonly mapper: (requestId: string | null) => {
@@ -78,7 +79,9 @@ export async function* httpStream(
     }
     const response = opened
     const requestId = responseRequestId(response, descriptor, token)
-    if (!response.ok) {
+    const jsonError = wire.jsonErrorOnSuccess && response.status === 200
+      && response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() === "application/json"
+    if (!response.ok || jsonError) {
       const text = await withTimeout(response.text(), controller, idleTimeoutMs)
       if (signal.aborted) return
       yield { type: "error", error: scrub(wire.httpError(response, typeof text === "string" ? text : undefined, requestId)) }
