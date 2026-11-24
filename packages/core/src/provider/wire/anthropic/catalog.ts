@@ -5,7 +5,7 @@ import { httpError } from "./error.ts"
 import { isRecord, stringOr } from "../fields.ts"
 
 interface ModelLimits {
-  contextWindow: number
+  contextWindow: number | null
   maxTokens: number
   thinking: "adaptive" | "enabled"
   efforts: readonly string[] | null
@@ -15,12 +15,12 @@ interface ModelLimits {
 }
 
 const unknown: ModelLimits = {
-  contextWindow: 200_000, maxTokens: 64_000, thinking: "adaptive", efforts: null, defaultEffort: null,
+  contextWindow: null, maxTokens: 64_000, thinking: "adaptive", efforts: null, defaultEffort: null,
   nativeSystem: false, interleaved: false,
 }
 const basic = ["low", "medium", "high"]
 const levels = [...basic, "xhigh", "max"]
-const manual: ModelLimits = { ...unknown, thinking: "enabled", efforts: basic, interleaved: true }
+const manual: ModelLimits = { ...unknown, contextWindow: 200_000, thinking: "enabled", efforts: basic, interleaved: true }
 const adaptive: ModelLimits = {
   ...unknown, contextWindow: 1_000_000, maxTokens: 128_000, thinking: "adaptive",
   efforts: levels, defaultEffort: "high", nativeSystem: true,
