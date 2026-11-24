@@ -6,7 +6,9 @@ export interface ResponsesWireOptions {
   readonly forceReasoning: boolean
 }
 
-type WireSettings = { readonly wire: "responses"; readonly wireOptions: ResponsesWireOptions }
+type WireSettings =
+  | { readonly wire: "responses"; readonly wireOptions: ResponsesWireOptions }
+  | { readonly wire: "anthropic"; readonly wireOptions?: undefined }
 export type Wire = WireSettings["wire"]
 
 export type ProviderDescriptor = WireSettings & {

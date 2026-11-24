@@ -1,10 +1,11 @@
 import { brand } from "../brand.ts"
 import type { CatalogOptions, ModelInfo } from "./catalog.ts"
 import type { ProviderDescriptor } from "./descriptor.ts"
+import { anthropic } from "./providers/anthropic.ts"
 import { chatgpt } from "./providers/chatgpt.ts"
 import { openai } from "./providers/openai.ts"
 
-const providers = [chatgpt, openai] as const satisfies readonly ProviderDescriptor[]
+const providers = [chatgpt, openai, anthropic] as const satisfies readonly ProviderDescriptor[]
 export type ProviderProfile = (typeof providers)[number]["id"]
 export const DEFAULT_PROFILE = chatgpt.id
 export const PROVIDER_ENV = `${brand.envPrefix}PROVIDER`

@@ -3,6 +3,7 @@ import type { Store } from "../../store/store.ts"
 import { canonicalResponsesRequest } from "../../trace/format.ts"
 import type { ResponsesWireOptions, Wire } from "../descriptor.ts"
 import { type OpenAIResponsesOptions, OpenAIResponsesProvider } from "../openai-responses.ts"
+import { anthropicWire } from "./anthropic/index.ts"
 import { traceBlobs } from "./request.ts"
 import { encodeRequest } from "./responses/encode.ts"
 
@@ -12,6 +13,7 @@ function traceResponses(store: Store, request: ModelRequest, options?: Responses
 }
 
 export const wires = {
+  anthropic: anthropicWire,
   responses: {
     createProvider: (options: OpenAIResponsesOptions) => new OpenAIResponsesProvider(options),
     traceEncode: traceResponses,
