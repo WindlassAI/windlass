@@ -524,6 +524,31 @@ describe("the model picker", () => {
     expect(await mounted!.frame()).toContain("a new session with scripted · think-1")
   })
 
+  test("long IDs keep their width and a million-token window reads 1M", async () => {
+    const anthropic = { provider: "anthropic", defaultModel: "claude-sonnet-5-5", models: [
+      { ...choice("claude-sonnet-5-5", ["high"], true), name: "Claude Sonnet 5.5", contextWindow: 1_000_000 },
+      { ...choice("claude-sonnet-4-5-20250929", []), name: "Claude Sonnet 4.5" },
+    ] }
+    const { frame } = await picker([groups[0]!, anthropic])
+    expect(frame).toMatch(/claude-sonnet-5-5 +1M context · default/)
+    expect(frame).toContain("claude-sonnet-4-5-20250929")
+  })
+
+  test("another provider stays reachable after a long list of the session's own", async () => {
+    const many = { ...groups[0]!, models: Array.from({ length: 60 }, (_, n) => choice(`gpt-${n}`, [], n === 0)) }
+    const { frame } = await picker([many, groups[2]!])
+    expect(frame).not.toContain("think-1")
+    for (let page = 0; page < 6; page += 1) keys(mounted!).pressKey("\u001b[6~")
+    await mounted!.settle()
+    expect(await mounted!.frame()).toMatch(/scripted +(› )?think-1/)
+    for (let n = 0; n < 6; n += 1) keys(mounted!).pressKey("\u001b[5~")
+    await keys(mounted!).typeText("scripted")
+    await mounted!.settle()
+    const filtered = await mounted!.frame()
+    expect(filtered).toMatch(/scripted +› think-1/)
+    expect(filtered).not.toContain("gpt-1 ")
+  })
+
   test("a model without efforts asks for none", async () => {
     const { opened } = await picker(groups)
     await keys(mounted!).typeText("plain")

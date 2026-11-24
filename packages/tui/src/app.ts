@@ -1092,6 +1092,8 @@ export class App {
       ],
       items: modelItems(groups, { provider: currentProvider, model: currentModel }),
       filterable: true,
+      maxWidth: 120,
+      wholeLabels: true,
       footer: "Enter choose · Esc cancel",
       cancel: null,
     })
