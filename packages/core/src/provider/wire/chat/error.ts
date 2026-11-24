@@ -14,7 +14,9 @@ export function chatError(
       ? source.code
       : undefined
   const code = stringOr(source.code) ?? stringOr(source.type) ?? embedded?.toString()
-  const message = stringOr(source.message) ?? "chat completion failed"
+  const param = stringOr(source.param)
+  const description = stringOr(source.message) ?? code ?? "chat completion failed"
+  const message = param ? `${description} [param: ${param}]` : description
   const detail = { status: embedded ?? status, code, requestId, retryAfterMs: retry ?? undefined }
   if (detail.status === 402) return makeProviderError("usage_limit", message, detail)
   return classify({ ...detail, message })
@@ -23,8 +25,8 @@ export function chatError(
 export function httpError(response: Response, text: string | undefined, id: string | null) {
   const status = response.ok ? undefined : response.status
   const retry = retryAfterMs(response.headers)
-  const body = parseJson(text ?? "")
-  if (isRecord(body) && isRecord(body.error)) return chatError(body.error, id, status, retry)
-  if (response.ok) return makeProviderError("provider_internal", "expected a chat completion stream", { requestId: id })
-  return chatError(readErrorBody(text ?? response.statusText), id, status, retry)
+  const raw = text ?? response.statusText
+  const body = parseJson(raw) ?? null
+  const error = isRecord(body) && isRecord(body.error) ? body.error : readErrorBody(raw, body)
+  return chatError(error, id, status, retry)
 }

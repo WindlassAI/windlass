@@ -1,6 +1,6 @@
 import type { Json } from "../../../json.ts"
 import { makeProviderError, type ProviderError } from "../../error.ts"
-import type { StreamEvent } from "../../provider.ts"
+import type { FinishReason, StreamEvent } from "../../provider.ts"
 import type { SseEvent } from "../../sse.ts"
 import type { Usage } from "../../usage.ts"
 import { isRecord, parseJson, stringOr } from "../fields.ts"
@@ -126,8 +126,6 @@ export class ChatStreamMapper {
           appendDetails((this.details ??= []), delta.reasoning_details)
           summary ??= delta.reasoning_details.map(detailText).join("")
         }
-      } else if (this.options.reasoningField) {
-        summary = stringOr(delta[this.options.reasoningField])
       }
       if (summary) {
         this.summary += summary
@@ -176,29 +174,36 @@ export class ChatStreamMapper {
     if (!this.reason) return this.fail(makeProviderError("incomplete_stream", "missing chat finish_reason"))
     if (this.reason !== "tool_calls" && this.reason !== "length" && this.reason !== "stop")
       return this.fail(makeProviderError("provider_internal", "unexpected chat finish_reason", { code: this.reason }))
-    if (
-      this.reason === "tool_calls" &&
-      (!this.calls.size || [...this.calls.values()].some((call) => !call.id || !call.name))
-    )
-      return this.fail(makeProviderError("provider_internal", "missing chat tool call identity"))
+    let reason: FinishReason = this.reason
+    const calls = [...this.calls.values()]
+    if (reason === "tool_calls") {
+      if (!calls.length || calls.some((call) => !call.id || !call.name))
+        return this.fail(makeProviderError("provider_internal", "missing chat tool call identity"))
+    } else if (calls.length && calls.every((call) => call.id && call.name && parseJson(call.input) !== undefined)) {
+      reason = "tool_calls"
+    }
     const events = this.takeUsage()
     if (this.summary || this.details) {
       const data: Record<string, Json> = {
         provider: this.options.provider,
-        family: modelFamily(this.model ?? this.requestedModel),
+        family: modelFamily(this.requestedModel),
       }
       if (this.details) data.reasoning_details = this.details
-      if (this.options.reasoningField) data[this.options.reasoningField] = this.summary
       events.push({ type: "reasoning.end", text: this.summary, providerData: data })
     }
     if (this.text) events.push({ type: "text.end", text: this.text, providerData: null })
-    if (this.reason === "tool_calls") {
+    if (reason === "tool_calls") {
       for (const [, call] of [...this.calls].sort(([a], [b]) => a - b)) {
         events.push({ type: "tool_call.end", callId: call.id, name: call.name, input: call.input, providerData: null })
       }
     }
     this.done = true
-    const response = { ...(this.model && { model: this.model }), ...(this.id && { requestId: this.id }) }
-    return [...events, { type: "finish", reason: this.reason, ...(Object.keys(response).length > 0 && { response }) }]
+    if (this.model || this.id) {
+      const response: { model?: string; requestId?: string } = {}
+      if (this.model) response.model = this.model
+      if (this.id) response.requestId = this.id
+      return [...events, { type: "finish", reason, response }]
+    }
+    return [...events, { type: "finish", reason }]
   }
 }

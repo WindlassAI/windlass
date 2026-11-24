@@ -15,36 +15,37 @@ const effortFraction: Readonly<Record<string, number>> = {
   medium: 0.5,
   high: 0.8,
   xhigh: 0.95,
-  max: 0.95,
 }
 
-// These generations use thinking budgets. Later adaptive models use effort.
-const budgetModel = /^(?:anthropic\/claude-(?:3\.7|(?:opus|sonnet|haiku)-4(?:\.[015])?(?:$|[-:]))|google\/gemini-2\.5)/
+function normalizeEffort(effort: string): string {
+  return effort === "max" ? "xhigh" : effort
+}
 
-function reasoning(model: string, effort: string, limit?: number): Json | undefined {
+function reasoning(effort: string, supportsBudget: boolean, limit?: number): Json {
   if (effort === "none" || effort === "off") return { enabled: false }
   if (effort === "enabled" || effort === "on") return { enabled: true }
+  effort = normalizeEffort(effort)
+  if (!supportsBudget) return { effort }
+  if (limit === undefined) return { enabled: true }
   if (!Object.hasOwn(effortFraction, effort)) throw new Error("unknown OpenRouter reasoning effort")
-  if (!budgetModel.test(model)) return { effort }
-  // Offline traces have no catalog snapshot from which to reconstruct this budget.
-  if (limit === undefined) return undefined
   if (limit <= 1024) throw new Error("reasoning needs an output limit above 1024 tokens")
   const budget = Math.floor(limit * effortFraction[effort]!)
   return { max_tokens: Math.min(limit - 1, Math.max(1024, budget)) }
 }
 
-export const openRouterOptions = {
-  provider: "openrouter",
-  openRouterReasoning: reasoning,
-} satisfies ChatWireOptions
-
-export const fallbackOutputTokens = 65_536
-
 interface RouterModel extends ModelInfo {
-  readonly maxTokens: number
-  readonly supportedParameters: string[]
+  readonly maxTokens?: number
+  readonly supportsBudget: boolean
   readonly inputModalities: string[]
-  readonly pricing?: Readonly<Record<string, string>>
+}
+
+export function openRouterOptions(model?: RouterModel): ChatWireOptions {
+  return {
+    provider: "openrouter",
+    maxTokens: model?.maxTokens,
+    images: model?.inputModalities.includes("image"),
+    openRouterReasoning: (effort) => reasoning(effort, model?.supportsBudget ?? false, model?.maxTokens),
+  }
 }
 
 function strings(value: unknown): string[] {
@@ -58,10 +59,11 @@ function tokenCount(value: unknown): number | null {
 function reasoningEfforts(parameters: string[], capabilities: Record<string, unknown> | null): string[] {
   if (!capabilities) return parameters.includes("reasoning") ? Object.keys(effortFraction) : []
   let efforts: string[]
-  if (Array.isArray(capabilities.supported_efforts)) efforts = strings(capabilities.supported_efforts)
-  else if (capabilities.supported_efforts === null || capabilities.supports_max_tokens)
+  if (Array.isArray(capabilities.supported_efforts)) {
+    efforts = [...new Set(strings(capabilities.supported_efforts).map(normalizeEffort))]
+  } else if (capabilities.supported_efforts === null || capabilities.supports_max_tokens) {
     efforts = Object.keys(effortFraction)
-  else efforts = ["on"]
+  } else efforts = ["on"]
   if (!capabilities.mandatory && !efforts.includes("none")) efforts.push("none")
   return efforts
 }
@@ -85,12 +87,7 @@ async function listModels(descriptor: ProviderDescriptor, options: CatalogOption
     const capabilities = isRecord(entry.reasoning) ? entry.reasoning : null
     const top = isRecord(entry.top_provider) ? entry.top_provider : null
     const contextWindow = tokenCount(entry.context_length) ?? tokenCount(top?.context_length)
-    const limit = tokenCount(top?.max_completion_tokens) ?? fallbackOutputTokens
-    const pricing = isRecord(entry.pricing)
-      ? Object.fromEntries(
-          Object.entries(entry.pricing).filter((pair): pair is [string, string] => typeof pair[1] === "string"),
-        )
-      : undefined
+    const defaultEffort = stringOr(capabilities?.default_effort)
     models.push({
       slug: entry.id,
       displayName: stringOr(entry.name) ?? entry.id,
@@ -98,12 +95,11 @@ async function listModels(descriptor: ProviderDescriptor, options: CatalogOption
       supportedInApi: true,
       ...(typeof entry.description === "string" && { description: entry.description }),
       contextWindow,
-      maxTokens: Math.min(limit, contextWindow ?? limit),
+      maxTokens: tokenCount(top?.max_completion_tokens) ?? undefined,
       reasoningEfforts: reasoningEfforts(supportedParameters, capabilities),
-      defaultReasoningEffort: stringOr(capabilities?.default_effort),
-      supportedParameters,
+      defaultReasoningEffort: defaultEffort && normalizeEffort(defaultEffort),
+      supportsBudget: capabilities?.supports_max_tokens === true,
       inputModalities: isRecord(entry.architecture) ? strings(entry.architecture.input_modalities) : [],
-      ...(pricing && { pricing }),
     })
   }
   return models

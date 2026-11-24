@@ -1,6 +1,5 @@
 /** Extract a provider error from a JSON error, detail, or message field, with trimmed text as the fallback. */
-export function readErrorBody(text: string): { code: string | null; message: string } {
-  const parsed = parseJson(text)
+export function readErrorBody(text: string, parsed: unknown = parseJson(text)): { code: string | null; message: string } {
   if (isRecord(parsed)) {
     if (isRecord(parsed.error)) {
       const error = parsed.error

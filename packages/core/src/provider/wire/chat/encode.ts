@@ -22,8 +22,6 @@ interface Assistant {
   content: string | null
   tool_calls?: Json[]
   reasoning_details?: Json[]
-  reasoning_content?: string
-  reasoning_text?: string
 }
 
 export function encodeRequest(request: ModelRequest, blobs: BlobBytes, options: ChatWireOptions): EncodedRequest {
@@ -48,7 +46,7 @@ export function encodeRequest(request: ModelRequest, blobs: BlobBytes, options: 
     switch (item.type) {
       case "message": {
         assistant = undefined
-        const role = item.role === "developer" ? (options.developerRole ?? "system") : item.role
+        const role = item.role === "developer" ? "system" : item.role
         const content = item.content.map((part) =>
           part.type === "text" ? { type: "text", text: part.text } : image(part.blob, blobs, options),
         )
@@ -68,8 +66,6 @@ export function encodeRequest(request: ModelRequest, blobs: BlobBytes, options: 
           message.reasoning_details ??= []
           message.reasoning_details.push(...data.reasoning_details)
         }
-        const field = options.reasoningField
-        if (field && typeof data[field] === "string") turn()[field] = data[field]
         break
       }
       case "tool_call": {
@@ -112,9 +108,8 @@ export function encodeRequest(request: ModelRequest, blobs: BlobBytes, options: 
         tool_choice: request.toolChoice,
         parallel_tool_calls: request.params.parallelToolCalls,
       }),
-      [options.tokenLimitField ?? "max_tokens"]: options.maxTokens,
-      reasoning:
-        reasoningEffort === null ? undefined : options.openRouterReasoning?.(model, reasoningEffort, options.maxTokens),
+      max_tokens: options.maxTokens,
+      reasoning: reasoningEffort === null ? undefined : options.openRouterReasoning?.(reasoningEffort),
     }),
     headers: { "content-type": "application/json", accept: "text/event-stream" },
   }

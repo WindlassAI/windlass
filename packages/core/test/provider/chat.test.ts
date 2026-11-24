@@ -12,7 +12,7 @@ import type { FetchFunction } from "../../src/provider/http-stream.ts"
 import type { Store } from "../../src/store/store.ts"
 import { traceHash } from "../../src/trace/format.ts"
 
-const options = openRouterOptions
+const options = openRouterOptions()
 const model = openrouter.defaults.model
 const request: ModelRequest = {
   params: { model, reasoningEffort: null, textVerbosity: null, parallelToolCalls: true, cacheKey: "session" },
@@ -104,19 +104,14 @@ test("chat request shape, role mapping, tools, image parts and parallel result o
       { role: "user", content: [...text("Images from tool call a:"), img] },
     ],
   })
-  const generic = body(
-    { ...req, tools: [] },
-    { provider: "other", developerRole: "developer", maxTokens: 100, tokenLimitField: "max_completion_tokens" },
-  )
-  expect(generic.messages[1].role).toBe("developer")
-  expect(generic.max_completion_tokens).toBe(100)
-  for (const omitted of ["max_tokens", "tools", "tool_choice", "parallel_tool_calls", "reasoning"])
+  const generic = body({ ...req, tools: [] }, { provider: "other", maxTokens: 100 })
+  expect(generic.max_tokens).toBe(100)
+  for (const omitted of ["tools", "tool_choice", "parallel_tool_calls", "reasoning"])
     expect(generic).not.toHaveProperty(omitted)
   expect(() => body(req, { provider: "text-only", images: false })).toThrow("does not accept images")
 
   const trace = wires.chat.traceEncode({ getBlob: () => ({ bytes }) } as unknown as Store, req)
   expect(trace.params).not.toHaveProperty("messages")
-  expect(trace.params).not.toHaveProperty("max_tokens")
   expect(trace.blocks.map((b) => b.kind)).toEqual([
     "tool",
     "system",
@@ -131,16 +126,40 @@ test("chat request shape, role mapping, tools, image parts and parallel result o
   expect(trace.blocks[3]?.elided).toBe(true)
 })
 
-test("neutral effort selects one OpenRouter control and caps the thinking budget below the output limit", () => {
-  const reasoning = (model: string, reasoningEffort: string | null, maxTokens = 128_000) =>
-    body({ ...request, params: { ...request.params, model, reasoningEffort } }, { ...options, maxTokens }).reasoning
-  expect(reasoning(model, null)).toBeUndefined()
-  expect(reasoning(model, "high")).toEqual({ effort: "high" })
-  expect(reasoning(model, "none")).toEqual({ enabled: false })
-  expect(reasoning(model, "on")).toEqual({ enabled: true })
-  expect(reasoning("google/gemini-2.5-pro", "high", 1100)).toEqual({ max_tokens: 1024 })
-  expect(reasoning("anthropic/claude-sonnet-4.5", "medium", 4096)).toEqual({ max_tokens: 2048 })
-  expect(() => reasoning("anthropic/claude-sonnet-4.5", "high", 1024)).toThrow()
+test("offline chat traces omit max_tokens because the catalog is unavailable", () => {
+  const trace = wires.chat.traceEncode({} as Store, request)
+  expect(trace.params).not.toHaveProperty("max_tokens")
+})
+
+test("catalog budget support selects the OpenRouter reasoning control", async () => {
+  const data = [
+    { id: "budget", limit: 4096, budget: true },
+    { id: "small-budget", limit: 1100, budget: true },
+    { id: "too-small", limit: 1024, budget: true },
+    { id: "unknown-limit", budget: true },
+    { id: "google/gemini-2.5-pro", limit: 4096, budget: false },
+  ].map(({ id, limit, budget }) => ({
+    id,
+    supported_parameters: ["tools"],
+    top_provider: { max_completion_tokens: limit },
+    reasoning: { supports_max_tokens: budget },
+  }))
+  const models = await openrouter.catalog.listModels(openrouter, connection(async () => Response.json({ data })))
+  const reasoning = (model: string, reasoningEffort: string | null) =>
+    body(
+      { ...request, params: { ...request.params, model, reasoningEffort } },
+      openRouterOptions(models.find((entry) => entry.slug === model)),
+    ).reasoning
+  expect(reasoning("budget", null)).toBeUndefined()
+  expect(reasoning("budget", "none")).toEqual({ enabled: false })
+  expect(reasoning("budget", "on")).toEqual({ enabled: true })
+  expect(reasoning("budget", "medium")).toEqual({ max_tokens: 2048 })
+  expect(reasoning("small-budget", "high")).toEqual({ max_tokens: 1024 })
+  expect(reasoning("unknown-limit", "high")).toEqual({ enabled: true })
+  expect(() => reasoning("too-small", "high")).toThrow("output limit")
+  expect(() => reasoning("budget", "future")).toThrow("unknown OpenRouter reasoning effort")
+  expect(reasoning("google/gemini-2.5-pro", "future")).toEqual({ effort: "future" })
+  expect(reasoning("google/gemini-2.5-pro", "max")).toEqual({ effort: "xhigh" })
 })
 
 test("finish waits for late usage and [DONE], interleaved calls keep their choice, index and verbatim arguments", () => {
@@ -177,6 +196,15 @@ test("finish waits for late usage and [DONE], interleaved calls keep their choic
     { type: "finish", reason: "tool_calls", response: { requestId: "req" } },
   ])
   expect(mapper.end()).toEqual([])
+})
+
+test.each(["stop", "length"])("%s finishes complete tool calls", (reason) => {
+  const mapper = new ChatStreamMapper(null, model, options)
+  frame(mapper, choice({ tool_calls: [{ index: 0, id: "call", function: { name: "act", arguments: "{}" } }] }, reason))
+  expect(done(mapper)).toEqual([
+    { type: "tool_call.end", callId: "call", name: "act", input: "{}", providerData: null },
+    { type: "finish", reason: "tool_calls" },
+  ])
 })
 
 test("a conflicting tool identity fails before any call is committed", () => {
@@ -228,7 +256,7 @@ test("a recorded compatible endpoint's parallel tool calls and duplicated usage 
   expect(seen.at(-1)).toMatchObject({ type: "finish", reason: "tool_calls" })
 })
 
-test("two recorded turns replay the signed thinking block with the tool call", async () => {
+test("two recorded turns replay signed reasoning when the response names a different model", async () => {
   const first = await fixture("signed-tool-call")
   const second = await fixture("tool-continuation")
   const requests: ReturnType<typeof body>[] = []
@@ -244,9 +272,9 @@ test("two recorded turns replay the signed thinking block with the tool call", a
     return splitStream(requests.length === 1 ? first : second)
   })
   const run = (req: ModelRequest) => Array.fromAsync(client.stream(req, new AbortController().signal))
-  const recordedRequest = { ...request, params: { ...request.params, model: recordedModel } }
-  const one = await run(recordedRequest)
-  const history: InputItem[] = [...recordedRequest.input]
+  const routedRequest = { ...request, params: { ...request.params, model: "openrouter/auto" } }
+  const one = await run(routedRequest)
+  const history: InputItem[] = [...routedRequest.input]
   for (const e of one) {
     if (e.type === "reasoning.end") history.push({ ...e, type: "reasoning" })
     if (e.type === "text.end") history.push({ ...e, type: "assistant_text" })
@@ -264,7 +292,7 @@ test("two recorded turns replay the signed thinking block with the tool call", a
   expect(one.find((e) => e.type === "usage")).toMatchObject({
     usage: { inputTokens: 623, outputTokens: 95, reasoningTokens: 19, cacheWriteTokens: 0 },
   })
-  const two = await run({ ...recordedRequest, input: history })
+  const two = await run({ ...routedRequest, input: history })
   const assistant = requests[1].messages.at(-2)
   const summary = "The user wants to know the weather in Paris. I'll use the get_weather tool."
   const signature = JSON.parse(
@@ -308,32 +336,11 @@ test("opaque blocks replay intact, only for their originating provider and model
   expect(body(req, { ...options, provider: "other" }).messages.at(-1)).not.toHaveProperty("reasoning_details")
 })
 
-test("generic reasoning_content is opt-in on both decode and replay", () => {
-  for (const enabled of [false, true]) {
-    const generic: ChatWireOptions = { provider: "local", ...(enabled && { reasoningField: "reasoning_content" }) }
-    const mapper = new ChatStreamMapper(null, model, generic)
-    const seen = [...frame(mapper, choice({ reasoning_content: "thinking", content: "hi" }, "stop")), ...done(mapper)]
-    const end = seen.find((e) => e.type === "reasoning.end")
-    expect(Boolean(end)).toBe(enabled)
-    if (end) {
-      const req: ModelRequest = {
-        ...request,
-        input: [
-          { ...end, type: "reasoning" },
-          { type: "assistant_text", text: "hi", providerData: null },
-        ],
-      }
-      expect(body(req, generic).messages.at(-1).reasoning_content).toBe("thinking")
-      expect(body(req, { provider: "local" }).messages.at(-1)).not.toHaveProperty("reasoning_content")
-    }
-  }
-})
-
 test("JSON and SSE error envelopes on HTTP 200 override finish and redact credential echoes", async () => {
   using logs = spyOn(console, "log").mockImplementation(() => {})
   using warnings = spyOn(console, "warn").mockImplementation(() => {})
   using errors = spyOn(console, "error").mockImplementation(() => {})
-  const error = { error: { code: 429, message: "rate limited " + key } }
+  const error = { error: { code: 429, message: "rate limited " + key, param: "model" } }
   for (const response of [
     Response.json(error, { headers: { "x-request-id": "id-" + key } }),
     new Response(
@@ -343,7 +350,10 @@ test("JSON and SSE error envelopes on HTTP 200 override finish and redact creden
   ]) {
     const seen = await events(async () => response)
     expect(seen).toHaveLength(1)
-    expect(seen[0]).toMatchObject({ type: "error", error: { kind: "rate_limit", requestId: "id-[REDACTED]" } })
+    expect(seen[0]).toMatchObject({
+      type: "error",
+      error: { kind: "rate_limit", requestId: "id-[REDACTED]", message: "rate limited [REDACTED] [param: model]" },
+    })
     expect(JSON.stringify(seen)).not.toContain(key)
   }
   const failure = await events(async () => {
@@ -367,7 +377,7 @@ test("Responses and Anthropic still parse a 200 JSON body as a stream", async ()
   }
 })
 
-test("catalog filters tools, retains model capabilities and pricing, and gates image requests", async () => {
+test("catalog filters tools, retains model capabilities, and gates image requests", async () => {
   const data = [
     { id: "no-tools", supported_parameters: ["reasoning"] },
     {
@@ -375,9 +385,8 @@ test("catalog filters tools, retains model capabilities and pricing, and gates i
       name: "Sonnet",
       context_length: 200000,
       supported_parameters: ["tools", "reasoning"],
-      pricing: { prompt: "0.000003" },
       architecture: { input_modalities: ["text", "image"] },
-      reasoning: { mandatory: true, supported_efforts: ["low", "high"], default_effort: "low" },
+      reasoning: { mandatory: true, supported_efforts: ["low", "xhigh", "max"], default_effort: "max" },
     },
     { id: "text-only", supported_parameters: ["tools"], architecture: { input_modalities: ["text"] } },
   ]
@@ -391,9 +400,8 @@ test("catalog filters tools, retains model capabilities and pricing, and gates i
   expect(models[0]).toMatchObject({
     displayName: "Sonnet",
     contextWindow: 200000,
-    pricing: { prompt: "0.000003" },
-    reasoningEfforts: ["low", "high"],
-    defaultReasoningEffort: "low",
+    reasoningEfforts: ["low", "xhigh"],
+    defaultReasoningEffort: "xhigh",
   })
   expect(await openrouter.catalog.contextWindow(model, async () => models)).toBe(200000)
 
@@ -416,7 +424,7 @@ test("catalog filters tools, retains model capabilities and pricing, and gates i
   expect(JSON.stringify(failure)).not.toContain(key)
 })
 
-test("stream requests use each model's catalog output limit and bound missing limits by context", async () => {
+test("stream requests omit unknown output limits, retry catalog failures, and send catalog limits unchanged", async () => {
   const data = [
     { id: model, context_length: 1_000_000, top_provider: { max_completion_tokens: 128_000 } },
     { id: openrouter.defaults.titleModel, context_length: 1_000_000, top_provider: { max_completion_tokens: 32_000 } },
@@ -425,12 +433,13 @@ test("stream requests use each model's catalog output limit and bound missing li
     { id: "no-limits" },
     { id: "oversized-output", context_length: 12_000, top_provider: { max_completion_tokens: 16_000 } },
   ].map((entry) => ({ ...entry, supported_parameters: ["tools"] }))
-  const limits: number[] = []
+  const limits: (number | undefined)[] = []
   let catalogReads = 0
   const client = wires.chat.createProvider(
     connection(async (_url, init) => {
       if (init.method === "GET") {
         catalogReads++
+        if (catalogReads === 1) return new Response("unavailable", { status: 503 })
         return Response.json({ data })
       }
       const sent = JSON.parse(String(init.body))
@@ -438,12 +447,12 @@ test("stream requests use each model's catalog output limit and bound missing li
       return splitStream("data: " + JSON.stringify(choice({}, "stop")) + "\n\ndata: [DONE]\n\n")
     }),
   )
-  for (const { id } of data) {
+  for (const { id } of [{ id: model }, ...data]) {
     const req = { ...request, params: { ...request.params, model: id } }
     const seen = await Array.fromAsync(client.stream(req, new AbortController().signal))
     expect(seen.at(-1)).toMatchObject({ type: "finish" })
   }
-  expect(catalogReads).toBe(1)
-  expect(limits).toEqual([128_000, 32_000, 4096, 65_536, 65_536, 12_000])
+  expect(catalogReads).toBe(2)
+  expect(limits).toEqual([undefined, 128_000, 32_000, undefined, undefined, undefined, 16_000])
   expect(openrouter.catalog.validateDefault).toBe(true)
 })

@@ -1,10 +1,7 @@
 import type { ModelRequest } from "../../../request/request.ts"
 import type { Store } from "../../../store/store.ts"
-import { ModelListError } from "../../catalog.ts"
-import { makeProviderError } from "../../error.ts"
-import { describe } from "../../http-stream.ts"
 import type { Provider } from "../../provider.ts"
-import { fallbackOutputTokens, openrouter, openRouterOptions } from "../../providers/openrouter.ts"
+import { openrouter, openRouterOptions } from "../../providers/openrouter.ts"
 import { traceBlobs } from "../request.ts"
 import { streamRequest, type WireProviderOptions } from "../stream.ts"
 import { ChatStreamMapper } from "./decode.ts"
@@ -18,21 +15,9 @@ function createProvider(connection: WireProviderOptions): Provider {
     id: openrouter.ledgerId,
     async *stream(request, signal) {
       if (signal.aborted) return
-      try {
-        catalog ??= await openrouter.catalog.listModels(openrouter, { ...connection, signal })
-      } catch (cause) {
-        if (!signal.aborted) {
-          const error = cause instanceof ModelListError ? cause.error : makeProviderError("transport", describe(cause))
-          yield { type: "error", error }
-        }
-        return
-      }
-      const model = catalog.find((entry) => entry.slug === request.params.model)
-      const options = {
-        ...openRouterOptions,
-        maxTokens: model?.maxTokens ?? fallbackOutputTokens,
-        images: model?.inputModalities.includes("image") ?? false,
-      }
+      catalog ??= await openrouter.catalog.listModels(openrouter, { ...connection, signal }).catch(() => undefined)
+      if (signal.aborted) return
+      const options = openRouterOptions(catalog?.find((entry) => entry.slug === request.params.model))
       const wire = {
         path: () => "/chat/completions",
         httpError,
@@ -54,7 +39,7 @@ function createProvider(connection: WireProviderOptions): Provider {
 export const chatWire = {
   createProvider,
   traceEncode(store: Store, request: ModelRequest) {
-    const encoded = encodeRequest(request, traceBlobs(store, request), openRouterOptions)
+    const encoded = encodeRequest(request, traceBlobs(store, request), openRouterOptions())
     return canonicalChatRequest(JSON.parse(encoded.body))
   },
   traceProvider: "openrouter",
