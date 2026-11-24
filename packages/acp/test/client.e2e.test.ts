@@ -199,8 +199,8 @@ test("an OpenAI key serves the catalog, a shell tool round trip and a resumed se
     await expect(wrong.openSession(session.id, workspace, { replay: false })).rejects.toThrow("This session uses openai")
     await expect(wrong.fork({ sessionId: session.id, model })).rejects.toThrow("This session uses openai")
     const missing = await start("openai", "")
-    await expect(missing.newSession(workspace)).rejects.toMatchObject({ reason: "auth_required", code: "missing_api_key" })
-    await expect(missing.listModels()).rejects.toMatchObject({ reason: "auth_required", code: "missing_api_key" })
+    await expect(missing.newSession(workspace)).rejects.toMatchObject({ reason: "auth_required", code: "missing_api_key", profile: "openai" })
+    await expect(missing.listModels()).rejects.toMatchObject({ reason: "auth_required", code: "missing_api_key", profile: "openai" })
     const byEnv = await start("openai")
     rejectKey = true
     await expect(byEnv.listModels()).rejects.toThrow("Check OPENAI_API_KEY")

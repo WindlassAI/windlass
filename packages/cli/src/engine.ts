@@ -35,7 +35,7 @@
 import type { AgentsResult, CancelCallResult, ClientCommand, CommandsResult, CompactResult, TaskItem } from "@windlass/acp/extensions"
 import type { DiffResult, ForkResult, HooksStateResult, LspStateResult, McpStateResult, MemoryChangeParams, MemoryChangeResult, MemoryStateResult, ReplayParams, ReplayResult, SkillsResult, WakeCreateParams, WakeCreateResult, WakeListResult, WakeSecretResult, WatchSetResult, WatchesResult } from "@windlass/acp/extensions"
 import type { TurnEvent } from "@windlass/acp/turns"
-import { aboutHandedIn, brand } from "@windlass/core"
+import { type ProviderProfile, DEFAULT_PROFILE, aboutHandedIn, brand, providerDescriptor } from "@windlass/core"
 import type { CallId, ChoiceId, EphemeralEvent, HandEditPolicy, MessageId, Question, RevertOptions, RevertPlan, RevertResult, SessionId, StoredEvent } from "@windlass/core"
 import { nearest } from "./text.ts"
 
@@ -79,12 +79,13 @@ export const HAND_IN_SENTENCE = `hand in a new token (the output of \`${brand.bi
 /**
  * A sign-in problem as one sentence with the way forward: `not signed in; run
  * \`windlass login\` ...`. `message` is the engine's own wording (which may repeat
- * the advice, or carry the provider's prefix); `what` says what could not be
- * done, for a command that is not a session (`--models`).
+ * the advice, or carry the provider's prefix).
  */
-export function signInSentence(message: string, what: string | null = null, code?: string | null): string {
-  if (code === "missing_api_key" || code === "invalid_api_key") return message.replace(/^no usable access token: /, "")
-  return `${signInReason(message)}${what === null ? "" : `, so ${what}`}; ${aboutHandedIn(message) ? HAND_IN_SENTENCE : SIGN_IN_ADVICE}`
+export function signInSentence(message: string, profile: ProviderProfile = DEFAULT_PROFILE, listingModels = false): string {
+  const { auth, authMethod } = providerDescriptor(profile)
+  if (auth.kind !== "chatgpt-oauth") return authMethod.requiredText(message.replace(/^no usable access token: /, ""))
+  const what = listingModels ? ", so the models cannot be listed (they come from your ChatGPT plan)" : ""
+  return `${signInReason(message)}${what}; ${aboutHandedIn(message) ? HAND_IN_SENTENCE : SIGN_IN_ADVICE}`
 }
 
 /** The engine's sign-in problem without its advice: `not signed in`, `token request failed (400 invalid_grant): ...`. */

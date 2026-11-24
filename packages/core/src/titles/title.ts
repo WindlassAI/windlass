@@ -2,7 +2,8 @@ import { text } from "../content.ts"
 import type { ModelOffer } from "../engine/engine.ts"
 import type { Projection } from "../message/message.ts"
 import type { ModelRequest } from "../request/request.ts"
-import { type ProviderDescriptor, ledgerProvider, providerDescriptor } from "../provider/registry.ts"
+import type { ProviderDescriptor } from "../provider/descriptor.ts"
+import { ledgerProvider, providerDescriptor } from "../provider/registry.ts"
 
 function titleRank(model: ModelOffer, preferred: string): number {
   if (model.id === preferred) return 0
@@ -26,7 +27,7 @@ export function titleExcerpt(prompt: string): string {
 }
 
 /** No baseline, history, tools, attachments or session cache key belongs to this independent call. */
-export function titleRequest(prompt: string, model: string, defaults: ProviderDescriptor["defaults"]): ModelRequest {
+export function titleRequest(prompt: string, model: string, defaults: Pick<ProviderDescriptor["defaults"], "titleModel" | "titleEffort">): ModelRequest {
   return {
     params: { model, reasoningEffort: model === defaults.titleModel ? defaults.titleEffort : null, textVerbosity: null, parallelToolCalls: false, cacheKey: null },
     instructions: "Name this session from the user's request. Return just a title of a few words, at most 60 characters, on one line without quotes or trailing punctuation.",

@@ -28,8 +28,7 @@ async function start(options: {
   const respond = (request: { tools: readonly unknown[] }) => request.tools.length
     ? [script.text("Turn finished.")]
     : options.answer ?? [script.text(`“${title}!”\nDo not show this line`), script.usage({ inputTokens: 37, outputTokens: 6 })]
-  const provider = new FakeProvider(Array.from({ length: 10 }, () => respond))
-  if (!options.scripted) Object.assign(provider, { id: providerDescriptor().ledgerId })
+  const provider = new FakeProvider(Array.from({ length: 10 }, () => respond), { id: options.scripted ? undefined : providerDescriptor().ledgerId })
   const h = await startHarness({
     provider,
     ...(options.dataDir ? { dataDir: options.dataDir } : {}),

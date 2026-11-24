@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { ACCESS_TOKEN_FILE_ENV } from "../../src/auth/handed-in.ts"
 import { parseConfigFile } from "../../src/config/schema.ts"
-import { MODEL_ALLOWED_ORIGIN_ENV, MODEL_BASE_URL_ENV, modelEndpoint } from "../../src/provider/relay.ts"
+import { MODEL_ALLOWED_ORIGIN_ENV, MODEL_BASE_URL_ENV, modelEndpoint } from "../../src/provider/providers/chatgpt.ts"
 
 const endpoint = (base: string, origin?: string) => modelEndpoint({ [ACCESS_TOKEN_FILE_ENV]: "/synthetic/token", [MODEL_BASE_URL_ENV]: base, [MODEL_ALLOWED_ORIGIN_ENV]: origin }, true)
 

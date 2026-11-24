@@ -395,7 +395,7 @@ class AcpSession implements BackendSession {
 function failure(error: unknown): BackendError {
   if (error instanceof BackendError) return error
   // The reason alone (`not signed in`); the TUI says how to sign in and how to carry on.
-  if (error instanceof ClientError && error.reason === "auth_required") return new BackendError(signInReason(error.message), "auth_required", error.code)
+  if (error instanceof ClientError && error.reason === "auth_required") return new BackendError(signInReason(error.message), "auth_required", error.code, error.profile)
   if (error instanceof ClientError) return new BackendError(error.message, error.reason)
   return new BackendError(error instanceof Error ? error.message : String(error))
 }

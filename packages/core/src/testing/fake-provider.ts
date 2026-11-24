@@ -125,6 +125,7 @@ export interface FakeCall {
 }
 
 export interface FakeProviderOptions {
+  readonly id?: string
   /** Wait this long before every event, so a test can abort in the middle of a stream. Defaults to 0. */
   readonly delayMs?: number
 }
@@ -132,13 +133,14 @@ export interface FakeProviderOptions {
 const TERMINAL: readonly ScriptItem["type"][] = ["finish", "error", "cut", "hang"]
 
 export class FakeProvider implements Provider {
-  readonly id = "fake"
+  readonly id: string
   readonly calls: FakeCall[] = []
   private readonly responses: ScriptedResponse[]
   private readonly delayMs: number
 
   constructor(responses: readonly ScriptedResponse[] = [], options: FakeProviderOptions = {}) {
     for (const response of responses) if (typeof response !== "function") check(response)
+    this.id = options.id ?? "fake"
     this.responses = [...responses]
     this.delayMs = options.delayMs ?? 0
   }

@@ -1,5 +1,5 @@
 /** Command-line arguments. Parsing is pure: it returns a value or a usage error, and never touches the process. */
-import { ACCESS_TOKEN_FILE_ENV, brand, providers, PROVIDER_PROFILES, PROVIDER_ENV, type ProviderProfile } from "@windlass/core"
+import { ACCESS_TOKEN_FILE_ENV, brand, isProviderProfile, providerDescriptor, PROVIDER_PROFILES, PROVIDER_ENV, type ProviderProfile } from "@windlass/core"
 import { ENGINE_KINDS, type EngineKind } from "./select-engine.ts"
 import { nearest } from "./text.ts"
 import { type ForkOptions, type ReplayOptions, parseSubcommand } from "./subcommands.ts"
@@ -134,7 +134,7 @@ export function parseArgs(argv: readonly string[]): Parsed {
     return error(`--${listing === "sessions" ? "list-sessions" : "models"} takes no prompt`)
 
   const provider = values["--provider"]
-  if (provider !== undefined && !PROVIDER_PROFILES.includes(provider)) return error(`--provider must be ${PROVIDER_PROFILES.join(" or ")}`)
+  if (provider !== undefined && !isProviderProfile(provider)) return error(`--provider must be ${PROVIDER_PROFILES.join(" or ")}`)
   const options: Options = {
     ...(provider === undefined ? {} : { provider }),
     prompt: words.length === 0 ? null : words.join(" "),
@@ -201,7 +201,7 @@ ${usageRows(b)}
 Options:
   --session <id>         resume a session by ID, or by the start of one if it is unique
   -c, --continue         resume the most recent session in this directory
-  --provider <name>      ${providers.map(({ id, auth }) => auth.kind === "env-key" ? `${id} (reads ${auth.variable})` : id).join(" or ")}; overrides ${PROVIDER_ENV}
+  --provider <name>      ${PROVIDER_PROFILES.map(providerDescriptor).map(({ id, auth }) => auth.kind === "env-key" ? `${id} (reads ${auth.variable})` : id).join(" or ")}; overrides ${PROVIDER_ENV}
   -m, --model <name>     model to use
   --effort <level>       reasoning effort, e.g. low, medium or high
   --agent <name>         the agent the session runs as: its instructions, what it may do,

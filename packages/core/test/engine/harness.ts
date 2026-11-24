@@ -395,7 +395,7 @@ export interface HarnessOptions {
 }
 
 export class Harness {
-  readonly provider = new FakeProvider()
+  readonly provider: FakeProvider
   readonly clock = new ManualClock()
   readonly tools: ScriptedTools
   readonly checks = new ScriptedChecks()
@@ -425,7 +425,7 @@ export class Harness {
   private alive = false
 
   constructor(private readonly options: HarnessOptions = {}) {
-    if (options.providerId !== undefined) Object.assign(this.provider, { id: options.providerId })
+    this.provider = new FakeProvider([], { id: options.providerId })
     this.tools = options.tools ?? new ScriptedTools()
     this.workspace = options.workspace ?? null
     this.config = options.config === undefined ? null : resolveConfig(options.config)

@@ -110,6 +110,7 @@ import { NO_HOOKS, type HooksConfig } from "../hooks/config.ts"
 import { stopRoundsSent } from "../hooks/decide.ts"
 import { type HookPointContext, type HookRecord, type ToolCallInput, runAfterHooks, runBeforeHooks, runStopHooks } from "../hooks/points.ts"
 import { type HookRunner, createHookRunner } from "../hooks/run.ts"
+import { familyPrompt } from "../instructions/baseline.ts"
 import { type DiscoveryInput, discoverSources } from "../instructions/discover.ts"
 import type { InstructionSource } from "../instructions/source.ts"
 import { type AppendedSource, detectAppendedChanges, instructionState, knownAgentsFiles, prepareInstructions } from "../instructions/state.ts"
@@ -121,7 +122,8 @@ import { selectModelHistory } from "../message/history.ts"
 import { type AssistantMessage, type InboxItem, type Projection, type ToolCallPart, hasSideEffect, watchInForce } from "../message/message.ts"
 import { reduce } from "../message/reducer.ts"
 import { type ProviderError, makeProviderError } from "../provider/error.ts"
-import { type ProviderDescriptor, type ProviderProfile, ledgerProvider, providerDescriptor } from "../provider/registry.ts"
+import type { ProviderDescriptor } from "../provider/descriptor.ts"
+import { type ProviderProfile, ledgerProvider, providerDescriptor } from "../provider/registry.ts"
 import { type FinishReason, type Provider, type ResponseFacts, type StreamEvent } from "../provider/provider.ts"
 import { type Usage, sumUsage } from "../provider/usage.ts"
 import type { CommandSandbox } from "../sandbox/command.ts"
@@ -1363,7 +1365,10 @@ export interface Engine {
 
 // ---------------------------------------------------------------- engine
 
+type TitleDefaults = { readonly titleModel: string; readonly titleEffort: string | null }
+
 interface Core {
+  readonly titleDefaults: TitleDefaults | null
   readonly descriptor?: ProviderDescriptor
   readonly profile?: ProviderProfile
   readonly stores: SessionStores
@@ -1468,7 +1473,9 @@ function modelServices(options: ModelBackend, profile?: ProviderProfile) {
     if (models !== null && (models.length > 0 || descriptor?.catalog.validateDefault)) offered = models
     return offered
   }
+  const defaults = descriptor?.defaults
   return {
+    titleDefaults: defaults?.titleModel ? { titleModel: defaults.titleModel, titleEffort: defaults.titleEffort } : null,
     descriptor,
     provider: options.provider,
     windows: new Map<string, number | null>(),
@@ -2624,26 +2631,25 @@ class LiveSession implements EngineSession {
 
   /** Keep the user's words separately from expanded prompts. Old sessions have no such excerpt. */
   private titleInput(state: Projection, value: string): { titlePrompt?: string } {
-    if (!this.core.descriptor?.defaults.titleModel || this.titleChecked) return {}
+    if (this.core.titleDefaults === null || this.titleChecked) return {}
     if (state.session.title !== null || state.messages.some((message) => message.kind === "user")) return {}
     return { titlePrompt: titleExcerpt(value) }
   }
 
   private startTitle(ready: Projection, arriving: readonly InboxItem[]): void {
-    if (this.titleChecked || !this.core.descriptor?.defaults.titleModel || this.director !== null) return
+    const defaults = this.core.titleDefaults
+    if (this.titleChecked || defaults === null || this.director !== null) return
     const first = ready.messages.find((message) => message.kind === "user")
     if (!first) return
     this.titleChecked = true
     if (ready.session.title !== null || this.config?.config.titles === "off" || !first.titlePrompt?.trim() || this.closing !== null) return
     const controller = new AbortController()
     const firstDelivery = arriving.some((item) => item.messageId === first.id)
-    const done = this.generateTitle(first.id, first.titlePrompt, firstDelivery, controller.signal).catch(() => {})
+    const done = this.generateTitle(defaults, first.id, first.titlePrompt, firstDelivery, controller.signal).catch(() => {})
     this.titleJob = { controller, done }
   }
 
-  private async generateTitle(messageId: MessageId, prompt: string, firstDelivery: boolean, signal: AbortSignal): Promise<void> {
-    const defaults = this.core.descriptor?.defaults
-    if (!defaults?.titleModel) return
+  private async generateTitle(defaults: TitleDefaults, messageId: MessageId, prompt: string, firstDelivery: boolean, signal: AbortSignal): Promise<void> {
     const previous = this.store.lastRequest(this.id, "title")
     if (previous?.outcome === "ok" || (previous?.attempt ?? 0) >= 2) return
     const configured = this.config?.config.titleModel ?? null
@@ -3360,7 +3366,7 @@ class LiveSession implements EngineSession {
       const runsAs = waiting.session.agent ?? null
       const prepared = waiting.session.replay !== undefined ? [] : prepareInstructions(waiting, {
         prompt: this.core.prompt,
-        familyPrompt: this.core.descriptor?.familyPrompt(waiting.session.settings.model),
+        familyPrompt: familyPrompt(waiting.session.settings.model),
         tools: this.offeredTools(waiting),
         sources: [
           ...this.core.discover({

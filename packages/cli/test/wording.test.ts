@@ -87,17 +87,23 @@ describe("a sign-in that cannot be used", () => {
 
   test("saved on this machine: the reason, then how to sign in", () => {
     expect(signInSentence("Not signed in. Run the sign-in first.")).toBe(`not signed in; ${signIn}`)
-    expect(signInSentence("no usable access token: Not signed in. Run the sign-in first.", "the models cannot be listed")).toBe(`not signed in, so the models cannot be listed; ${signIn}`)
+    expect(signInSentence("no usable access token: Not signed in. Run the sign-in first.", "chatgpt", true)).toBe(`not signed in, so the models cannot be listed (they come from your ChatGPT plan); ${signIn}`)
     expect(signInSentence(FAILURE_TEXT.signedOut)).toEndWith(`; ${signIn}`)
+  })
+
+  test("API-key advice follows the profile for both sessions and model listings", () => {
+    const message = "Check OPENAI_API_KEY and try again."
+    expect(signInSentence(message, "openai")).toBe(message)
+    expect(signInSentence(`no usable access token: ${message}`, "openai", true)).toBe(message)
   })
 
   test("handed in from outside: the reason with the variable, then to hand in a new token, and never to sign in here", () => {
     const missing = `The file ${ACCESS_TOKEN_FILE_ENV} names does not exist (/run/handed-in/token). ${HAND_IN_ADVICE}`
     expect(signInReason(missing)).toBe(`the file ${ACCESS_TOKEN_FILE_ENV} names does not exist (/run/handed-in/token)`)
     expect(signInSentence(missing)).toBe(`the file ${ACCESS_TOKEN_FILE_ENV} names does not exist (/run/handed-in/token); ${handIn}`)
-    expect(signInSentence(`no usable access token: ${missing}`, "the models cannot be listed")).toBe(`the file ${ACCESS_TOKEN_FILE_ENV} names does not exist (/run/handed-in/token), so the models cannot be listed; ${handIn}`)
+    expect(signInSentence(`no usable access token: ${missing}`, "chatgpt", true)).toBe(`the file ${ACCESS_TOKEN_FILE_ENV} names does not exist (/run/handed-in/token), so the models cannot be listed (they come from your ChatGPT plan); ${handIn}`)
     // A token the provider turned down: when the models are listed, and in the middle of a turn.
-    expect(signInSentence(handedInRejected("HTTP 401: Unauthorized"), "the models cannot be listed")).toBe(`the access token handed in through ${ACCESS_TOKEN_FILE_ENV} was rejected (HTTP 401: Unauthorized), so the models cannot be listed; ${handIn}`)
+    expect(signInSentence(handedInRejected("HTTP 401: Unauthorized"), "chatgpt", true)).toBe(`the access token handed in through ${ACCESS_TOKEN_FILE_ENV} was rejected (HTTP 401: Unauthorized), so the models cannot be listed (they come from your ChatGPT plan); ${handIn}`)
     expect(signInSentence(FAILURE_TEXT.handedInRejected)).toBe(`signed out: the access token handed in through ${ACCESS_TOKEN_FILE_ENV} was rejected or cannot be used; ${handIn}`)
     for (const message of [missing, handedInRejected("HTTP 401: Unauthorized"), FAILURE_TEXT.handedInRejected]) expect(signInSentence(message)).not.toContain(signIn)
   })

@@ -8,7 +8,8 @@
  * byte for byte from then on, so changing one here never changes a stored
  * session.
  */
-import { type ProviderProfile, handedInFailure, providerDescriptor, signedOut } from "../provider/registry.ts"
+import { handedInFailure, signedOut } from "../provider/providers/chatgpt.ts"
+import { type ProviderProfile, providerDescriptor } from "../provider/registry.ts"
 import { type SummaryProblem, describeProblem, summaryPrompt } from "../context/summary.ts"
 import type { ProviderError } from "../provider/error.ts"
 

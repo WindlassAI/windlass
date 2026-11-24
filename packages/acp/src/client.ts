@@ -36,7 +36,7 @@ import {
 } from "@agentclientprotocol/sdk"
 import { readFileSync } from "node:fs"
 import type { EphemeralEvent, HarnessOptions, Need, RevertPlan, RevertResult, RunDecision, StoredEvent } from "@windlass/core"
-import { type ProviderKeys, takeProviderKeys, brand } from "@windlass/core"
+import { type ProviderKeys, type ProviderProfile, isProviderProfile, takeProviderKeys, brand } from "@windlass/core"
 import {
   type AgentsResult,
   APPROVAL_META,
@@ -194,6 +194,7 @@ export class ClientError extends Error {
     readonly holderPid: number | null = null,
     /** The code of what failed, when the server gave one (`ErrorData.code`): a sign-in's (`handed_in_expired`, `signed_out`, ...) or a provider error's. */
     readonly code: string | null = null,
+    readonly profile?: ProviderProfile,
   ) {
     super(message)
     this.name = "ClientError"
@@ -503,12 +504,13 @@ export class HarnessConnection {
     if (this.lostReason !== null) return new ClientError(`the engine process ${this.lostReason.how}`, "closed")
     if (this.stopping !== null) return new ClientError("the connection to the engine was closed", "closed")
     const data = errorData(error)
+    const profile = isProviderProfile(data?.methodId) ? data.methodId : undefined
     const holder = typeof data?.holderPid === "number" ? data.holderPid : null
     // ACP's own "resource not found" carries no reason of the harness's.
     const reason = typeof data?.reason === "string" ? data.reason : (error as { code?: unknown } | null)?.code === -32002 ? "session_not_found" : null
     const code = typeof data?.code === "string" ? data.code : null
-    if (typeof data?.message === "string") return new ClientError(data.message, reason, holder, code)
-    return new ClientError(describe(error), reason, holder, code)
+    const message = typeof data?.message === "string" ? data.message : describe(error)
+    return new ClientError(message, reason, holder, code, profile)
   }
 
   forget(sessionId: string): void {
@@ -1238,13 +1240,13 @@ function labelOf(value: unknown): string | null {
   return null
 }
 
-/** `data[<ns>]` of a protocol error, or `null`. */
-function errorData(error: unknown): { reason?: unknown; message?: unknown; holderPid?: unknown; code?: unknown } | null {
+/** Harness error data and the ACP auth method that failed, if present. */
+function errorData(error: unknown): { reason?: unknown; message?: unknown; holderPid?: unknown; code?: unknown; methodId?: unknown } | null {
   if (typeof error !== "object" || error === null || !("data" in error)) return null
   const data = (error as { data?: unknown }).data
   if (typeof data !== "object" || data === null) return null
   const value = (data as Record<string, unknown>)[NS]
-  return typeof value === "object" && value !== null ? (value as { reason?: unknown; message?: unknown }) : null
+  return typeof value === "object" && value !== null ? { ...value, methodId: (data as Record<string, unknown>).methodId } : null
 }
 
 function parseEventParams(raw: unknown): { sessionId: string; event: HarnessEvent; replay?: boolean } {

@@ -101,7 +101,7 @@ describe("encodeRequest", () => {
 
   test("API-key reasoning fields follow the requested effort for any model", () => {
     const body = (model: string, reasoningEffort: string | null) =>
-      JSON.parse(encodeRequest({ ...stepTwo(), params: { ...params, model, reasoningEffort } }, new Map(), providerDescriptor("openai")).body)
+      JSON.parse(encodeRequest({ ...stepTwo(), params: { ...params, model, reasoningEffort } }, new Map(), providerDescriptor("openai").wireOptions).body)
     const byDefault = body("gpt-6.1-sol", null)
     expect(byDefault).not.toHaveProperty("reasoning")
     expect(byDefault).not.toHaveProperty("include")

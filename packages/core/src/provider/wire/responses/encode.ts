@@ -41,7 +41,8 @@
  *   call had one); `status` is not replayed (accepted live without it).
  */
 import type { BlobRef, Content } from "../../../content.ts"
-import { providerDescriptor } from "../../registry.ts"
+import type { ResponsesWireOptions } from "../../descriptor.ts"
+import { chatgpt } from "../../providers/chatgpt.ts"
 import type { Json } from "../../../json.ts"
 import { canonicalJson } from "../../../request/canonical.ts"
 import type { InputItem, ModelRequest } from "../../../request/request.ts"
@@ -56,10 +57,10 @@ export interface EncodedRequest {
   readonly headers: Readonly<Record<string, string>>
 }
 
-export function encodeRequest(request: ModelRequest, blobs: BlobBytes, descriptor = providerDescriptor()): EncodedRequest {
+export function encodeRequest(request: ModelRequest, blobs: BlobBytes, options: ResponsesWireOptions = chatgpt.wireOptions): EncodedRequest {
   const params = request.params
-  const effort = descriptor.mapEffort(params.model, params.reasoningEffort)
-  const reasoning = descriptor.forceReasoning || effort !== null
+  const effort = params.reasoningEffort
+  const reasoning = options.forceReasoning || effort !== null
   const body: Record<string, Json | undefined> = {
     model: params.model,
     store: false,
@@ -85,7 +86,7 @@ export function encodeRequest(request: ModelRequest, blobs: BlobBytes, descripto
     "content-type": "application/json",
     accept: "text/event-stream",
   }
-  if (descriptor.sessionIdHeader !== null && params.cacheKey !== null) headers[descriptor.sessionIdHeader] = params.cacheKey
+  if (options.sessionIdHeader !== null && params.cacheKey !== null) headers[options.sessionIdHeader] = params.cacheKey
   return { body: canonicalJson(body), headers }
 }
 

@@ -25,6 +25,11 @@ import systemPrompt from "./system-prompt.txt"
  */
 export const BASE_SYSTEM_PROMPT: string = systemPrompt.replace(/\r\n?/g, "\n").trim()
 
+/** Family instructions apply to any provider serving the model. */
+export function familyPrompt(_model: string): string {
+  return ""
+}
+
 export interface BaselineInput {
   /** The base system prompt. Defaults to `BASE_SYSTEM_PROMPT`. */
   readonly prompt?: string

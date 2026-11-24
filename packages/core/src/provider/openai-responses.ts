@@ -9,6 +9,7 @@ import { ResponsesStreamMapper } from "./wire/responses/decode.ts"
 import { blobRefs, encodeRequest } from "./wire/responses/encode.ts"
 import { httpError } from "./wire/responses/error.ts"
 
+export { RESPONSES_BASE_URL } from "./providers/openai.ts"
 export { encodeRequest, blobRefs, MissingBlobError, type EncodedRequest, type BlobBytes } from "./wire/responses/encode.ts"
 export { ResponsesStreamMapper } from "./wire/responses/decode.ts"
 export { classify, readErrorBody, retryAfterMs } from "./wire/responses/error.ts"
@@ -19,7 +20,7 @@ export interface OpenAIResponsesOptions extends Connection {
   readonly idleTimeoutMs?: number
 }
 
-const wire = { path: "/responses", httpError, mapper: (id: string | null) => new ResponsesStreamMapper(id) }
+const wire = { path: () => "/responses", httpError, mapper: (id: string | null) => new ResponsesStreamMapper(id) }
 
 export class OpenAIResponsesProvider implements Provider {
   readonly id: string
@@ -43,11 +44,11 @@ export class OpenAIResponsesProvider implements Provider {
     }
     let encoded
     try {
-      encoded = encodeRequest(request, blobs, this.descriptor)
+      encoded = encodeRequest(request, blobs, this.descriptor.wireOptions)
     } catch (cause) {
       if (!signal.aborted) yield { type: "error", error: makeProviderError("invalid_request", `could not encode the request: ${describe(cause)}`) }
       return
     }
-    yield* httpStream(this.descriptor, this.options, wire, encoded, signal, this.options.idleTimeoutMs)
+    yield* httpStream(this.descriptor, this.options, wire, request, encoded, signal, this.options.idleTimeoutMs)
   }
 }

@@ -1,6 +1,6 @@
 import { type CatalogOptions, type ModelInfo, ModelListError } from "./catalog.ts"
 import { makeProviderError } from "./error.ts"
-import type { ProviderDescriptor } from "./registry.ts"
+import type { ProviderDescriptor } from "./descriptor.ts"
 import { describe, responseRequestId, safeError, send, tokenFailure } from "./http-stream.ts"
 import { httpError, isRecord, stringOr } from "./wire/responses/error.ts"
 

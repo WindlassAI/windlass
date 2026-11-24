@@ -1,7 +1,8 @@
 import { AUTH_UNREACHABLE, AuthError } from "../auth/error.ts"
 import { type ProviderError, makeProviderError } from "./error.ts"
+import type { ModelRequest } from "../request/request.ts"
 import type { StreamEvent } from "./provider.ts"
-import type { ProviderDescriptor } from "./registry.ts"
+import type { ProviderDescriptor } from "./descriptor.ts"
 import { type SseEvent, SseParser } from "./sse.ts"
 
 export type FetchFunction = (input: string, init: RequestInit) => Promise<Response>
@@ -23,12 +24,14 @@ export async function send(descriptor: ProviderDescriptor, connection: Connectio
 }
 
 export function responseRequestId(response: Response, descriptor: ProviderDescriptor, token: string): string | null {
-  const id = response.headers.get(descriptor.endpoint.requestIdHeader)
+  const header = descriptor.endpoint.requestIdHeader
+  if (header === null) return null
+  const id = response.headers.get(header)
   return descriptor.auth.kind === "env-key" ? id?.replaceAll(token, "[REDACTED]") ?? null : id
 }
 
 interface StreamWire {
-  readonly path: string
+  readonly path: (request: ModelRequest) => string
   readonly httpError: (response: Response, text: string | undefined, requestId: string | null) => ProviderError
   readonly mapper: (requestId: string | null) => {
     readonly done: boolean
@@ -43,6 +46,7 @@ export async function* httpStream(
   descriptor: ProviderDescriptor,
   connection: Connection,
   wire: StreamWire,
+  request: ModelRequest,
   encoded: { body: string; headers: Readonly<Record<string, string>> },
   signal: AbortSignal,
   idleTimeoutMs = 300_000,
@@ -62,7 +66,7 @@ export async function* httpStream(
   signal.addEventListener("abort", onAbort, { once: true })
   let reader: { cancel(): Promise<void> } | undefined
   try {
-    const sent = send(descriptor, connection, wire.path, token, { method: "POST", ...encoded, signal: controller.signal })
+    const sent = send(descriptor, connection, wire.path(request), token, { method: "POST", ...encoded, signal: controller.signal })
     const opened = await withTimeout(sent, controller, idleTimeoutMs)
     if (signal.aborted) return
     if (opened instanceof Timeout || opened instanceof Failure) {

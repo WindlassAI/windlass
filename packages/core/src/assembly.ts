@@ -24,9 +24,10 @@ import { EngineError, type Engine, type EngineOptions, type ModelOffer, createEn
 import type { SessionSettings } from "./event/durable.ts"
 import type { ProviderError } from "./provider/error.ts"
 import { type ModelInfo, ModelListError } from "./provider/catalog.ts"
-import { OpenAIResponsesProvider } from "./provider/openai-responses.ts"
+import { chatgptAuth } from "./provider/providers/chatgpt.ts"
+import { wires } from "./provider/wire/index.ts"
 import type { Provider } from "./provider/provider.ts"
-import { DEFAULT_PROFILE, PROVIDER_ENV, PROVIDER_PROFILES, type ProviderKeys, type ProviderProfile, chatgptAuth, ledgerProvider, listModels, providerDescriptor, takeProviderKeys } from "./provider/registry.ts"
+import { DEFAULT_PROFILE, PROVIDER_ENV, PROVIDER_PROFILES, type ProviderKeys, type ProviderProfile, isProviderProfile, ledgerProvider, listModels, providerDescriptor, takeProviderKeys } from "./provider/registry.ts"
 import { type CommandSandbox, createCommandSandbox } from "./sandbox/command.ts"
 import { type SessionDirectory, openSessionDirectory } from "./store/directory.ts"
 import type { AnyTool } from "./tool/tool.ts"
@@ -208,7 +209,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
   const explicit = options.provider === undefined ? options.profile ?? process.env[PROVIDER_ENV] : undefined
   const tokenFile = options.provider === undefined ? chatgptAuth.handedInTokenFile() : null
   const selected = explicit ?? (tokenFile === null && options.provider === undefined ? userProvider() : undefined) ?? DEFAULT_PROFILE
-  if (!PROVIDER_PROFILES.includes(selected)) throw new Error(`${PROVIDER_ENV} must be ${PROVIDER_PROFILES.join(" or ")}`)
+  if (!isProviderProfile(selected)) throw new Error(`${PROVIDER_ENV} must be ${PROVIDER_PROFILES.join(" or ")}`)
   const descriptor = providerDescriptor(selected)
   if (tokenFile !== null && descriptor.auth.kind !== "chatgpt-oauth") throw new Error("a handed-in token requires the chatgpt profile")
   const checkProfile = (saved: ProviderProfile) => {
@@ -294,8 +295,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
         const real = await descriptor.catalog.contextWindow(model, allModels)
         return lowered === null ? real : real === null ? lowered : Math.min(real, lowered)
       }
-      if (descriptor.wire !== "responses") throw new Error(`unsupported provider wire ${descriptor.wire}`)
-      const responses = new OpenAIResponsesProvider({
+      const provider = wires[descriptor.wire].createProvider({
         ...credentials,
         readBlob: (ref) => {
           const blob = sessions.getBlob(ref.hash)
@@ -304,7 +304,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
         },
       })
       return {
-        provider: tokenFile === null ? responses : onHandedInToken(responses),
+        provider: tokenFile === null ? provider : onHandedInToken(provider),
         listModels: (signal?: AbortSignal) => accountModels(signal, profile),
         contextWindow,
         ...(descriptor.auth.kind === "chatgpt-oauth" && { refreshAuth: () => accessToken().then(() => true, () => false) }),

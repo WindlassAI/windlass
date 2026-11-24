@@ -15,7 +15,7 @@
  * within two seconds exits at once, Ctrl-C at the prompt clears it, Ctrl-D on
  * an empty prompt leaves.
  */
-import { aboutHandedIn, brand } from "@windlass/core"
+import { aboutHandedIn, brand, providerDescriptor } from "@windlass/core"
 import { BoxRenderable, type CliRenderer, type KeyEvent, TextRenderable, TextareaRenderable } from "@opentui/core"
 import type { RevertPlan, RevertResult } from "@windlass/core"
 import { type ApprovalAnswer, type ApprovalAsk, type ApprovalInfo, type Backend, BackendError, type BackendSession, type Delivery, type DiffResult, type ModelChoice, type OpenSettings, type OpenTarget, type Question } from "./backend.ts"
@@ -284,7 +284,7 @@ export class App {
       const reason = error instanceof BackendError ? error.reason : null
       this.connection = reason === "auth_required" ? "not signed in" : "failed"
       this.conversation.empty = ""
-      if (error instanceof BackendError && (error.code === "missing_api_key" || error.code === "invalid_api_key")) {
+      if (error instanceof BackendError && reason === "auth_required" && providerDescriptor(error.profile).auth.kind === "env-key") {
         this.connection = "failed"
         this.problem = message
         this.transcript.note([span(message, "error")], "error", "✗")

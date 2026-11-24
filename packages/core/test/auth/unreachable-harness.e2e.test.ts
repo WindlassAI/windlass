@@ -17,7 +17,7 @@ import { brand } from "../../src/brand.ts"
 import { FAILURE_TEXT } from "../../src/engine/constants.ts"
 import type { EngineSession } from "../../src/engine/engine.ts"
 import { ModelListError } from "../../src/provider/catalog.ts"
-import { RESPONSES_BASE_URL } from "../../src/provider/registry.ts"
+import { RESPONSES_BASE_URL } from "../../src/provider/openai-responses.ts"
 import { removeTempDirs, tempDir } from "../sandbox/helpers.ts"
 import { E2E_TIMEOUT_MS, waitFor } from "../../src/testing/wait.ts"
 
