@@ -225,7 +225,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     if (!apiKey) throw new AuthError("missing_api_key", "Set OPENAI_API_KEY to use the openai provider.")
     return apiKey
   }
-  const defaultModelFor = (profile: ProviderProfile) => options.defaultModel ?? (profile === "openai" ? "gpt-5.4" : DEFAULT_MODEL)
+  const defaultModelFor = (_profile: ProviderProfile) => options.defaultModel ?? DEFAULT_MODEL
   const defaults = {
     model: defaultModelFor(selected),
     effort: options.defaultEffort === undefined ? DEFAULT_EFFORT : options.defaultEffort,

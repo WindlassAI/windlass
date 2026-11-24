@@ -236,7 +236,7 @@ describe("OpenAIResponsesProvider over HTTP", () => {
     }
     const options = { profile: "openai" as const, accessToken: async () => TOKEN, fetch }
     const provider = new OpenAIResponsesProvider({ ...options, readBlob: () => new Uint8Array() })
-    const apiRequest = { ...request, params: { ...request.params, model: "gpt-5.4" } }
+    const apiRequest = { ...request, params: { ...request.params, model: "gpt-6.1-sol" } }
     const events = await collect(provider.stream(apiRequest, new AbortController().signal))
     const error = { kind: "usage_limit", retryable: false, requestId: "req_public", message: "HTTP 429: quota exhausted for [REDACTED]" }
     expect(events).toMatchObject([{ type: "error", error }])
