@@ -346,7 +346,7 @@ function toRecord(
     outcome: row.outcome,
     verified: request !== null,
     ...("unverified" in rebuilt ? { unverified_reason: rebuilt.unverified.message } : {}),
-    params_omitted: ["tool_choice"],
+    params_omitted: [traceProvider === "gemini" ? "toolConfig" : "tool_choice"],
   }
   const cacheKey = request?.params.prompt_cache_key
   return {
@@ -370,7 +370,7 @@ function toRecord(
 }
 
 /**
- * `tool_choice` is left out of `params`. The step is rebuilt with `"auto"`,
+ * The tool choice field is left out of `params`. The step is rebuilt with `"auto"`,
  * but the loop may have sent `"none"` (the last call at the step limit); the
  * value is not hashed and not stored, so it cannot be told. It is also not
  * part of the provider's cached prefix (verified live), while prefixlens
@@ -378,7 +378,7 @@ function toRecord(
  * make the compaction call look like a parameter change.
  */
 function withoutToolChoice(params: CanonicalTraceRequest["params"]) {
-  return Object.fromEntries(Object.entries(params).filter(([key]) => key !== "tool_choice"))
+  return Object.fromEntries(Object.entries(params).filter(([key]) => key !== "tool_choice" && key !== "toolConfig"))
 }
 
 /**
