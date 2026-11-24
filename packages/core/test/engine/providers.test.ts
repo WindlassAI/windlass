@@ -3,11 +3,12 @@
  * other one with a usable credential. A new session can name its provider and
  * stays with it.
  */
-import { afterAll, expect, test } from "bun:test"
+import { afterAll, expect, spyOn, test } from "bun:test"
 import { mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createHarness } from "../../src/assembly.ts"
+import * as relay from "../../src/provider/relay.ts"
 import { PROVIDER_ENV, keyVariables } from "../../src/provider/registry.ts"
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), "wl-providers-")))
@@ -62,5 +63,32 @@ test("a new session names its provider and is pinned to it", async () => {
     expect(other.projection().session.provider).toBe("openai")
   } finally {
     await harness.close()
+  }
+})
+
+test("only the selected provider sends its credential to the host relay", async () => {
+  const relayEnv = spyOn(relay, "launchModelRelayEnv").mockReturnValue({ [relay.MODEL_BASE_URL_ENV]: "http://127.0.0.1/tenant/" })
+  const fetch = spyOn(globalThis, "fetch")
+    .mockResolvedValueOnce(Response.json({ data: [] }))
+    .mockResolvedValueOnce(Response.json({ data: [] }))
+  try {
+    const harness = createHarness({ profile: "anthropic", apiKeys: { ANTHROPIC_API_KEY: "relay-placeholder", OPENAI_API_KEY: "other-provider-key" } })
+    try {
+      await harness.listModels()
+      await harness.listModels(undefined, "openai")
+      const requests = fetch.mock.calls.map(([url, init]) => {
+        const headers = new Headers(init?.headers)
+        return [url, headers.get("x-api-key"), headers.get("authorization")]
+      })
+      expect(requests).toEqual([
+        ["http://127.0.0.1/tenant/v1/models", "relay-placeholder", null],
+        ["https://api.openai.com/v1/models", null, "Bearer other-provider-key"],
+      ])
+    } finally {
+      await harness.close()
+    }
+  } finally {
+    fetch.mockRestore()
+    relayEnv.mockRestore()
   }
 })

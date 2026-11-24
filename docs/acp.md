@@ -39,8 +39,9 @@ instead of how to sign in on that machine; `authenticate` reads the file again. 
 `data["windlass"].code` ("Errors" below): `handed_in_expired` and `handed_in_rejected` mean the token is no longer
 good, and the other `handed_in_*` codes that the file was not delivered as it should be.
 
-For a placeholder relay, the host starts `windlass acp` with `WINDLASS_MODEL_BASE_URL` and
-`WINDLASS_ACCESS_TOKEN_FILE`. A remote relay also needs `WINDLASS_MODEL_ALLOWED_ORIGIN`.
+For a placeholder relay, the host sets `WINDLASS_MODEL_BASE_URL` and supplies the placeholder through
+the selected provider’s API-key variable or, for ChatGPT, `WINDLASS_ACCESS_TOKEN_FILE`. Only the
+selected provider uses that relay. A relay outside loopback also needs `WINDLASS_MODEL_ALLOWED_ORIGIN`.
 See [the token handoff and relay setup](user-guide.md#signing-in).
 
 Sessions are stored one file each, and a process holds only the sessions it is working in. While `windlass acp` runs, an

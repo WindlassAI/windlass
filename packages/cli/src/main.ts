@@ -15,7 +15,7 @@
 import { appendFileSync, statSync } from "node:fs"
 import { resolve } from "node:path"
 import type { CommandsResult } from "@windlass/acp/extensions"
-import { type ProviderKeys, takeProviderKeys, type CallId, type MessageId, PROVIDER_ENV, brand, versionLine, versionString } from "@windlass/core"
+import { type ProviderKeys, launchModelRelayEnv, takeProviderKeys, type CallId, type MessageId, PROVIDER_ENV, brand, versionLine, versionString } from "@windlass/core"
 import { agentLines, compactText, taskLines, tasksProgress } from "./agents.ts"
 import { helpText, type Options, parseArgs } from "./args.ts"
 import { revertable } from "./commands.ts"
@@ -1132,7 +1132,14 @@ export async function main(): Promise<number> {
   })
   process.stderr.on("error", () => {})
   const apiKeys = takeProviderKeys(process.env)
-  const env = { ...process.env }
+  let relayEnv
+  try {
+    relayEnv = launchModelRelayEnv()
+  } catch (error) {
+    process.stderr.write(`${brand.binary}: ${error instanceof Error ? error.message : String(error)}\n`)
+    return EXIT.usage
+  }
+  const env = { ...process.env, ...relayEnv }
   return run({
     argv: process.argv.slice(2),
     apiKeys,
