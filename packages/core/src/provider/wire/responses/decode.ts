@@ -22,7 +22,8 @@
  */
 import type { Json } from "../../../json.ts"
 import { type ProviderError, makeProviderError } from "../../error.ts"
-import { classify, isRecord, stringOr } from "./error.ts"
+import { isRecord, parseJson, stringOr } from "../fields.ts"
+import { classify } from "./error.ts"
 import type { ResponseFacts, StreamEvent } from "../../provider.ts"
 import type { SseEvent } from "../../sse.ts"
 import type { Usage } from "../../usage.ts"
@@ -58,7 +59,7 @@ export class ResponsesStreamMapper {
   /** Maps one SSE frame. A frame that is not a JSON object with a `type` fails the call. */
   frame(frame: SseEvent): StreamEvent[] {
     if (this.terminated) return []
-    const parsed = parse(frame.data)
+    const parsed = parseJson(frame.data)
     if (!isRecord(parsed) || typeof parsed.type !== "string")
       return this.fail(
         makeProviderError("provider_internal", `unparseable stream frame: ${clip(frame.data)}`),
@@ -285,14 +286,6 @@ export class ResponsesStreamMapper {
     return [{ type: "usage", usage }]
   }
 
-}
-
-function parse(data: string): unknown {
-  try {
-    return JSON.parse(data)
-  } catch {
-    return undefined
-  }
 }
 
 function integerOr(value: unknown): number {

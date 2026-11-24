@@ -298,12 +298,12 @@ function leadingRun(before: readonly TraceBlock[], after: readonly TraceBlock[])
 }
 
 /** The hash is over the content as sent; the content written is the one with binary data elided. */
-function block(kind: TraceBlockKind, content: Json, key: string | undefined): TraceBlock {
+export function block(kind: TraceBlockKind, content: Json, key: string | undefined): TraceBlock {
   const written = elideBinary(content)
   return { kind, ...(key === undefined ? {} : { key }), hash: traceHash(content), content: written.content, ...(written.elided ? { elided: true } : {}) }
 }
 
-function normalizeItem(item: Json): Json {
+export function normalizeItem(item: Json): Json {
   const stripped = withoutCacheControl(item)
   if (!isObject(stripped)) return stripped
   if (Array.isArray(stripped.content)) return { ...stripped, content: stripped.content.map(withoutCacheControl) }
@@ -317,7 +317,7 @@ function withoutCacheControl(value: Json): Json {
   return Object.fromEntries(Object.entries(value).filter(([key]) => key !== "cache_control"))
 }
 
-function toolName(tool: Json): string | undefined {
+export function toolName(tool: Json): string | undefined {
   if (!isObject(tool)) return undefined
   if (typeof tool.name === "string") return tool.name
   const inner = tool.function
@@ -325,16 +325,16 @@ function toolName(tool: Json): string | undefined {
   return typeof tool.type === "string" ? tool.type : undefined
 }
 
-function field(value: Json, key: string): string | undefined {
+export function field(value: Json, key: string): string | undefined {
   if (!isObject(value)) return undefined
   const found = value[key]
   return typeof found === "string" ? found : undefined
 }
 
-function list(value: Json | undefined): readonly Json[] {
+export function list(value: Json | undefined): readonly Json[] {
   return Array.isArray(value) ? value : []
 }
 
-function isObject(value: Json | undefined): value is { readonly [key: string]: Json } {
+export function isObject(value: Json | undefined): value is { readonly [key: string]: Json } {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }

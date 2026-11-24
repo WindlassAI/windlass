@@ -46,16 +46,7 @@ import { chatgpt } from "../../providers/chatgpt.ts"
 import type { Json } from "../../../json.ts"
 import { canonicalJson } from "../../../request/canonical.ts"
 import type { InputItem, ModelRequest } from "../../../request/request.ts"
-
-/** Bytes of the blobs a request refers to, by hash. */
-export type BlobBytes = ReadonlyMap<string, Uint8Array>
-
-export interface EncodedRequest {
-  /** The JSON body, in canonical key order. */
-  readonly body: string
-  /** Request headers other than `Authorization`, in a fixed order. */
-  readonly headers: Readonly<Record<string, string>>
-}
+import { type BlobBytes, type EncodedRequest, MissingBlobError } from "../request.ts"
 
 export function encodeRequest(request: ModelRequest, blobs: BlobBytes, options: ResponsesWireOptions = chatgpt.wireOptions): EncodedRequest {
   const params = request.params
@@ -88,17 +79,6 @@ export function encodeRequest(request: ModelRequest, blobs: BlobBytes, options: 
   }
   if (options.sessionIdHeader !== null && params.cacheKey !== null) headers[options.sessionIdHeader] = params.cacheKey
   return { body: canonicalJson(body), headers }
-}
-
-/** Every blob a request refers to, in first-use order, without duplicates. */
-export function blobRefs(request: ModelRequest): BlobRef[] {
-  const refs = request.input.flatMap((item): readonly BlobRef[] => {
-    if (item.type === "message") return item.content.flatMap((part) => (part.type === "media" ? [part.blob] : []))
-    if (item.type === "tool_result") return item.attachments
-    return []
-  })
-  const seen = new Set<string>()
-  return refs.filter((ref) => !seen.has(ref.hash) && seen.add(ref.hash))
 }
 
 function encodeItem(item: InputItem, blobs: BlobBytes): Json[] {
@@ -171,12 +151,6 @@ function encodeMedia(blob: BlobRef, blobs: BlobBytes): Json {
   const url = `data:${blob.mediaType};base64,${Buffer.from(bytes).toString("base64")}`
   if (blob.mediaType.startsWith("image/")) return { type: "input_image", image_url: url, detail: "auto" }
   return { type: "input_file", filename: `${blob.hash.slice(0, 16)}${extension(blob.mediaType)}`, file_data: url }
-}
-
-export class MissingBlobError extends Error {
-  constructor(readonly blob: BlobRef) {
-    super(`blob ${blob.hash} (${blob.mediaType}) is not available`)
-  }
 }
 
 function extension(mediaType: string) {

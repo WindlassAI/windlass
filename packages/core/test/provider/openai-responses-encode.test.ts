@@ -1,6 +1,7 @@
 import { providerDescriptor } from "../../src/provider/registry.ts"
 import { describe, expect, test } from "bun:test"
-import { MissingBlobError, blobRefs, encodeRequest } from "../../src/provider/wire/responses/encode.ts"
+import { MissingBlobError, blobRefs } from "../../src/provider/wire/request.ts"
+import { encodeRequest } from "../../src/provider/wire/responses/encode.ts"
 import type { StreamEvent } from "../../src/provider/provider.ts"
 import { canonicalJson } from "../../src/request/canonical.ts"
 import type { InputItem, ModelRequest } from "../../src/request/request.ts"

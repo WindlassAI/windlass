@@ -30,7 +30,7 @@ export function responseRequestId(response: Response, descriptor: ProviderDescri
   return descriptor.auth.kind === "env-key" ? id?.replaceAll(token, "[REDACTED]") ?? null : id
 }
 
-interface StreamWire {
+export interface StreamWire {
   readonly path: (request: ModelRequest) => string
   readonly httpError: (response: Response, text: string | undefined, requestId: string | null) => ProviderError
   readonly mapper: (requestId: string | null) => {

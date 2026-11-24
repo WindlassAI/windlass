@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import { classify, readErrorBody, retryAfterMs } from "../../src/provider/wire/responses/error.ts"
+import { readErrorBody, retryAfterMs } from "../../src/provider/wire/fields.ts"
+import { classify } from "../../src/provider/wire/responses/error.ts"
 import { FIXTURES } from "./responses-helpers.ts"
 
 const kindOf = (detail: Parameters<typeof classify>[0]) => classify(detail).kind

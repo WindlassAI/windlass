@@ -1,8 +1,8 @@
-import { type CatalogOptions, type ModelInfo, ModelListError } from "./catalog.ts"
+import { catalogToken, modelPage, type CatalogOptions, type ModelInfo, ModelListError } from "./catalog.ts"
 import { makeProviderError } from "./error.ts"
 import type { ProviderDescriptor } from "./descriptor.ts"
-import { describe, responseRequestId, safeError, send, tokenFailure } from "./http-stream.ts"
-import { httpError, isRecord, stringOr } from "./wire/responses/error.ts"
+import { httpError } from "./wire/responses/error.ts"
+import { isRecord, stringOr } from "./wire/fields.ts"
 
 /** The public catalog lacks windows. Use the ChatGPT catalog windows for known families. */
 export function apiContextWindow(model: string): number {
@@ -46,36 +46,9 @@ function planModels(parsed: unknown, status: number, listedOnly?: boolean): Mode
 
 function openaiCatalog(parse: typeof planModels) {
   return async (descriptor: ProviderDescriptor, options: CatalogOptions): Promise<ModelInfo[]> => {
-    let token: string
-    try {
-      token = await options.accessToken()
-    } catch (cause) {
-      throw new ModelListError(tokenFailure(cause))
-    }
-    let response: Response
-    let text: string
-    try {
-      response = await send(descriptor, options, "/models", token, {
-        method: "GET",
-        headers: { accept: "application/json" },
-        signal: options.signal,
-      })
-      text = await response.text()
-    } catch (cause) {
-      const error = makeProviderError("transport", `the model list request failed: ${describe(cause)}`)
-      throw new ModelListError(safeError(error, descriptor.auth, token))
-    }
-    if (!response.ok) {
-      const error = httpError(response, text, responseRequestId(response, descriptor, token))
-      throw new ModelListError(safeError(error, descriptor.auth, token))
-    }
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(text)
-    } catch {
-      parsed = undefined
-    }
-    return parse(parsed, response.status, options.listedOnly)
+    const token = await catalogToken(options)
+    const { parsed, status } = await modelPage(descriptor, options, "/models", token, httpError)
+    return parse(parsed, status, options.listedOnly)
   }
 }
 
