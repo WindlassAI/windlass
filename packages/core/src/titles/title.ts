@@ -45,8 +45,10 @@ export function storedTitleRequest(state: Projection, messageId: string, model: 
   return titleRequest(first.titlePrompt, model, descriptor.defaults)
 }
 
+/** One plain line: markdown marks and a leading "Title:" label dropped. */
 export function cleanTitle(answer: string): string {
   const line = answer.trim().split(/[\r\n\u2028\u2029]/u, 1)[0]!
-    .replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/gu, " ").replace(/^[\s"'`\p{Pi}\p{Pf}]+/u, "")
+    .replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/[*_~`#>]+/gu, " ").replace(/\s+/gu, " ")
+    .replace(/^[\s"'\p{Pi}\p{Pf}]+/u, "").replace(/^(?:session )?title\s*:\s*/iu, "").replace(/^[\s"'\p{Pi}\p{Pf}]+/u, "")
   return Array.from(line).slice(0, 60).join("").replace(/[\p{P}\s`]+$/gu, "")
 }

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { AUTH_UNREACHABLE, AuthError } from "../../src/auth/error.ts"
 import { ModelListError } from "../../src/provider/catalog.ts"
-import { listModels } from "../../src/provider/registry.ts"
+import { listModels, providerDescriptor } from "../../src/provider/registry.ts"
 import { OpenAIResponsesProvider } from "../../src/provider/openai-responses.ts"
 import { encodeRequest } from "../../src/provider/wire/responses/encode.ts"
 import type { StreamEvent } from "../../src/provider/provider.ts"
@@ -492,14 +492,24 @@ function modelsRoute(incoming: Request, scenario: string) {
 }
 
 describe("listModels", () => {
-  test("the public catalog offers text models with usable context windows", async () => {
-    const ids = ["gpt-6.1-sol", "text-embedding-3-small", "gpt-6-luna", "gpt-audio", "gpt-realtime", "gpt-4o-mini-transcribe",
-      "gpt-4o-mini-tts", "gpt-image-1", "omni-moderation-latest", "o3", "gpt-future", "whisper-1", "dall-e-3"]
-    const models = await listModels({ profile: "openai", accessToken: async () => TOKEN,
-      fetch: async () => Response.json({ data: ids.map((id) => ({ id })) }) })
+  test("the public catalog offers chat models, newest first, with the known windows and efforts", async () => {
+    const ids = ["gpt-5-mini-2025-08-07", "gpt-6.1-sol", "text-embedding-3-small", "gpt-5-mini", "gpt-audio", "gpt-realtime", "gpt-4o-mini-transcribe",
+      "gpt-4o-mini-tts", "gpt-image-1", "omni-moderation-latest", "o3", "gpt-future", "whisper-1", "dall-e-3", "gpt-6.1-sol-healthcare",
+      "gpt-live-1", "gpt-5.4-2026-03-05", "gpt-6-luna", "gpt-4o-2024-08-06"]
+    const options = { profile: "openai" as const, accessToken: async () => TOKEN, fetch: async () => Response.json({ data: ids.map((id) => ({ id })) }) }
+    const models = await listModels(options)
     expect(models.map(({ slug, contextWindow }) => [slug, contextWindow])).toEqual([
-      ["gpt-6.1-sol", 500_000], ["gpt-6-luna", 272_000], ["o3", 32_768], ["gpt-future", 32_768],
+      ["gpt-6.1-sol", 922_000], ["gpt-6-luna", 922_000], ["gpt-5.4-2026-03-05", 1_050_000], ["gpt-5-mini", 272_000],
+      ["gpt-4o-2024-08-06", 128_000], ["gpt-future", null], ["o3", 200_000],
     ])
+    expect(models[0]).toMatchObject({ reasoningEfforts: ["low", "medium", "high", "xhigh", "max"], defaultReasoningEffort: "medium" })
+    expect(models.find((model) => model.slug === "o3")?.reasoningEfforts).toEqual(["low", "medium", "high"])
+    expect(models.find((model) => model.slug === "gpt-future")).toMatchObject({ reasoningEfforts: [], defaultReasoningEffort: null })
+    const all = await listModels({ ...options, listedOnly: false })
+    expect(all.filter((model) => model.visibility === "hide").map((model) => model.slug)).toEqual(["gpt-6.1-sol-healthcare", "gpt-5-mini-2025-08-07"])
+    const descriptor = providerDescriptor("openai")
+    expect(await descriptor.catalog.contextWindow("gpt-5-mini-2025-08-07", async () => all)).toBe(272_000)
+    expect(await descriptor.catalog.contextWindow("gpt-future", async () => all)).toBeNull()
   })
 
   test("returns listed models in server order", async () => {

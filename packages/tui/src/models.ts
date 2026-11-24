@@ -15,13 +15,18 @@ export function providerGroups(listing: ModelListing): readonly ProviderChoice[]
   return listing.providers ?? [listing]
 }
 
+/** `400k`, `1M`: a window of a million or more in millions, rounded down to a tenth. */
+function tokens(count: number): string {
+  return count >= 1_000_000 ? `${Math.floor(count / 100_000) / 10}M` : `${Math.round(count / 1000)}k`
+}
+
 export function modelItems(groups: readonly ProviderChoice[], current: { readonly provider: string | null; readonly model: string | null }): DialogItem[] {
   const grouped = groups.length > 1
   return groups.flatMap((group) =>
     group.models.map((model) => ({
       id: `${group.provider}${SEPARATOR}${model.id}`,
       label: model.id,
-      detail: [model.name === model.id ? null : model.name, model.contextWindow === null ? null : `${Math.round(model.contextWindow / 1000)}k context`, model.isDefault ? "default" : null].filter((part) => part !== null).join(" · "),
+      detail: [model.contextWindow === null ? null : `${tokens(model.contextWindow)} context`, model.isDefault ? "default" : null, model.name === model.id ? null : model.name].filter((part) => part !== null).join(" · "),
       current: model.id === current.model && (current.provider === null || group.provider === current.provider),
       ...(grouped && { group: group.provider }),
     })),

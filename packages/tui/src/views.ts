@@ -309,6 +309,8 @@ export interface DialogSpec {
   readonly cancel: string | null
   /** The widest the dialog may be, in columns (default 76): a listing whose rows carry IDs and paths. */
   readonly maxWidth?: number
+  /** The labels are what is compared (model IDs): they are never shortened, and a detail that does not fit is cut. */
+  readonly wholeLabels?: boolean
 }
 
 /**
@@ -417,8 +419,14 @@ export class Dialog extends Renderable {
     const parent = this.parent
     const screenWidth = parent?.width ?? this.width
     const screenHeight = parent?.height ?? this.height
-    const w = Math.max(20, Math.min(screenWidth - 2, this.spec?.maxWidth ?? 76))
     const items = this.items()
+    const groupWidth = Math.max(0, ...spec.items.map((item) => (item.group === undefined ? 0 : textWidth(item.group) + 2)))
+    const headOf = (item: DialogItem, label = item.label) => `${item.key === undefined ? "" : `[${item.key}] `}${label}${item.current === true ? " (current)" : ""}`
+    // Whole labels: as wide as the widest row needs, up to the most it may be.
+    const longestDetail = Math.max(0, ...spec.items.map((item) => (item.detail === undefined ? 0 : textWidth(item.detail))))
+    const widest = groupWidth + 2 + Math.max(0, ...spec.items.map((item) => textWidth(headOf(item)))) + 2 + longestDetail
+    const most = spec.maxWidth ?? 76
+    const w = Math.max(20, Math.min(screenWidth - 2, spec.wholeLabels === true ? Math.min(most, Math.max(76, widest + 4)) : most))
     const inner = w - 4
     const wrapped = spec.detail.flatMap((line) => wrapSpans(line, inner))
     // The detail is cut to the screen and scrolls (the help is taller than a small terminal); the choices always show.
@@ -457,19 +465,17 @@ export class Dialog extends Renderable {
     // The column moves left when the longest detail would not fit after it; a name that then runs into the detail
     // is shortened at a word: the detail (an ID, a model, an age) is what is compared, and is never cut.
     // Grouped items: the group's name in a column before the names, on its first row only.
-    const groupWidth = Math.max(0, ...spec.items.map((item) => (item.group === undefined ? 0 : textWidth(item.group) + 2)))
     const names = inner - groupWidth
-    const headOf = (item: DialogItem, label = item.label) => `${item.key === undefined ? "" : `[${item.key}] `}${label}${item.current === true ? " (current)" : ""}`
     const detailed = spec.items.filter((item) => item.detail !== undefined)
-    const longestDetail = Math.max(0, ...detailed.map((item) => textWidth(item.detail!)))
     const heads = Math.max(0, ...detailed.map((item) => textWidth(headOf(item))).filter((w) => w <= Math.floor(names / 2)))
-    const column = names - 4 - longestDetail >= 16 ? Math.min(heads, names - 4 - longestDetail) : heads
+    const column = spec.wholeLabels === true ? Math.max(0, ...items.map((item) => textWidth(headOf(item))))
+      : names - 4 - longestDetail >= 16 ? Math.min(heads, names - 4 - longestDetail) : heads
     for (let index = first; index < first + visible; index += 1) {
       const item = items[index]!
       const chosen = index === this.index
       const keyLabel = item.key === undefined ? "" : `[${item.key}] `
       const room = item.detail === undefined ? Infinity : names - 4 - textWidth(item.detail) - (textWidth(headOf(item)) - textWidth(item.label))
-      const label = textWidth(item.label) > room && room >= 12 ? shorten(item.label, room) : item.label
+      const label = spec.wholeLabels !== true && textWidth(item.label) > room && room >= 12 ? shorten(item.label, room) : item.label
       const firstOfGroup = index === first || items[index - 1]!.group !== item.group
       const line: Span[] = [
         span(groupWidth === 0 ? "" : (firstOfGroup ? (item.group ?? "") : "").padEnd(groupWidth), "dim", { bold: firstOfGroup }),
