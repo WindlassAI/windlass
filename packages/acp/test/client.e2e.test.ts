@@ -8,10 +8,10 @@
  * options, taint and its clearing, diffs, and errors with the server's reason.
  */
 import { afterAll, afterEach, describe, expect, setDefaultTimeout, test } from "bun:test"
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
-import { brand } from "@windlass/core"
+import { brand, openSessionDirectory, type SessionId } from "@windlass/core"
 import { FakeProvider, type ScriptedResponse, script, within } from "@windlass/core/testing"
 import { type ApprovalAsk, ClientError, type ClientSession, HarnessClient, HarnessConnection, type SessionItem } from "../src/client.ts"
 import { EXT } from "../src/extensions.ts"
@@ -74,6 +74,105 @@ async function collect(session: ClientSession, done: (item: SessionItem) => bool
 const kind = (item: SessionItem) => ("event" in item ? item.event.type : `signal:${item.signal.kind}`)
 const turnEnded = (item: SessionItem) => !("event" in item) && item.signal.kind === "turn"
 const writeOutside = (callId = "c1") => script.toolCall(callId, "write", { path: join(elsewhere, `${callId}.txt`), content: "outside\n" })
+
+test("an OpenAI key serves the catalog, a shell tool round trip and a resumed session over ACP", async () => {
+  const { root, workspace, dataDir } = place()
+  const key = "only-the-local-server-gets-this-key"
+  const model = "gpt-4.1"
+  const configDir = join(root, "config", brand.directory)
+  mkdirSync(configDir, { recursive: true })
+  const config = join(configDir, "config.json")
+  writeFileSync(config, JSON.stringify({ provider: "openai", model }))
+  const bodies: { input: { type: string; call_id?: string; output?: string }[] }[] = []
+  let rejectKey = false
+  const server = Bun.serve({
+    hostname: "127.0.0.1", port: 0,
+    async fetch(request) {
+      if (request.headers.get("authorization") !== `Bearer ${key}`) return new Response("wrong credential", { status: 403 })
+      if (rejectKey) return Response.json({ error: { code: "invalid_api_key", message: `Rejected ${key}` } }, { status: 401 })
+      const path = new URL(request.url).pathname
+      if (request.method === "GET" && path === "/v1/models") return Response.json({ data: [{ id: model }] })
+      if (request.method !== "POST" || path !== "/v1/responses") return new Response("wrong path", { status: 400 })
+      if (request.headers.has("session-id")) return new Response("unexpected session-id", { status: 400 })
+      const body = await request.json()
+      bodies.push(body as (typeof bodies)[number])
+      const item = bodies.length === 1
+        ? { type: "function_call", call_id: "call_env", id: "fc_env", name: "shell", arguments: JSON.stringify({ command: 'test -z "${OPENAI_API_KEY+x}" && printf "child-%s-clean" env' }) }
+        : { type: "message", id: `msg_${bodies.length}`, role: "assistant", content: [{ type: "output_text", text: "Done." }] }
+      const response = { output: [item], usage: { input_tokens: 20, input_tokens_details: { cached_tokens: 8 }, output_tokens: 3, output_tokens_details: { reasoning_tokens: 1 } } }
+      const frames = [{ type: "response.output_item.done", output_index: 0, item }, { type: "response.completed", response }]
+      return new Response(frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join(""), { headers: { "content-type": "text/event-stream", "x-request-id": "req_local" } })
+    },
+  })
+  // Only the test process redirects the fixed public URLs. Fail before startup if the ACP child inherited the key.
+  const preload = join(root, "local-provider.ts")
+  writeFileSync(preload, `
+    if (process.env.OPENAI_API_KEY !== undefined) throw new Error("key in ACP child environment")
+    const send = globalThis.fetch
+    globalThis.fetch = (input, init) => {
+      const url = new URL(input)
+      if (url.origin !== "https://api.openai.com") throw new Error("unexpected upstream")
+      return send(new URL(url.pathname, ${JSON.stringify(server.url.href)}), init)
+    }
+  `)
+  const logs: string[] = []
+  const start = async (args: string[] = [], profile?: string) => {
+    const link = await HarnessConnection.start({
+      transport: {
+        kind: "child", command: [process.execPath, "--no-env-file", "--preload", preload, MAIN, "acp", ...args],
+        env: { PATH: process.env.PATH, HOME: root, XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: dataDir,
+          WINDLASS_WAKE: "off", WINDLASS_PROVIDER: profile, OPENAI_API_KEY: key },
+      },
+      clientInfo: { name: "test", title: "provider test", version: "0" },
+      log: (line) => void logs.push(line),
+    })
+    links.push(link)
+    return link
+  }
+  try {
+    const first = await start()
+    expect((await first.listModels()).models.map(({ id }) => id)).toEqual([model])
+    const session = await first.newSession(workspace, { approval: "full" })
+    await session.send("Check the child environment")
+    const items = await collect(session, turnEnded)
+    expect(items.map(kind)).toContain("execution.succeeded")
+    expect(bodies).toHaveLength(2)
+    expect(bodies[1]?.input).toContainEqual(expect.objectContaining({ type: "function_call", call_id: "call_env" }))
+    expect(bodies[1]?.input).toContainEqual(expect.objectContaining({ type: "function_call_output", call_id: "call_env", output: expect.stringContaining("child-env-clean") }))
+    expect(bodies[0]).toMatchObject({ model, store: false, prompt_cache_key: session.id })
+    expect(bodies[0]).not.toHaveProperty("reasoning")
+    await first.stop()
+
+    writeFileSync(config, JSON.stringify({ provider: "chatgpt" }))
+    const next = await start()
+    const resumed = await next.openSession(session.id, workspace, { replay: false })
+    expect((await next.listModels(resumed.id)).models.map(({ id }) => id)).toEqual([model])
+    await resumed.send("Continue")
+    expect((await collect(resumed, turnEnded)).map(kind)).toContain("execution.succeeded")
+    expect(bodies).toHaveLength(3)
+    await next.stop()
+
+    const directory = openSessionDirectory({ dataDir: join(dataDir, brand.directory) })
+    try {
+      const id = session.id as SessionId
+      expect(directory.get(id)?.session.provider).toBe("openai")
+      const rows = directory.read(id, (store) => store.readRequests(id))
+      expect(rows).toHaveLength(3)
+      for (const row of rows) expect(row).toMatchObject({ purpose: "step", provider: "openai-api-key", providerRequestId: "req_local", usage: { inputTokens: 20, cachedInputTokens: 8, outputTokens: 3, reasoningTokens: 1 } })
+    } finally {
+      directory.close()
+    }
+
+    const wrong = await start(["--provider", "chatgpt"], "openai")
+    await expect(wrong.openSession(session.id, workspace, { replay: false })).rejects.toThrow("This session uses openai")
+    const byEnv = await start([], "openai")
+    rejectKey = true
+    await expect(byEnv.listModels()).rejects.toThrow("Check OPENAI_API_KEY")
+    expect(logs.join("\n")).not.toContain(key)
+  } finally {
+    await server.stop(true)
+  }
+}, 60_000)
 
 describe("in memory", () => {
   test("a session: typed events, then the turn's ending with its changed files, in the order the server sent them", async () => {

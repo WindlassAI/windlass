@@ -41,7 +41,7 @@ import type { SessionId } from "../id.ts"
 import type { Projection } from "../message/message.ts"
 import { reduce } from "../message/reducer.ts"
 import { blobRefs, encodeRequest } from "../provider/openai-responses-encode.ts"
-import { SIGNED_IN_PROVIDER } from "../provider/provider.ts"
+import { OPENAI_KEY_PROVIDER, type ProviderProfile, SIGNED_IN_PROVIDER } from "../provider/provider.ts"
 import { type BuildOptions, type CallOptions, buildCompactionRequest, buildRequest } from "../request/build.ts"
 import { type PrefixBreakCause, prefixBreakCauses } from "../request/build-break.ts"
 import { type BlockHash, hashRequest } from "../request/prefix.ts"
@@ -297,19 +297,19 @@ function rebuild(
       { number: index + 1, stored, rebuilt },
     )
   }
-  const encoded = attempt(() => encode(store, built.value))
+  const encoded = attempt(() => encode(store, built.value, row.provider === OPENAI_KEY_PROVIDER ? "openai" : "chatgpt"))
   if ("error" in encoded) return fail("blob_missing", `cannot encode the request: ${encoded.error}`)
   return { request: encoded.value }
 }
 
-function encode(store: Store, request: ModelRequest): CanonicalTraceRequest {
+function encode(store: Store, request: ModelRequest, profile: ProviderProfile): CanonicalTraceRequest {
   const blobs = new Map(
     blobRefs(request).flatMap((ref) => {
       const blob = store.getBlob(ref.hash)
       return blob === null ? [] : [[ref.hash, blob.bytes] as const]
     }),
   )
-  const canonical = canonicalResponsesRequest(JSON.parse(encodeRequest(request, blobs).body))
+  const canonical = canonicalResponsesRequest(JSON.parse(encodeRequest(request, blobs, profile).body))
   return { ...canonical, params: withoutToolChoice(canonical.params) }
 }
 

@@ -137,6 +137,7 @@ function create(state: Projection | null, event: StoredEvent<"session.created">)
     archived: false,
     createdAt: event.time,
     settings: event.data.settings,
+    ...(event.data.provider === undefined ? {} : { provider: event.data.provider }),
     execution: null,
     open: null,
     compaction: null,

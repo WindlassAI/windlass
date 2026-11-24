@@ -1,5 +1,5 @@
 /**
- * The OpenAI Responses API provider for "Sign in with ChatGPT" (plan usage):
+ * The OpenAI Responses API provider for ChatGPT plan and API-key requests:
  * `POST {baseUrl}/responses`, streamed over SSE, stateless (`store: false`).
  *
  * Everything the network or the credentials touch is injected, so tests run
@@ -28,7 +28,7 @@ import { makeProviderError, type ProviderError } from "./error.ts"
 import { ResponsesStreamMapper } from "./openai-responses-decode.ts"
 import { MissingBlobError, blobRefs, encodeRequest } from "./openai-responses-encode.ts"
 import { classify, isRecord, readErrorBody, retryAfterMs, stringOr } from "./openai-responses-error.ts"
-import { type Provider, SIGNED_IN_PROVIDER, type StreamEvent } from "./provider.ts"
+import { type Provider, type ProviderProfile, OPENAI_KEY_PROVIDER, SIGNED_IN_PROVIDER, type StreamEvent } from "./provider.ts"
 import { SseParser } from "./sse.ts"
 import { userAgent } from "../version.ts"
 
@@ -45,7 +45,8 @@ const DEFAULT_IDLE_TIMEOUT_MS = 300_000
 export type FetchFunction = (input: string, init: RequestInit) => Promise<Response>
 
 export interface OpenAIResponsesOptions {
-  /** Returns a usable access token. In production: `accessToken` from auth/chatgpt.ts. Never logged. */
+  readonly profile?: ProviderProfile
+  /** Reads the credential bound to this profile. */
   readonly accessToken: () => Promise<string>
   /** Returns the bytes of a blob referenced by a media part or tool attachment. */
   readonly readBlob: (ref: BlobRef) => Uint8Array | Promise<Uint8Array>
@@ -58,13 +59,14 @@ export interface OpenAIResponsesOptions {
 }
 
 export class OpenAIResponsesProvider implements Provider {
-  readonly id = SIGNED_IN_PROVIDER
+  readonly id: string
   private readonly options: OpenAIResponsesOptions
   private readonly fetch: FetchFunction
   private readonly baseUrl: string
   private readonly idleTimeoutMs: number
 
   constructor(options: OpenAIResponsesOptions) {
+    this.id = options.profile === "openai" ? OPENAI_KEY_PROVIDER : SIGNED_IN_PROVIDER
     this.options = options
     this.fetch = options.fetch ?? ((input, init) => fetch(input, init))
     this.baseUrl = (options.baseUrl ?? RESPONSES_BASE_URL).replace(/\/+$/, "")
@@ -88,18 +90,21 @@ export class OpenAIResponsesProvider implements Provider {
         return
       }
 
+      const safeError = (error: ProviderError) => this.options.profile === "openai" ? apiKeyError(error, prepared.token) : error
       const opened = await this.open(prepared.body, prepared.headers, prepared.token, controller)
       if (signal.aborted) return
       if ("error" in opened) {
-        yield { type: "error", error: opened.error }
+        yield { type: "error", error: safeError(opened.error) }
         return
       }
       const response = opened.response
-      const requestId = response.headers.get("x-oai-request-id")
+      const requestId = this.options.profile === "openai"
+        ? response.headers.get("x-request-id")?.replaceAll(prepared.token, "[REDACTED]") ?? null
+        : response.headers.get("x-oai-request-id")
       if (!response.ok) {
         const text = await this.withTimeout(response.text(), controller)
         if (signal.aborted) return
-        yield { type: "error", error: httpError(response, text, requestId) }
+        yield { type: "error", error: safeError(httpError(response, text, requestId)) }
         return
       }
       if (!response.body) {
@@ -124,13 +129,13 @@ export class OpenAIResponsesProvider implements Provider {
           break
         }
         if (chunk instanceof Failure) {
-          yield* mapper.fail(makeProviderError("transport", `the connection failed mid-stream: ${describe(chunk.cause)}`))
+          yield* mapper.fail(safeError(makeProviderError("transport", `the connection failed mid-stream: ${describe(chunk.cause)}`)))
           break
         }
         const frames = chunk.done ? parser.end() : parser.push(chunk.value)
         for (const frame of frames) {
           if (signal.aborted) return
-          yield* mapper.frame(frame)
+          for (const event of mapper.frame(frame)) yield event.type === "error" ? { ...event, error: safeError(event.error) } : event
           if (mapper.done) break
         }
         if (chunk.done) {
@@ -157,7 +162,7 @@ export class OpenAIResponsesProvider implements Provider {
     }
     let encoded
     try {
-      encoded = encodeRequest(request, blobs)
+      encoded = encodeRequest(request, blobs, this.options.profile)
     } catch (cause) {
       return { error: makeProviderError("invalid_request", `could not encode the request: ${describe(cause)}`) }
     }
@@ -176,7 +181,7 @@ export class OpenAIResponsesProvider implements Provider {
   ): Promise<{ response: Response } | { error: ProviderError }> {
     const sent = this.fetch(`${this.baseUrl}/responses`, {
       method: "POST",
-      ...(this.options.baseUrl === undefined ? {} : { redirect: "error" }),
+      redirect: this.options.profile === "openai" || this.options.baseUrl !== undefined ? "error" : "follow",
       headers: { ...headers, "user-agent": userAgent(), authorization: `Bearer ${token}` },
       body,
       signal: controller.signal,
@@ -233,6 +238,16 @@ function httpError(response: Response, text: string | Timeout | Failure, request
   })
 }
 
+function apiKeyError(error: ProviderError, key: string): ProviderError {
+  const scrub = (value: string) => value.replaceAll(key, "[REDACTED]")
+  return {
+    ...error,
+    message: error.kind === "auth" ? "Check OPENAI_API_KEY and try again." : scrub(error.message),
+    code: error.code === null ? null : scrub(error.code),
+    requestId: error.requestId === null ? null : scrub(error.requestId),
+  }
+}
+
 /**
  * The token getter failed, so nothing was sent. It is the sign-in's failure (`auth`) unless the sign-in service
  * could not be reached to refresh the token (`AUTH_UNREACHABLE`): that says nothing about the sign-in, and is the
@@ -280,6 +295,7 @@ export class ModelListError extends Error {
  * entitlement check. Throws `ModelListError` with a classified error.
  */
 export async function listModels(options: {
+  readonly profile?: ProviderProfile
   readonly accessToken: () => Promise<string>
   readonly fetch?: FetchFunction
   readonly baseUrl?: string
@@ -299,21 +315,33 @@ export async function listModels(options: {
   try {
     response = await fetcher(`${baseUrl}/models`, {
       method: "GET",
-      ...(options.baseUrl === undefined ? {} : { redirect: "error" }),
+      redirect: options.profile === "openai" || options.baseUrl !== undefined ? "error" : "follow",
       headers: { authorization: `Bearer ${token}`, accept: "application/json", "user-agent": userAgent() },
       signal: options.signal,
     })
     text = await response.text()
   } catch (cause) {
-    throw new ModelListError(makeProviderError("transport", `the model list request failed: ${describe(cause)}`))
+    const error = makeProviderError("transport", `the model list request failed: ${describe(cause)}`)
+    throw new ModelListError(options.profile === "openai" ? apiKeyError(error, token) : error)
   }
-  const requestId = response.headers.get("x-oai-request-id")
-  if (!response.ok) throw new ModelListError(httpError(response, text, requestId))
+  const requestId = response.headers.get(options.profile === "openai" ? "x-request-id" : "x-oai-request-id")
+  if (!response.ok) {
+    const error = httpError(response, text, requestId)
+    throw new ModelListError(options.profile === "openai" ? apiKeyError(error, token) : error)
+  }
   let parsed: unknown
   try {
     parsed = JSON.parse(text)
   } catch {
     parsed = undefined
+  }
+  if (options.profile === "openai") {
+    if (!isRecord(parsed) || !Array.isArray(parsed.data))
+      throw new ModelListError(makeProviderError("provider_internal", "the model list is not {data: [...]}", { status: response.status }))
+    return parsed.data.filter(isRecord).flatMap(({ id }): ModelInfo[] => {
+      if (typeof id !== "string" || !id) return []
+      return [{ slug: id, displayName: id, visibility: "list", supportedInApi: true, contextWindow: null, reasoningEfforts: [], defaultReasoningEffort: null }]
+    })
   }
   if (!isRecord(parsed) || !Array.isArray(parsed.models))
     throw new ModelListError(makeProviderError("provider_internal", "the model list is not {models: [...]}", { status: response.status }))

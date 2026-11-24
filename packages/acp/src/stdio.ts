@@ -13,7 +13,7 @@
  * still kills the commands' process groups.
  */
 import { ndJsonStream } from "@agentclientprotocol/sdk"
-import { brand, createHarness } from "@windlass/core"
+import { brand, createHarness, PROVIDER_ENV } from "@windlass/core"
 import { LOG_LEVEL_ENV, createLogger, describeError, levelFromEnv } from "./log.ts"
 import { SCRIPT_ENV, scriptedProvider } from "./scripted.ts"
 import { serve } from "./server.ts"
@@ -45,6 +45,7 @@ export function firesWakeUps(env: Record<string, string | undefined>): boolean {
 }
 
 export interface StdioOptions {
+  readonly profile?: string
   readonly env: Record<string, string | undefined>
   readonly version?: string
 }
@@ -64,7 +65,11 @@ export async function serveStdio(options: StdioOptions): Promise<number> {
   // The same harness the command line builds: one data directory, a store per session, the saved sign-in. Its lines
   // (the engine's diagnostics, notices about the data directory) are what the command line prints as warnings too.
   const fires = firesWakeUps(options.env)
-  const harness = createHarness({ log: (line) => log.warn(line), ...(provider === undefined ? {} : { provider }), engine: { debug: log.debug, ...(fires ? { wake: { run: true } } : {}) } })
+  // The trusted CLI hands the key across a private pipe, outside the child's environment and ACP transcript.
+  const apiKey = options.env[`${brand.envPrefix}ACP_KEY_IPC`] === "1" && process.connected
+    ? await new Promise<string>((resolve) => process.once("message", (key) => resolve(typeof key === "string" ? key : "")))
+    : options.env.OPENAI_API_KEY
+  const harness = createHarness({ profile: options.profile ?? options.env[PROVIDER_ENV], apiKey, log: (line) => log.warn(line), ...(provider === undefined ? {} : { provider }), engine: { debug: log.debug, ...(fires ? { wake: { run: true } } : {}) } })
   // The scheduler and the webhook listener start with the engine, not with the first session: a wake-up that is
   // due is delivered although the client has opened nothing yet.
   if (fires) void harness.engine.wake()

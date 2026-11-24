@@ -167,8 +167,25 @@ describe("as a process", () => {
       const models = await cli(at, null, args)
       expect(models).toEqual({ code: 1, out: "", err: `${brand.binary}: not signed in, so the models cannot be listed (they come from your ChatGPT plan); run \`${brand.binary} login\` to sign in with ChatGPT, then try again\n` })
     }
+    // Sessions without a recorded profile belong to ChatGPT.
+    const mismatch = await cli(at, null, ["--provider", "openai", "-c", "and now?"], { OPENAI_API_KEY: "" })
+    expect(mismatch.err).toContain("This session uses chatgpt")
     const prompt = await cli(at, null, ["-c", "and now?"])
     expect(prompt).toEqual({ code: 1, out: "", err: `${brand.binary}: not signed in; run \`${brand.binary} login\` to sign in with ChatGPT, then try again\n` })
+  })
+
+  test("the openai profile asks for its key when a prompt or catalog needs credentials", async () => {
+    const at = place("missing-key")
+    for (const engine of ["acp", "direct", "acp-memory"]) {
+      for (const args of [["hello"], ["--models", "--json"]]) {
+        const result = await cli(at, null, ["--engine", engine, "--provider", "openai", ...args], {
+          OPENAI_API_KEY: "", WINDLASS_PROVIDER: "chatgpt", XDG_CONFIG_HOME: at.xdg,
+        })
+        expect(result.code).toBe(1)
+        expect(result.err).toContain("OPENAI_API_KEY")
+        expect(result.err).not.toContain("login")
+      }
+    }
   })
 
   test("the host relay gets the catalog and streamed model calls with the placeholder from the token file", async () => {

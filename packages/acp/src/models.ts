@@ -4,7 +4,7 @@
  * usage update need them. A failure is logged and answered with an empty
  * list (and asked again next time), so a client can always open a session.
  */
-import type { Harness, ModelEntry } from "@windlass/core"
+import type { Harness, ModelEntry, ProviderProfile } from "@windlass/core"
 import { type Logger, describeError } from "./log.ts"
 
 const MODEL_LIST_TIMEOUT_MS = 5000
@@ -16,6 +16,7 @@ export class ModelCatalog {
   constructor(
     private readonly harness: Harness,
     private readonly log: Logger,
+    private readonly profile: ProviderProfile,
   ) {}
 
   /** The models already listed, without waiting: empty until `list()` has answered once. */
@@ -24,7 +25,7 @@ export class ModelCatalog {
   }
 
   list(): Promise<readonly ModelEntry[]> {
-    this.pending ??= this.harness.listModels(AbortSignal.timeout(MODEL_LIST_TIMEOUT_MS)).then(
+    this.pending ??= this.harness.listModels(AbortSignal.timeout(MODEL_LIST_TIMEOUT_MS), this.profile).then(
       (models) => {
         this.known = models
         return models
@@ -39,13 +40,15 @@ export class ModelCatalog {
   }
 }
 
-const catalogs = new WeakMap<Harness, ModelCatalog>()
+const catalogs = new WeakMap<Harness, Map<ProviderProfile, ModelCatalog>>()
 
-/** The one catalog of a harness, shared by every connection the process serves. */
-export function catalogOf(harness: Harness, log: Logger): ModelCatalog {
-  const existing = catalogs.get(harness)
-  if (existing !== undefined) return existing
-  const created = new ModelCatalog(harness, log)
-  catalogs.set(harness, created)
-  return created
+export function catalogOf(harness: Harness, log: Logger, profile = harness.profile): ModelCatalog {
+  const byProfile = catalogs.get(harness) ?? new Map<ProviderProfile, ModelCatalog>()
+  catalogs.set(harness, byProfile)
+  let catalog = byProfile.get(profile)
+  if (catalog === undefined) {
+    catalog = new ModelCatalog(harness, log, profile)
+    byProfile.set(profile, catalog)
+  }
+  return catalog
 }

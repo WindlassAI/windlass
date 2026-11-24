@@ -226,6 +226,24 @@ describe("OpenAIResponsesProvider over HTTP", () => {
     }
   })
 
+  test("direct API requests refuse redirects and redact the key in errors", async () => {
+    const redirects: RequestInit["redirect"][] = []
+    const fetch = async (_url: string, init: RequestInit) => {
+      redirects.push(init.redirect)
+      return Response.json({ error: { code: "insufficient_quota", message: `quota exhausted for ${TOKEN}` } }, {
+        status: 429, headers: { "x-request-id": "req_public" },
+      })
+    }
+    const options = { profile: "openai" as const, accessToken: async () => TOKEN, fetch }
+    const provider = new OpenAIResponsesProvider({ ...options, readBlob: () => new Uint8Array() })
+    const apiRequest = { ...request, params: { ...request.params, model: "gpt-5.4" } }
+    const events = await collect(provider.stream(apiRequest, new AbortController().signal))
+    const error = { kind: "usage_limit", retryable: false, requestId: "req_public", message: "HTTP 429: quota exhausted for [REDACTED]" }
+    expect(events).toMatchObject([{ type: "error", error }])
+    await expect(listModels(options)).rejects.toMatchObject({ error })
+    expect(redirects).toEqual(["error", "error"])
+  })
+
   test("pre-stream HTTP errors in each observed body shape", async () => {
     expect(await errorOf("detail-400")).toEqual({
       kind: "invalid_request",

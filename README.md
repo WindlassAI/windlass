@@ -43,7 +43,7 @@ Every way installs `windlass` with `wl` as a short alias; the last two put it in
 script says what is missing and what you lose without it (`--check` only checks). The
 [user guide](docs/user-guide.md#installing) has the details, uninstalling, and running from source.
 
-Then sign in with your ChatGPT plan:
+For the default ChatGPT provider, sign in with your plan.
 
 ```sh
 windlass login
@@ -51,6 +51,9 @@ windlass login
 
 It opens a browser, or on a remote machine prints an address to open anywhere
 ([how](docs/user-guide.md#signing-in)).
+
+To use an OpenAI API account, set `OPENAI_API_KEY` in your environment. Run
+`windlass --provider openai --models --json` to list its models.
 
 ## Quickstart
 
@@ -86,15 +89,13 @@ windlass "the add test fails; find out why and fix it"
 
 It prints each tool call as it runs and ends with a line such as `✓ done · no checks configured · 6 steps · 16s`.
 
-**Choosing a model.** The default is `gpt-6.1-sol`. For quick, cheap tasks use `--model gpt-6-luna --effort low`;
-`/model` switches during a session.
+**Choosing a model.** The ChatGPT default is `gpt-6.1-sol`. The OpenAI API-key default is `gpt-5.4`.
+Use `--model` at launch or `/model` during a session.
 
 ## Limits
 
 - **Linux on arm64 is where it is used.** Executables for Linux x64 and macOS can be built but are untested, and
   there is no Windows version.
-- **A ChatGPT plan is required.** The only way to reach a model is "Sign in with ChatGPT": no API keys, no other
-  providers, no local models.
 - **The sandbox needs `bwrap` on Linux.** Without it no command runs sandboxed, and every command asks first.
 - **Sessions stay on your machine.** They are files in your home directory; nothing is synchronised or shared.
 

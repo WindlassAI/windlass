@@ -6,6 +6,7 @@
  * Every type here is declared as a validator, because projection rows are
  * also read back from SQLite JSON.
  */
+import { PROVIDER_PROFILES } from "../provider/provider.ts"
 import { agentRefusal } from "../agents/restrictions.ts"
 import { agentRecord } from "../agents/use.ts"
 import { grant } from "../approval/grants.ts"
@@ -376,6 +377,7 @@ export const sessionState = object({
    * `params` of the next request from here, never from its caller.
    */
   settings: sessionSettings,
+  provider: optional(oneOf(PROVIDER_PROFILES)),
   /**
    * The crash-recovery claim. `null` when idle. `running` while a process
    * works on the session (after a crash it stays `running` until recovery).

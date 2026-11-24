@@ -1,5 +1,5 @@
 /** Command-line arguments. Parsing is pure: it returns a value or a usage error, and never touches the process. */
-import { ACCESS_TOKEN_FILE_ENV, brand } from "@windlass/core"
+import { ACCESS_TOKEN_FILE_ENV, brand, PROVIDER_ENV, type ProviderProfile } from "@windlass/core"
 import { ENGINE_KINDS, type EngineKind } from "./select-engine.ts"
 import { nearest } from "./text.ts"
 import { type ForkOptions, type ReplayOptions, parseSubcommand } from "./subcommands.ts"
@@ -9,6 +9,7 @@ export interface Options {
   readonly prompt: string | null
   readonly session: string | null
   readonly continue: boolean
+  readonly provider?: ProviderProfile
   readonly model: string | null
   readonly effort: string | null
   /** `--agent <name>`: the agent the session runs as (`none`: no agent); `null`: the configured default, or what a resumed session runs as. */
@@ -37,7 +38,7 @@ export type Parsed =
   /** `--list-sessions` or `--models`: print a listing from the engine and exit. */
   | { readonly kind: "list"; readonly what: "sessions" | "models"; readonly options: Options }
   /** `acp`: serve the Agent Client Protocol on stdin and stdout. */
-  | { readonly kind: "acp" }
+  | { readonly kind: "acp"; readonly provider?: ProviderProfile }
   /** `login [start|finish|status|token|logout]`: the ChatGPT sign-in (`./login.ts` parses the rest). */
   | { readonly kind: "login"; readonly argv: readonly string[] }
   /** `tui [options]`: the full-screen terminal interface (packages/tui). */
@@ -50,7 +51,7 @@ export type Parsed =
   | { readonly kind: "usage"; readonly text: string }
   | { readonly kind: "error"; readonly message: string }
 
-const VALUE_FLAGS = ["--session", "--model", "--effort", "--agent", "--max-steps", "--approval", "--unattended", "--cwd", "--demo", "--demo-speed", "--demo-grace", "--engine"] as const
+const VALUE_FLAGS = ["--session", "--provider", "--model", "--effort", "--agent", "--max-steps", "--approval", "--unattended", "--cwd", "--demo", "--demo-speed", "--demo-grace", "--engine"] as const
 const APPROVAL_MODES = ["ask", "auto", "full"] as const
 const UNATTENDED_ACTIONS = ["deny", "stop"] as const
 type ValueFlag = (typeof VALUE_FLAGS)[number]
@@ -60,7 +61,14 @@ const BOOLEAN_FLAGS = ["--help", "--version", "--continue", "--json", "--quiet",
 const SHORT: Record<string, string> = { "-h": "--help", "-v": "--version", "-c": "--continue", "-q": "--quiet", "-i": "--interactive", "-m": "--model" }
 
 export function parseArgs(argv: readonly string[]): Parsed {
-  if (argv[0] === "acp") return argv.length === 1 ? { kind: "acp" } : error("acp takes no arguments; the client sends everything else")
+  if (argv[0] === "acp") {
+    if (argv.length === 1) return { kind: "acp" }
+    if ((argv[1] === "--provider" && argv.length === 3) || (argv[1]?.startsWith("--provider=") && argv.length === 2)) {
+      const rest = parseArgs(argv.slice(1))
+      return rest.kind === "run" ? { kind: "acp", provider: rest.options.provider } : rest
+    }
+    return error("acp takes only --provider; the client sends everything else")
+  }
   if (argv[0] === "login") return { kind: "login", argv: argv.slice(1) }
   if (argv[0] === "fork" || argv[0] === "replay") {
     const sub = parseSubcommand(argv)
@@ -132,7 +140,10 @@ export function parseArgs(argv: readonly string[]): Parsed {
   if (listing !== null && (words.length > 0 || flags.has("--interactive")))
     return error(`--${listing === "sessions" ? "list-sessions" : "models"} takes no prompt`)
 
+  const provider = values["--provider"]
+  if (provider !== undefined && provider !== "openai" && provider !== "chatgpt") return error("--provider must be chatgpt or openai")
   const options: Options = {
+    ...(provider === undefined ? {} : { provider }),
     prompt: words.length === 0 ? null : words.join(" "),
     session: values["--session"] ?? null,
     continue: flags.has("--continue"),
@@ -197,6 +208,7 @@ ${usageRows(b)}
 Options:
   --session <id>         resume a session by ID, or by the start of one if it is unique
   -c, --continue         resume the most recent session in this directory
+  --provider <name>      chatgpt or openai (reads OPENAI_API_KEY); overrides ${PROVIDER_ENV}
   -m, --model <name>     model to use
   --effort <level>       reasoning effort, e.g. low, medium or high
   --agent <name>         the agent the session runs as: its instructions, what it may do,

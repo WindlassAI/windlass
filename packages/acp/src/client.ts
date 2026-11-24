@@ -424,8 +424,8 @@ export class HarnessConnection {
   }
 
   /** `<prefix>/models`, asked for afresh. Never stops the server. */
-  async listModels(): Promise<ModelListing> {
-    const listed = await this.request<ModelListing>(EXT.models, {})
+  async listModels(sessionId?: string): Promise<ModelListing> {
+    const listed = await this.request<ModelListing>(EXT.models, { sessionId })
     return { defaultModel: listed.defaultModel, models: listed.models.map((model) => ({ ...model, defaultEffort: model.defaultEffort ?? null, contextWindow: model.contextWindow ?? null })) }
   }
 
@@ -968,17 +968,19 @@ export class HarnessClient {
 }
 
 function childTransport(transport: Extract<Transport, { kind: "child" }>, log: ConnectOptions["log"]): Transported {
-  const env = transport.env
+  const { OPENAI_API_KEY: key, ...env } = transport.env
   // Only what the user should see, unless asked for more: the server's warnings and errors.
   const level = `${brand.envPrefix}ACP_LOG`
   const child = Bun.spawn([...transport.command], {
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...env, [level]: env[level] ?? "warn" },
+    env: { ...env, [level]: env[level] ?? "warn", ...(key && { [`${brand.envPrefix}ACP_KEY_IPC`]: "1" }) },
+    ...(key && { ipc() {} }),
     // Its own process group: Ctrl-C at the terminal is the client's to handle (a cancel, not a shutdown).
     detached: true,
   })
+  if (key) child.send(key)
   // The client may leave while the server still shuts down; that is the server's own business by then.
   child.unref()
   const tail: string[] = []

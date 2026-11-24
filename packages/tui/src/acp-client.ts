@@ -137,10 +137,10 @@ export class AcpBackend implements Backend {
     }
   }
 
-  async listModels(): Promise<{ defaultModel: string; models: ModelChoice[] }> {
+  async listModels(sessionId?: string): Promise<{ defaultModel: string; models: ModelChoice[] }> {
     const link = await this.connect()
     try {
-      const listed = await link.listModels()
+      const listed = await link.listModels(sessionId)
       return { defaultModel: listed.defaultModel, models: listed.models.map((model) => ({ ...model, isDefault: model.id === listed.defaultModel })) }
     } catch (error) {
       throw failure(error)

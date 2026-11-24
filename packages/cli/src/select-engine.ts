@@ -11,7 +11,7 @@
  *   (`./real-engine.ts`). For debugging, and the reference the ACP path is
  *   tested against.
  */
-import type { HarnessOptions } from "@windlass/core"
+import { PROVIDER_ENV, type HarnessOptions } from "@windlass/core"
 import { type Scenario } from "@windlass/core/testing/scenarios"
 import type { AcpEngineOptions } from "./acp-engine.ts"
 import type { Engine } from "./engine.ts"
@@ -49,9 +49,13 @@ export async function selectEngine(
   if (module !== undefined) return loadRealEngine(module, REAL_ENGINE_EXPORT, [])
   if (kind === "acp") return loadRealEngine(ACP_ENGINE_MODULE, ACP_ENGINE_EXPORT, [{ ...context, transport: "child" } satisfies AcpEngineOptions])
   // In this process, the scripted model of tests (`WINDLASS_ACP_SCRIPT`) is read here; `windlass acp` reads it itself.
-  const harness = await scripted(context.env ?? {})
-  if (kind === "direct") return loadRealEngine(REAL_ENGINE_MODULE, REAL_ENGINE_EXPORT, harness === null ? [] : [harness])
-  return loadRealEngine(ACP_ENGINE_MODULE, ACP_ENGINE_EXPORT, [{ ...context, transport: "memory", ...(harness === null ? {} : { harness }) } satisfies AcpEngineOptions])
+  const harness = {
+    ...(await scripted(context.env ?? {})),
+    profile: context.env?.[PROVIDER_ENV],
+    apiKey: context.env?.OPENAI_API_KEY,
+  }
+  if (kind === "direct") return loadRealEngine(REAL_ENGINE_MODULE, REAL_ENGINE_EXPORT, [harness])
+  return loadRealEngine(ACP_ENGINE_MODULE, ACP_ENGINE_EXPORT, [{ ...context, transport: "memory", harness } satisfies AcpEngineOptions])
 }
 
 /** The engines of this build, imported by name so that a compiled executable bundles them. */

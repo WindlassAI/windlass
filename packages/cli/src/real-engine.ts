@@ -44,8 +44,6 @@ export function createRealEngine(options: RealEngineOptions = {}): Engine {
   return {
     open: async (request): Promise<Session> => {
       if (harness.closed) throw new EngineUnavailable("the engine is closed")
-      const signIn = await harness.signIn()
-      if (!signIn.signedIn) throw new EngineUnavailable(signInSentence(signIn.message), "auth")
       const session = await unavailable(() => sessionFor(harness, request))
       // The user's own choices for this run, and whether anyone is at the terminal to answer.
       session.setAttended(request.attended ?? false)
@@ -163,13 +161,15 @@ export function createRealEngine(options: RealEngineOptions = {}): Engine {
 async function sessionFor(harness: Harness, request: OpenRequest): Promise<EngineSession> {
   const engine = harness.engine
   const asked = { model: request.model, effort: request.effort }
-  // A model or an effort named on the command line is checked before a session is created with it or switched to it.
-  if (request.model !== null || (request.effort !== null && request.session.kind === "new")) await engine.validateSettings(await harness.settingsFor(request.cwd, asked))
   const target = request.session
+  const id = target.kind === "resume" ? engine.resolveSession(target.id) : target.kind === "continue" ? engine.latestSession(request.cwd)?.session.id : undefined
+  if (target.kind === "continue" && id === undefined) throw new EngineUnavailable(`there is no session to continue in ${request.cwd}`)
+  const profile = id === undefined ? harness.profile : harness.sessionProfile(engine.getSession(id)?.session.provider)
+  const signIn = await harness.signIn(profile)
+  if (!signIn.signedIn) throw new EngineUnavailable(signInSentence(signIn.message), "auth")
+  if (request.model !== null || (request.effort !== null && id === undefined)) await engine.validateSettings(await harness.settingsFor(request.cwd, asked), profile)
   const agent = request.agent ?? null
-  if (target.kind === "new") return engine.createSession({ cwd: request.cwd, settings: await harness.settingsFor(request.cwd, asked), ...(agent === null ? {} : { agent }) })
-  const id = target.kind === "resume" ? engine.resolveSession(target.id) : engine.latestSession(request.cwd)?.session.id
-  if (id === undefined) throw new EngineUnavailable(`there is no session to continue in ${request.cwd}`)
+  if (id === undefined) return engine.createSession({ cwd: request.cwd, settings: await harness.settingsFor(request.cwd, asked), ...(agent === null ? {} : { agent }) })
   // A claim left by a process that died or shut down is repaired here. It is worked on again once the user says
   // something, so that what they say is in front of the model in the first step after the restart.
   const session = engine.openSession(id, { resume: "wait" })

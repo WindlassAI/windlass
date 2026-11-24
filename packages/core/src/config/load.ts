@@ -89,10 +89,6 @@ export async function loadConfig(options: LoadOptions): Promise<LoadedConfig> {
  * `ConfigError`.
  */
 export function loadConfigSync(options: LoadOptions): LoadedConfig {
-  const env = options.env ?? process.env
-  const home = options.home ?? homedir()
-  const xdg = env.XDG_CONFIG_HOME
-  const configHome = xdg !== undefined && isAbsolute(xdg) ? xdg : join(home, ".config")
   const cwd = resolve(options.cwd)
   const present = (path: string) => statSync(path, { throwIfNoEntry: false }) !== undefined
   let repoRoot: string | null = null
@@ -112,19 +108,9 @@ export function loadConfigSync(options: LoadOptions): LoadedConfig {
     }
     if (repoRoot === null || dir === repoRoot || dirname(dir) === dir) break
   }
-  const read = (path: string, origin: HookOrigin = "user"): ConfigFile | null => {
-    if (!existsSync(path) || statSync(path, { throwIfNoEntry: false })?.isFile() !== true) return null
-    let text: string
-    try {
-      text = readFileSync(path, "utf8")
-    } catch (error) {
-      throw new ConfigError(path, "", `could not be read (${error instanceof Error ? error.message : String(error)})`)
-    }
-    return parseConfigFile(text, path, origin)
-  }
-  const locations: ConfigLocations = { userFile: join(configHome, brand.directory, "config.json"), projectFile, projectDir: projectFile !== null ? dirname(dirname(projectFile)) : (repoRoot ?? cwd) }
-  const user = read(locations.userFile)
-  const project = locations.projectFile === null ? null : read(locations.projectFile, "project")
+  const locations: ConfigLocations = { userFile: userConfigPath(options), projectFile, projectDir: projectFile !== null ? dirname(dirname(projectFile)) : (repoRoot ?? cwd) }
+  const user = readConfigFileSync(locations.userFile)
+  const project = locations.projectFile === null ? null : readConfigFileSync(locations.projectFile, "project")
   resolveMcpConfig(mergeConfigFiles(user, project).mcp, project?.mcp === undefined ? locations.userFile : locations.projectFile!)
   resolveLspConfig(mergeConfigFiles(user, project).lsp, project?.lsp === undefined ? locations.userFile : locations.projectFile!)
   return {
@@ -137,15 +123,11 @@ export function loadConfigSync(options: LoadOptions): LoadedConfig {
 }
 
 export async function findConfigFiles(options: LoadOptions): Promise<ConfigLocations> {
-  const env = options.env ?? process.env
-  const home = options.home ?? homedir()
-  const xdg = env.XDG_CONFIG_HOME
-  const configHome = xdg !== undefined && isAbsolute(xdg) ? xdg : join(home, ".config")
   const cwd = resolve(options.cwd)
   const repoRoot = await findRepositoryRoot(cwd)
   const projectFile = await findProjectFile(cwd, repoRoot)
   return {
-    userFile: join(configHome, brand.directory, "config.json"),
+    userFile: userConfigPath(options),
     projectFile,
     projectDir: projectFile !== null ? dirname(dirname(projectFile)) : (repoRoot ?? cwd),
   }
@@ -182,4 +164,27 @@ function exists(path: string) {
     () => true,
     () => false,
   )
+}
+
+function userConfigPath(options: Pick<LoadOptions, "env" | "home">): string {
+  const env = options.env ?? process.env
+  const home = options.home ?? homedir()
+  const xdg = env.XDG_CONFIG_HOME
+  const configHome = xdg !== undefined && isAbsolute(xdg) ? xdg : join(home, ".config")
+  return join(configHome, brand.directory, "config.json")
+}
+
+function readConfigFileSync(path: string, origin: HookOrigin = "user"): ConfigFile | null {
+  if (!existsSync(path) || statSync(path, { throwIfNoEntry: false })?.isFile() !== true) return null
+  let text: string
+  try {
+    text = readFileSync(path, "utf8")
+  } catch (error) {
+    throw new ConfigError(path, "", `could not be read (${error instanceof Error ? error.message : String(error)})`)
+  }
+  return parseConfigFile(text, path, origin)
+}
+
+export function userProvider() {
+  return readConfigFileSync(userConfigPath({}))?.provider
 }

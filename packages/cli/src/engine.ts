@@ -83,6 +83,7 @@ export const HAND_IN_SENTENCE = `hand in a new token (the output of \`${brand.bi
  * done, for a command that is not a session (`--models`).
  */
 export function signInSentence(message: string, what: string | null = null): string {
+  if (message.includes("OPENAI_API_KEY")) return message.replace(/^no usable access token: /, "")
   return `${signInReason(message)}${what === null ? "" : `, so ${what}`}; ${aboutHandedIn(message) ? HAND_IN_SENTENCE : SIGN_IN_ADVICE}`
 }
 
