@@ -201,6 +201,7 @@ export class BackendError extends Error {
   constructor(
     message: string,
     readonly reason: string | null = null,
+    readonly code: string | null = null,
   ) {
     super(message)
     this.name = "BackendError"

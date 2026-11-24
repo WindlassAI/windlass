@@ -268,6 +268,13 @@ function describe(cause: unknown): string {
 
 // ---------------------------------------------------------------- model list
 
+/** The public catalog lacks windows. Use the ChatGPT catalog windows for known families. */
+export function apiContextWindow(model: string): number {
+  if (/^gpt-6\.1(?:-|$)/.test(model)) return 500_000
+  if (/^gpt-6(?:-|$)/.test(model)) return 272_000
+  return 32_768
+}
+
 export interface ModelInfo {
   /** Sent as `params.model`. */
   readonly slug: string
@@ -339,8 +346,9 @@ export async function listModels(options: {
     if (!isRecord(parsed) || !Array.isArray(parsed.data))
       throw new ModelListError(makeProviderError("provider_internal", "the model list is not {data: [...]}", { status: response.status }))
     return parsed.data.filter(isRecord).flatMap(({ id }): ModelInfo[] => {
-      if (typeof id !== "string" || !id) return []
-      return [{ slug: id, displayName: id, visibility: "list", supportedInApi: true, contextWindow: null, reasoningEfforts: [], defaultReasoningEffort: null }]
+      if (typeof id !== "string" || !/^(?:ft:)?(?:gpt-|chatgpt-|codex-|o\d+(?:-|$))/.test(id)) return []
+      if (/embedding|audio|realtime|search-preview|transcrib|tts|image|moderation|instruct/i.test(id)) return []
+      return [{ slug: id, displayName: id, visibility: "list", supportedInApi: true, contextWindow: apiContextWindow(id), reasoningEfforts: [], defaultReasoningEffort: null }]
     })
   }
   if (!isRecord(parsed) || !Array.isArray(parsed.models))

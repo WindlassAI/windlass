@@ -1,10 +1,10 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun --no-env-file
 /**
  * A small ACP client for trying the harness the way an editor drives it. It
  * spawns `<binary> acp`, opens a session, sends one prompt, and prints every
  * update as it arrives.
  *
- *   bun packages/acp/scripts/try-client.ts [options] [prompt]
+ *   bun --no-env-file packages/acp/scripts/try-client.ts [options] [prompt]
  *
  * Options:
  *   --setup failing-test     create a temporary workspace with one failing test
@@ -35,7 +35,7 @@ const workspace = args.workspace ?? realpathSync(mkdtempSync(join(tmpdir(), `${b
 if (args.setup === "failing-test") await setupFailingTest(workspace)
 say(`workspace: ${workspace}`)
 
-const child = Bun.spawn([process.execPath, MAIN, "acp"], { cwd: workspace, stdin: "pipe", stdout: "pipe", stderr: "pipe", env: process.env })
+const child = Bun.spawn([process.execPath, "--no-env-file", MAIN, "acp"], { cwd: workspace, stdin: "pipe", stdout: "pipe", stderr: "pipe", env: process.env })
 void (async () => {
   // The agent's log, shown dimmed and apart from the protocol traffic.
   for await (const chunk of child.stderr) for (const line of new TextDecoder().decode(chunk).split("\n")) if (line.trim() !== "") console.log(dim(`  [agent log] ${line}`))

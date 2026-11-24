@@ -22,7 +22,7 @@ import { environmentSecrets } from "./engine/approval.ts"
 import { EngineError, type Engine, type EngineOptions, type ModelOffer, createEngine } from "./engine/engine.ts"
 import type { SessionSettings } from "./event/durable.ts"
 import type { ProviderError } from "./provider/error.ts"
-import { ModelListError, OpenAIResponsesProvider, listModels } from "./provider/openai-responses.ts"
+import { ModelListError, OpenAIResponsesProvider, apiContextWindow, listModels } from "./provider/openai-responses.ts"
 import { modelEndpoint } from "./provider/relay.ts"
 import { type Provider, type ProviderProfile, PROVIDER_ENV, SIGNED_IN_PROVIDER } from "./provider/provider.ts"
 import { type CommandSandbox, createCommandSandbox } from "./sandbox/command.ts"
@@ -95,8 +95,6 @@ export interface HarnessOptions {
 
 export interface Harness {
   readonly profile: ProviderProfile
-  readonly defaultModelFor: (profile: ProviderProfile) => string
-  readonly sessionProfile: (saved?: ProviderProfile) => ProviderProfile
   readonly dataDir: string
   readonly defaults: { readonly model: string; readonly effort: string | null }
   /**
@@ -210,10 +208,9 @@ export function createHarness(options: HarnessOptions = {}): Harness {
   const selected = explicit ?? (tokenFile === null && options.provider === undefined ? userProvider() : undefined) ?? "chatgpt"
   if (selected !== "chatgpt" && selected !== "openai") throw new Error(`${PROVIDER_ENV} must be chatgpt or openai`)
   if (tokenFile !== null && selected !== "chatgpt") throw new Error("a handed-in token requires the chatgpt profile")
-  const sessionProfile = (saved: ProviderProfile = "chatgpt") => {
+  const checkProfile = (saved: ProviderProfile) => {
     if ((explicit !== undefined || tokenFile !== null) && selected !== saved)
       throw new EngineError("invalid_request", `This session uses ${saved}. Start a new session to use ${selected}.`)
-    return saved
   }
   // Capture the credential before any tool, hook, MCP server or other subprocess can inherit it.
   if (process.env.OPENAI_API_KEY !== undefined) {
@@ -225,9 +222,8 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     if (!apiKey) throw new AuthError("missing_api_key", "Set OPENAI_API_KEY to use the openai provider.")
     return apiKey
   }
-  const defaultModelFor = (_profile: ProviderProfile) => options.defaultModel ?? DEFAULT_MODEL
   const defaults = {
-    model: defaultModelFor(selected),
+    model: options.defaultModel ?? DEFAULT_MODEL,
     effort: options.defaultEffort === undefined ? DEFAULT_EFFORT : options.defaultEffort,
   }
   let running: { readonly sessions: SessionDirectory; readonly engine: Engine } | null = null
@@ -294,7 +290,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     const backendFor = (profile: ProviderProfile) => {
       const credentials = connection(profile)
       const contextWindow = async (model: string) => {
-        const real = profile === "openai" ? null : await providerWindow(model)
+        const real = profile === "openai" ? apiContextWindow(model) : await providerWindow(model)
         return lowered === null ? real : real === null ? lowered : Math.min(real, lowered)
       }
       const responses = new OpenAIResponsesProvider({
@@ -314,7 +310,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     }
     const engine = createEngine({
       ...(options.provider === undefined
-        ? { ...backendFor(selected), profile: selected, backendFor, checkProfile: sessionProfile }
+        ? { ...backendFor(selected), profile: selected, backendFor, checkProfile }
         : { provider: options.provider, ...(options.provider.id === SIGNED_IN_PROVIDER && { listModels: accountModels }) }),
       log,
       ...options.engine,
@@ -358,8 +354,6 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     dataDir,
     defaults,
     profile: selected,
-    defaultModelFor,
-    sessionProfile,
     get engine() {
       return start().engine
     },

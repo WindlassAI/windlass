@@ -77,6 +77,7 @@ export const START_TIMEOUT_MS = 20_000
 export interface AcpClientOptions {
   /** The command that serves ACP on stdio, such as `[bun, .../cli/src/main.ts, "acp"]`. */
   readonly command: readonly string[]
+  readonly apiKey?: string
   readonly env: Record<string, string | undefined>
   readonly version: string
   readonly startTimeoutMs?: number
@@ -92,7 +93,7 @@ export class AcpBackend implements Backend {
 
   constructor(options: AcpClientOptions) {
     this.client = new HarnessClient({
-      transport: { kind: "child", command: options.command, env: options.env },
+      transport: { kind: "child", command: options.command, env: options.env, apiKey: options.apiKey },
       clientInfo: { name: `${brand.binary}-tui`, title: `${brand.name} TUI`, version: options.version },
       log: (line, level) => {
         if (level === "raw") return line.trim() === "" ? undefined : this.onLog(line, "warn")
@@ -394,7 +395,7 @@ class AcpSession implements BackendSession {
 function failure(error: unknown): BackendError {
   if (error instanceof BackendError) return error
   // The reason alone (`not signed in`); the TUI says how to sign in and how to carry on.
-  if (error instanceof ClientError && error.reason === "auth_required") return new BackendError(signInReason(error.message), "auth_required")
+  if (error instanceof ClientError && error.reason === "auth_required") return new BackendError(signInReason(error.message), "auth_required", error.code)
   if (error instanceof ClientError) return new BackendError(error.message, error.reason)
   return new BackendError(error instanceof Error ? error.message : String(error))
 }

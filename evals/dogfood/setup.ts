@@ -114,7 +114,7 @@ if (options.seed) {
   run(out, "git", "commit", "--quiet", "-am", "refactor: simplify usage normalisation")
 }
 
-const cli = `bun ${join(REPO, "packages/cli/src/main.ts")}`
+const cli = `bun --no-env-file ${join(REPO, "packages/cli/src/main.ts")}`
 console.log(`workspace: ${out}`)
 console.log(`seed:      ${options.seed || "none"}`)
 console.log(`checks:    ${CHECKS.map((check) => `${check.name} (${check.command})`).join(", ")}`)

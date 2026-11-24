@@ -32,7 +32,7 @@ export const ACP_ENGINE_MODULE = "./acp-engine.ts"
 export const ACP_ENGINE_EXPORT = "createAcpEngine"
 
 /** What the ACP client is started with. */
-export type EngineContext = Pick<AcpEngineOptions, "env" | "stderr" | "version">
+export type EngineContext = Pick<AcpEngineOptions, "env" | "apiKey" | "stderr" | "version">
 
 /**
  * `module` replaces the real engine's module (tests); it exports
@@ -52,7 +52,7 @@ export async function selectEngine(
   const harness = {
     ...(await scripted(context.env ?? {})),
     profile: context.env?.[PROVIDER_ENV],
-    apiKey: context.env?.OPENAI_API_KEY,
+    apiKey: context.apiKey,
   }
   if (kind === "direct") return loadRealEngine(REAL_ENGINE_MODULE, REAL_ENGINE_EXPORT, [harness])
   return loadRealEngine(ACP_ENGINE_MODULE, ACP_ENGINE_EXPORT, [{ ...context, transport: "memory", harness } satisfies AcpEngineOptions])

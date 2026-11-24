@@ -284,7 +284,7 @@ export class App {
       const reason = error instanceof BackendError ? error.reason : null
       this.connection = reason === "auth_required" ? "not signed in" : "failed"
       this.conversation.empty = ""
-      if (reason === "auth_required" && message.includes("OPENAI_API_KEY")) {
+      if (error instanceof BackendError && (error.code === "missing_api_key" || error.code === "invalid_api_key")) {
         this.connection = "failed"
         this.problem = message
         this.transcript.note([span(message, "error")], "error", "✗")

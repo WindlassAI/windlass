@@ -56,24 +56,15 @@ export interface EncodedRequest {
   readonly headers: Readonly<Record<string, string>>
 }
 
-/** The public catalog only names models. Send optional reasoning controls for known reasoning models. */
-function apiModelControls(model: string) {
-  const gpt = /^gpt-[56](?:[.-]|$)/.test(model) && !model.includes("chat")
-  const o1 = /^o1(?:-|$)/.test(model) && !model.startsWith("o1-mini") && !model.startsWith("o1-preview")
-  const summary = gpt || /^o[34](?:-|$)/.test(model)
-  return { reasoning: o1 || summary, summary, verbosity: gpt }
-}
-
 export function encodeRequest(request: ModelRequest, blobs: BlobBytes, profile: ProviderProfile = "chatgpt"): EncodedRequest {
   const params = request.params
-  const controls = profile === "openai" ? apiModelControls(params.model) : { reasoning: true, summary: true, verbosity: true }
-  if (!controls.reasoning && params.reasoningEffort !== null) throw new Error(`reasoning effort is unsupported for ${params.model}`)
+  const reasoning = profile === "chatgpt" || params.reasoningEffort !== null
   const body: Record<string, Json | undefined> = {
     model: params.model,
     store: false,
     stream: true,
     stream_options: { include_obfuscation: false },
-    include: controls.reasoning ? ["reasoning.encrypted_content"] : undefined,
+    include: reasoning ? ["reasoning.encrypted_content"] : undefined,
     instructions: request.instructions.length > 0 ? request.instructions : undefined,
     tools: request.tools.map((tool) => ({
       type: "function",
@@ -84,8 +75,8 @@ export function encodeRequest(request: ModelRequest, blobs: BlobBytes, profile: 
     })),
     tool_choice: request.toolChoice,
     parallel_tool_calls: params.parallelToolCalls,
-    reasoning: controls.reasoning ? { effort: params.reasoningEffort ?? undefined, summary: controls.summary ? "auto" : undefined } as Json : undefined,
-    text: !controls.verbosity || params.textVerbosity === null ? undefined : { verbosity: params.textVerbosity },
+    reasoning: reasoning ? { effort: params.reasoningEffort ?? undefined, summary: "auto" } as Json : undefined,
+    text: params.textVerbosity === null ? undefined : { verbosity: params.textVerbosity },
     prompt_cache_key: params.cacheKey ?? undefined,
     input: request.input.flatMap((item) => encodeItem(item, blobs)),
   }

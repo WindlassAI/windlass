@@ -3,7 +3,7 @@
  * the task's prompt in `--json` mode, Ctrl-C (SIGINT) at the time limit and a kill after a grace period, then the
  * task's grader on whatever the agent left behind. Every metric comes from the JSONL event stream, never from text.
  *
- *   bun evals/run-agent.ts [task-id ...] [--all] [--model <slug>] [--effort <level>] [--repeat N] [--concurrency N]
+ *   bun --no-env-file evals/run-agent.ts [task-id ...] [--all] [--model <slug>] [--effort <level>] [--repeat N] [--concurrency N]
  *                          [--keep] [--out <dir>] [--cli "<command>"] [--timeout <s>] [--grace <s>] [--db <path>] [--no-classify]
  *                          [--memory with|without]
  *
@@ -24,7 +24,7 @@ import { type GradeResult, TASKS_DIR, type Task, applySolution, grade, listTasks
 
 const REPO = resolve(import.meta.dir, "..")
 /** The CLI as a user of this checkout would start it. */
-export const DEFAULT_CLI = ["bun", join(REPO, "packages/cli/src/main.ts")]
+export const DEFAULT_CLI = ["bun", "--no-env-file", join(REPO, "packages/cli/src/main.ts")]
 export const RESULTS_DIR = join(import.meta.dir, "results")
 
 /** How the agent's tool calls are approved in an eval: the default mode, and a refusal instead of a question. */
@@ -756,7 +756,7 @@ export function splitCommand(command: string): string[] {
   return [...command.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)].map((match) => match[1] ?? match[2] ?? match[3]!)
 }
 
-const USAGE = `usage: bun evals/run-agent.ts [task-id ...] [--all] [--model <slug>] [--effort <level>] [--repeat N]
+const USAGE = `usage: bun --no-env-file evals/run-agent.ts [task-id ...] [--all] [--model <slug>] [--effort <level>] [--repeat N]
          [--concurrency N] [--keep] [--out <dir>] [--cli "<command>"] [--timeout <s>] [--grace <s>]
          [--db <path>] [--no-classify] [--memory with|without]`
 

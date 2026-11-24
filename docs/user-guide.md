@@ -36,7 +36,7 @@ the requirements, and tells you if that directory is not on your `PATH` (it asks
 `scripts/build.ts` for what each includes. `sh scripts/install.sh --uninstall` removes the program and keeps your
 sessions.
 
-You can also run it from source without building: `bun packages/cli/src/main.ts` instead of `windlass`.
+You can also run it from source without building: `bun --no-env-file packages/cli/src/main.ts` instead of `windlass`.
 
 ## Signing in
 

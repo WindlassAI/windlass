@@ -11,7 +11,7 @@ import { afterAll, afterEach, describe, expect, setDefaultTimeout, test } from "
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
-import { brand, openSessionDirectory, type SessionId } from "@windlass/core"
+import { DEFAULT_MODEL, brand, openSessionDirectory, type SessionId } from "@windlass/core"
 import { FakeProvider, type ScriptedResponse, script, within } from "@windlass/core/testing"
 import { type ApprovalAsk, ClientError, type ClientSession, HarnessClient, HarnessConnection, type SessionItem } from "../src/client.ts"
 import { EXT } from "../src/extensions.ts"
@@ -75,6 +75,18 @@ const kind = (item: SessionItem) => ("event" in item ? item.event.type : `signal
 const turnEnded = (item: SessionItem) => !("event" in item) && item.signal.kind === "turn"
 const writeOutside = (callId = "c1") => script.toolCall(callId, "write", { path: join(elsewhere, `${callId}.txt`), content: "outside\n" })
 
+test("ACP exits with a clear error when its launcher never sends the API key", async () => {
+  const child = Bun.spawn([process.execPath, "--no-env-file", MAIN, "acp"], {
+    env: { PATH: process.env.PATH, WINDLASS_ACP_KEY_IPC: "1" }, ipc() {}, stdin: "pipe", stdout: "ignore", stderr: "pipe",
+  })
+  try {
+    expect(await within(child.exited, 10_000, "the IPC timeout")).not.toBe(0)
+    expect(await new Response(child.stderr).text()).toContain("Timed out waiting for the API key over IPC")
+  } finally {
+    child.kill()
+  }
+})
+
 test("an OpenAI key serves the catalog, a shell tool round trip and a resumed session over ACP", async () => {
   const { root, workspace, dataDir } = place()
   const key = "only-the-local-server-gets-this-key"
@@ -82,8 +94,9 @@ test("an OpenAI key serves the catalog, a shell tool round trip and a resumed se
   const configDir = join(root, "config", brand.directory)
   mkdirSync(configDir, { recursive: true })
   const config = join(configDir, "config.json")
-  writeFileSync(config, JSON.stringify({ provider: "openai", model }))
+  writeFileSync(config, JSON.stringify({ provider: "openai" }))
   const bodies: { input: { type: string; call_id?: string; output?: string }[] }[] = []
+  let catalog = [model]
   let rejectKey = false
   const server = Bun.serve({
     hostname: "127.0.0.1", port: 0,
@@ -91,7 +104,7 @@ test("an OpenAI key serves the catalog, a shell tool round trip and a resumed se
       if (request.headers.get("authorization") !== `Bearer ${key}`) return new Response("wrong credential", { status: 403 })
       if (rejectKey) return Response.json({ error: { code: "invalid_api_key", message: `Rejected ${key}` } }, { status: 401 })
       const path = new URL(request.url).pathname
-      if (request.method === "GET" && path === "/v1/models") return Response.json({ data: [{ id: model }] })
+      if (request.method === "GET" && path === "/v1/models") return Response.json({ data: catalog.map((id) => ({ id })) })
       if (request.method !== "POST" || path !== "/v1/responses") return new Response("wrong path", { status: 400 })
       if (request.headers.has("session-id")) return new Response("unexpected session-id", { status: 400 })
       const body = await request.json()
@@ -110,18 +123,19 @@ test("an OpenAI key serves the catalog, a shell tool round trip and a resumed se
     if (process.env.OPENAI_API_KEY !== undefined) throw new Error("key in ACP child environment")
     const send = globalThis.fetch
     globalThis.fetch = (input, init) => {
+      if (process.connected) throw new Error("API key IPC is still connected")
       const url = new URL(input)
       if (url.origin !== "https://api.openai.com") throw new Error("unexpected upstream")
       return send(new URL(url.pathname, ${JSON.stringify(server.url.href)}), init)
     }
   `)
   const logs: string[] = []
-  const start = async (args: string[] = [], profile?: string) => {
+  const start = async (profile?: string, apiKey = key) => {
     const link = await HarnessConnection.start({
       transport: {
-        kind: "child", command: [process.execPath, "--no-env-file", "--preload", preload, MAIN, "acp", ...args],
+        kind: "child", command: [process.execPath, "--no-env-file", "--preload", preload, MAIN, "acp"], apiKey,
         env: { PATH: process.env.PATH, HOME: root, XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: dataDir,
-          WINDLASS_WAKE: "off", WINDLASS_PROVIDER: profile, OPENAI_API_KEY: key },
+          WINDLASS_WAKE: "off", WINDLASS_PROVIDER: profile },
       },
       clientInfo: { name: "test", title: "provider test", version: "0" },
       log: (line) => void logs.push(line),
@@ -132,7 +146,12 @@ test("an OpenAI key serves the catalog, a shell tool round trip and a resumed se
   try {
     const first = await start()
     expect((await first.listModels()).models.map(({ id }) => id)).toEqual([model])
-    const session = await first.newSession(workspace, { approval: "full" })
+    await expect(first.newSession(workspace)).rejects.toMatchObject({ reason: "unknown_model", message: expect.stringContaining(DEFAULT_MODEL) })
+    catalog = ["gpt-image-1"]
+    await expect(first.newSession(workspace)).rejects.toMatchObject({ reason: "unknown_model", message: expect.stringContaining("no text models") })
+    expect(await first.listSessions(workspace)).toHaveLength(0)
+    catalog = [model]
+    const session = await first.newSession(workspace, { model, approval: "full" })
     await session.send("Check the child environment")
     const items = await collect(session, turnEnded)
     expect(items.map(kind)).toContain("execution.succeeded")
@@ -163,9 +182,13 @@ test("an OpenAI key serves the catalog, a shell tool round trip and a resumed se
       directory.close()
     }
 
-    const wrong = await start(["--provider", "chatgpt"], "openai")
+    const wrong = await start("chatgpt")
     await expect(wrong.openSession(session.id, workspace, { replay: false })).rejects.toThrow("This session uses openai")
-    const byEnv = await start([], "openai")
+    await expect(wrong.fork({ sessionId: session.id, model })).rejects.toThrow("This session uses openai")
+    const missing = await start("openai", "")
+    await expect(missing.newSession(workspace)).rejects.toMatchObject({ reason: "auth_required", code: "missing_api_key" })
+    await expect(missing.listModels()).rejects.toMatchObject({ reason: "auth_required", code: "missing_api_key" })
+    const byEnv = await start("openai")
     rejectKey = true
     await expect(byEnv.listModels()).rejects.toThrow("Check OPENAI_API_KEY")
     expect(logs.join("\n")).not.toContain(key)

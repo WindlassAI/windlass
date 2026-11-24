@@ -410,9 +410,8 @@ class ConnectionState {
     await this.requireSignIn()
     if (mcpServers > 0) this.log.warn(`ignoring ${mcpServers} MCP server(s): ${brand.name} does not connect to MCP servers yet`)
     const asked = { model: meta?.model ?? null, effort: meta?.effort ?? null }
-    // A model or an effort the client names is checked before a session is created with it, as the command line does.
-    if (asked.model !== null || asked.effort !== null) await this.validate(cwd, asked)
     const settings = await this.harness.settingsFor(cwd, asked)
+    if (this.harness.profile === "openai" || asked.model !== null || asked.effort !== null) await this.validate(settings)
     // As the agent the client names; without one, as the default of the user's configuration, if any.
     const agent = meta?.agent ?? null
     const session = this.engineErrors(() => this.harness.engine.createSession({ cwd, settings, ...(agent === null ? {} : { agent }), host: this.host(meta) }))
@@ -434,11 +433,11 @@ class ConnectionState {
     if (!isAbsolute(cwd)) throw RequestError.invalidParams({ cwd }, `cwd must be an absolute path: ${cwd}`)
     // Archived sessions are not offered: `session/delete` archives.
     const summary = this.engineErrors(() => this.harness.engine.getSession(sessionId as SessionId), sessionId)
-    const profile = summary === null ? this.harness.profile : this.engineErrors(() => this.harness.sessionProfile(summary.session.provider))
+    const profile = summary === null ? this.harness.profile : this.engineErrors(() => this.harness.engine.sessionProfile(sessionId as SessionId), sessionId)
     await this.requireSignIn(profile)
     if (summary === null || (summary.session.archived && meta?.archived !== true)) throw RequestError.sessionNotFound(sessionId)
     const asked = { model: meta?.model ?? null, effort: meta?.effort ?? null }
-    if (asked.model !== null) await this.validate(cwd, asked, profile)
+    if (asked.model !== null) await this.validate(await this.harness.settingsFor(cwd, asked), profile)
     // Known before the state is reported, for the context window in `usage_update`.
     const models = this.catalog(profile).list()
     if (summary.session.cwd !== cwd)
@@ -785,11 +784,11 @@ class ConnectionState {
     // Asked for afresh, so that a client that lists the models hears why they cannot be listed.
     const models = await this.harness.listModels(undefined, profile).catch((error: unknown) => {
       if (!(error instanceof ModelListError)) throw error
-      const auth = error.error.kind === "auth"
-      throw new RequestError(auth ? -32000 : -32603, `could not list the models: ${error.message}`, errorData({ reason: auth ? "auth_required" : "model_list_failed", message: error.message, ...coded(error.error.code) }))
+      if (error.error.kind === "auth") throw authRequired(profile, error.message, error.error.code)
+      throw new RequestError(-32603, `could not list the models: ${error.message}`, errorData({ reason: "model_list_failed", message: error.message, ...coded(error.error.code) }))
     })
     return {
-      defaultModel: this.harness.defaultModelFor(profile),
+      defaultModel: this.harness.defaults.model,
       models: models.map(({ id, name, efforts, defaultEffort, contextWindow }) => ({ id, name, efforts: [...efforts], defaultEffort, contextWindow })),
     }
   }
@@ -948,8 +947,11 @@ class ConnectionState {
     if (params.model !== undefined || params.effort !== undefined) {
       const current = summary.session.settings
       const asked = { model: params.model ?? current.model, effort: params.effort === undefined ? current.reasoningEffort : params.effort }
-      if (params.model !== undefined) await this.validate(summary.session.cwd, asked, summary.session.provider ?? "chatgpt")
       settings = { model: asked.model, reasoningEffort: asked.effort }
+      if (params.model !== undefined) {
+        const profile = this.engineErrors(() => engine.sessionProfile(params.sessionId as SessionId), params.sessionId)
+        await this.validate(settings, profile)
+      }
     }
     const forked = await this.engineErrors(
       () =>
@@ -993,9 +995,9 @@ class ConnectionState {
     const engine = this.harness.engine
     const summary = this.engineErrors(() => engine.getSession(params.sessionId as SessionId), params.sessionId)
     if (summary === null) throw RequestError.sessionNotFound(params.sessionId)
-    const profile = this.engineErrors(() => this.harness.sessionProfile(summary.session.provider))
+    const profile = this.engineErrors(() => engine.sessionProfile(params.sessionId as SessionId), params.sessionId)
     await this.requireSignIn(profile)
-    if (params.model !== undefined) await this.validate(summary.session.cwd, { model: params.model, effort: params.effort ?? null }, profile)
+    if (params.model !== undefined) await this.validate(await this.harness.settingsFor(summary.session.cwd, { model: params.model, effort: params.effort ?? null }), profile)
     const request: ReplayRequest = {
       ...(params.policy === undefined ? {} : { policy: params.policy }),
       ...(params.systemPrompt === undefined ? {} : { systemPrompt: params.systemPrompt }),
@@ -1230,16 +1232,8 @@ class ConnectionState {
     return { sessionId: id, cwd: summary.session.cwd }
   }
 
-  private async validate(cwd: string, asked: { readonly model: string | null; readonly effort: string | null }, profile = this.harness.profile): Promise<void> {
-    const settings = await this.harness.settingsFor(cwd, asked)
-    const refused = await this.harness.engine.validateSettings(settings, profile).then(
-      () => null,
-      (error: unknown) => error,
-    )
-    if (refused !== null)
-      this.engineErrors(() => {
-        throw refused
-      })
+  private validate(settings: SessionSettings, profile = this.harness.profile): Promise<void> {
+    return this.engineErrors(() => this.harness.engine.validateSettings(settings, profile))
   }
 
   // ---- shared ----
@@ -1329,8 +1323,7 @@ class ConnectionState {
 
   private async requireSignIn(profile = this.harness.profile): Promise<void> {
     const state = await this.harness.signIn(profile)
-    if (!state.signedIn)
-      throw RequestError.authRequired({ methodId: profile, ...errorData({ reason: "auth_required", message: state.message, ...coded(state.code) }) }, profile === "openai" ? state.message : withSignInHint(state.message))
+    if (!state.signedIn) throw authRequired(profile, state.message, state.code)
   }
 
   /**
@@ -1408,7 +1401,7 @@ class SessionView {
     private fromSeq: number,
     changes: ReadonlyMap<number, readonly string[]>,
   ) {
-    this.profile = session.projection().session.provider ?? "chatgpt"
+    this.profile = session.projection().session.provider
     this.catalog = connection.catalog(this.profile)
     const capabilities = connection.clientCapabilities
     this.translator = new Translator({
@@ -1755,10 +1748,14 @@ class SessionView {
   }
 }
 
+function authRequired(profile: ProviderProfile, message: string, code: string | null | undefined): RequestError {
+  return RequestError.authRequired({ methodId: profile, ...errorData({ reason: "auth_required", message, ...coded(code) }) }, profile === "openai" ? message : withSignInHint(message))
+}
+
 /** A failed turn, as the error `session/prompt` answers with. Signed out is the protocol's auth-required error. */
 function failure(end: Extract<TurnEnd, { kind: "failed" }>, profile: ProviderProfile): RequestError {
   if (end.providerError?.kind === "auth")
-    return RequestError.authRequired({ methodId: profile, ...errorData({ reason: "auth_required", message: end.message, ...coded(end.providerError.code) }) }, profile === "openai" ? end.message : withSignInHint(end.message))
+    return authRequired(profile, end.message, end.providerError.code)
   if (end.approvalRequired === true) return new RequestError(-32603, end.message, errorData({ reason: "approval_required", message: end.message }))
   const data: Record<string, unknown> = { [META.capabilities]: { reason: "execution_failed" } }
   if (end.providerError !== null) data[META.capabilities] = { reason: "execution_failed", providerError: end.providerError.kind, ...coded(end.providerError.code) }

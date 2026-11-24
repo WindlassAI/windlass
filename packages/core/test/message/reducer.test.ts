@@ -196,6 +196,7 @@ describe("session lifecycle", () => {
         rootId: "ses_1" as SessionId,
         archived: false,
         createdAt: 10,
+        provider: "chatgpt",
         settings,
         execution: null,
         open: null,
@@ -1580,6 +1581,9 @@ describe("reducer properties", () => {
     expect(stored.messages.map((candidate) => message(candidate, "message"))).toEqual([...log.state!.messages])
     expect(stored.inbox.map((item) => inboxItem(item, "inbox"))).toEqual([...log.state!.inbox])
     expect(sessionState(stored.session, "session")).toEqual(log.state!.session)
+    const { provider, ...legacy } = stored.session
+    expect(provider).toBe("chatgpt")
+    expect(sessionState(legacy, "session")).toEqual(stored.session)
     expect(baseline(stored.baseline, "baseline")).toEqual(log.state!.baseline!)
   })
 

@@ -45,7 +45,7 @@ export function firesWakeUps(env: Record<string, string | undefined>): boolean {
 }
 
 export interface StdioOptions {
-  readonly profile?: string
+  readonly apiKey?: string
   readonly env: Record<string, string | undefined>
   readonly version?: string
 }
@@ -66,10 +66,8 @@ export async function serveStdio(options: StdioOptions): Promise<number> {
   // (the engine's diagnostics, notices about the data directory) are what the command line prints as warnings too.
   const fires = firesWakeUps(options.env)
   // The trusted CLI hands the key across a private pipe, outside the child's environment and ACP transcript.
-  const apiKey = options.env[`${brand.envPrefix}ACP_KEY_IPC`] === "1" && process.connected
-    ? await new Promise<string>((resolve) => process.once("message", (key) => resolve(typeof key === "string" ? key : "")))
-    : options.env.OPENAI_API_KEY
-  const harness = createHarness({ profile: options.profile ?? options.env[PROVIDER_ENV], apiKey, log: (line) => log.warn(line), ...(provider === undefined ? {} : { provider }), engine: { debug: log.debug, ...(fires ? { wake: { run: true } } : {}) } })
+  const apiKey = options.env[`${brand.envPrefix}ACP_KEY_IPC`] === "1" ? await receiveApiKey() : options.apiKey
+  const harness = createHarness({ profile: options.env[PROVIDER_ENV], apiKey, log: (line) => log.warn(line), ...(provider === undefined ? {} : { provider }), engine: { debug: log.debug, ...(fires ? { wake: { run: true } } : {}) } })
   // The scheduler and the webhook listener start with the engine, not with the first session: a wake-up that is
   // due is delivered although the client has opened nothing yet.
   if (fires) void harness.engine.wake()
@@ -115,6 +113,24 @@ export async function serveStdio(options: StdioOptions): Promise<number> {
   await shutdown("the client closed the connection")
   for (const off of handlers) off()
   return 0
+}
+
+function receiveApiKey(): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (!process.connected) throw new Error("Expected an API key over IPC, but the channel is closed")
+    const timer = setTimeout(() => {
+      process.off("message", received)
+      if (process.connected) process.disconnect?.()
+      reject(new Error("Timed out waiting for the API key over IPC"))
+    }, 3000)
+    function received(key: unknown) {
+      clearTimeout(timer)
+      process.disconnect?.()
+      if (typeof key === "string") resolve(key)
+      else reject(new Error("Expected an API key string over IPC"))
+    }
+    process.once("message", received)
+  })
 }
 
 async function within(ms: number, work: Promise<unknown>): Promise<boolean> {

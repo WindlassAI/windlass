@@ -490,6 +490,16 @@ function modelsRoute(incoming: Request, scenario: string) {
 }
 
 describe("listModels", () => {
+  test("the public catalog offers text models with usable context windows", async () => {
+    const ids = ["gpt-6.1-sol", "text-embedding-3-small", "gpt-6-luna", "gpt-audio", "gpt-realtime", "gpt-4o-mini-transcribe",
+      "gpt-4o-mini-tts", "gpt-image-1", "omni-moderation-latest", "o3", "gpt-future", "whisper-1", "dall-e-3"]
+    const models = await listModels({ profile: "openai", accessToken: async () => TOKEN,
+      fetch: async () => Response.json({ data: ids.map((id) => ({ id })) }) })
+    expect(models.map(({ slug, contextWindow }) => [slug, contextWindow])).toEqual([
+      ["gpt-6.1-sol", 500_000], ["gpt-6-luna", 272_000], ["o3", 32_768], ["gpt-future", 32_768],
+    ])
+  })
+
   test("returns listed models in server order", async () => {
     const models = await listModels({ accessToken: async () => TOKEN, baseUrl: `${base}/models-ok` })
     expect(models.map((model) => model.slug)).toEqual(["gpt-6-luna", "gpt-6-sol"])

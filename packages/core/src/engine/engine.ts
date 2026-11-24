@@ -1288,6 +1288,8 @@ export interface Engine {
   readonly listSessionsPage: (query?: SessionQuery & { readonly cursor?: string | null }) => SessionPage
   /** One session's summary, or `null`. Works for a session another process holds. */
   readonly getSession: (id: SessionId) => SessionSummary | null
+  /** The stored provider, checked against any explicit selection for this process. */
+  readonly sessionProfile: (id: SessionId) => ProviderProfile
   /** The session an ID or a unique prefix of one names. Throws `session_not_found` or `ambiguous_session`. */
   readonly resolveSession: (idOrPrefix: string) => SessionId
   /**
@@ -1447,7 +1449,7 @@ interface Core {
   readonly debug: (line: string) => void
 }
 
-function modelServices(options: ModelBackend) {
+function modelServices(options: ModelBackend, profile?: ProviderProfile) {
   // The provider's models, as last listed: what settings are checked against without another request.
   let offered: readonly ModelOffer[] | null = null
   const readOffers = async (signal?: AbortSignal): Promise<readonly ModelOffer[] | null> => {
@@ -1460,7 +1462,7 @@ function modelServices(options: ModelBackend) {
   }
   const listOffered = async (pending?: Promise<readonly ModelOffer[] | null> | null) => {
     const models = await (pending ?? readOffers())
-    if (models?.length) offered = models
+    if (models !== null && (models.length > 0 || profile === "openai")) offered = models
     return offered
   }
   return {
@@ -1608,7 +1610,7 @@ export function createEngine(options: EngineOptions): Engine {
   const core: Core = {
     stores,
     profile: options.profile,
-    ...modelServices(options),
+    ...modelServices(options, options.profile),
     runtime: createToolRuntime({ tools: runnable, spillDir, putBlob: stores.putBlob }),
     effects: new Map(runnable.map((tool) => [tool.name, tool.effect])),
     touches: new Map(runnable.flatMap((tool) => (tool.touches === undefined ? [] : [[tool.name, tool.touches as (input: unknown) => readonly string[]] as const]))),
@@ -1686,19 +1688,18 @@ export function createEngine(options: EngineOptions): Engine {
     if (options.backendFor === undefined || profile === core.profile) return core
     let selected = profiles.get(profile)
     if (selected === undefined) {
-      selected = { ...core, profile, ...modelServices(options.backendFor(profile)) }
+      selected = { ...core, profile, ...modelServices(options.backendFor(profile), profile) }
       profiles.set(profile, selected)
     }
     return selected
   }
-  function storedCore(id: SessionId): Core {
-    if (options.backendFor === undefined) return core
+  function sessionProfile(id: SessionId): ProviderProfile {
     const summary = stores.get(id)
     if (summary === null) throw new EngineError("session_not_found", `session ${id} does not exist`)
-    const saved = summary.session.provider ?? "chatgpt"
-    options.checkProfile?.(saved)
-    return coreFor(saved)
+    options.checkProfile?.(summary.session.provider)
+    return summary.session.provider
   }
+  const storedCore = (id: SessionId) => coreFor(sessionProfile(id))
   let closing: Promise<void> | null = null
   const assertOpen = () => {
     if (closing !== null) throw new EngineError("closed", "the engine is closed")
@@ -1755,10 +1756,10 @@ export function createEngine(options: EngineOptions): Engine {
       if (summary.session.archived) return { kind: "rejected", reason: "its session is archived" }
       try {
         // Nothing of the session's own is started by opening it: only the firing starts work, if it is to.
-        session = open(id, "wait", coreFor(summary.session.provider ?? "chatgpt"))
+        session = open(id, "wait", storedCore(id))
       } catch (error) {
         if (error instanceof EngineError && error.code === "session_in_use") return { kind: "retry", reason: error.message }
-        if (error instanceof EngineError && error.code === "session_not_found") return { kind: "rejected", reason: "its session no longer exists" }
+        if (error instanceof EngineError) return { kind: "rejected", reason: error.message }
         throw error
       }
     }
@@ -1848,6 +1849,7 @@ export function createEngine(options: EngineOptions): Engine {
       return { sessions, nextCursor: last === undefined || sessions.length === remaining.length ? null : `${last.updatedAt}:${last.session.id}` }
     },
     getSession: (id) => core.stores.get(id),
+    sessionProfile,
     resolveSession: (idOrPrefix) => storeErrors(() => core.stores.resolve(idOrPrefix)),
     readEvents: (id, range) => storeErrors(() => core.stores.read(id, (store) => store.readEvents(id, range))),
     turnChanges: async (id, range = {}) => {
@@ -1874,6 +1876,8 @@ export function createEngine(options: EngineOptions): Engine {
       const selected = profile === undefined ? core : coreFor(profile)
       if (selected.listOffered === null) return
       const models = await selected.listOffered()
+      if (selected.profile === "openai" && models?.length === 0)
+        throw new EngineError("unknown_model", `model ${settings.model} is not available; the API key offers no text models`)
       const problem = models === null ? null : settingsProblem(settings, models)
       if (problem !== null) throw problem
     },

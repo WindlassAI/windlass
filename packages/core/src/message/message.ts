@@ -356,7 +356,7 @@ export function describeOpen(open: OpenWork): string {
   }
 }
 
-export const sessionState = object({
+const projectedSession = object({
   id: sessionId,
   cwd: nonEmptyString,
   title: nullable(string),
@@ -377,7 +377,7 @@ export const sessionState = object({
    * `params` of the next request from here, never from its caller.
    */
   settings: sessionSettings,
-  provider: optional(oneOf(PROVIDER_PROFILES)),
+  provider: oneOf(PROVIDER_PROFILES),
   /**
    * The crash-recovery claim. `null` when idle. `running` while a process
    * works on the session (after a crash it stays `running` until recovery).
@@ -544,13 +544,21 @@ export const sessionState = object({
   ),
 })
 
+export type SessionState = Infer<typeof projectedSession>
+
+/** Cached projections from before provider selection belong to ChatGPT sessions. */
+export function sessionState(input: unknown, path: string): SessionState {
+  if (typeof input === "object" && input !== null && !Array.isArray(input) && !("provider" in input))
+    return projectedSession({ ...input, provider: "chatgpt" }, path)
+  return projectedSession(input, path)
+}
+
 /** The workspace, verification and undo state of a session nothing has happened in yet. */
 export const INITIAL_TRACKING = {
   workspace: { snapshot: null, unavailable: null, skipped: [], nestedRepositories: [] },
   verification: { verified: null, latest: null },
   reverts: [],
-} as const satisfies Pick<Infer<typeof sessionState>, "workspace" | "verification" | "reverts">
-export type SessionState = Infer<typeof sessionState>
+} as const satisfies Pick<SessionState, "workspace" | "verification" | "reverts">
 
 /**
  * The whole projected state of one session.

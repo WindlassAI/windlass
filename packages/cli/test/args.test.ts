@@ -75,10 +75,9 @@ describe("parseArgs", () => {
     expect(errorOf(["--models", "hello"])).toBe("--models takes no prompt")
   })
 
-  test("selects a built-in provider for a turn, a catalog or the ACP server", () => {
+  test("selects a built-in provider for a turn or a catalog", () => {
     expect(options(["--provider", "openai", "go"]).provider).toBe("openai")
     expect(parseArgs(["--models", "--json", "--provider=chatgpt"])).toMatchObject({ kind: "list", options: { provider: "chatgpt" } })
-    expect(parseArgs(["acp", "--provider", "openai"])).toEqual({ kind: "acp", provider: "openai" })
     expect(parseArgs(["--provider", "other"])).toMatchObject({ kind: "error" })
   })
 

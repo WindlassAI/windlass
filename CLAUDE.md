@@ -53,15 +53,15 @@ Memory, hooks, language servers and telemetry are off until configured.
 ## Commands
 
 ```sh
-bun packages/cli/src/main.ts --help                 # the CLI from source
-bun packages/cli/src/main.ts --demo list            # scripted sessions, no model
-bun packages/cli/src/main.ts tui --demo 1           # the full-screen interface on a scripted session
+bun --no-env-file packages/cli/src/main.ts --help                 # the CLI from source
+bun --no-env-file packages/cli/src/main.ts --demo list            # scripted sessions, no model
+bun --no-env-file packages/cli/src/main.ts tui --demo 1           # the full-screen interface on a scripted session
 bun scripts/login.ts status                         # sign-in state (never prints tokens)
 bun test <path>                                     # run the tests for what you changed, not the whole suite
 bun run test:unit                                   # the tests that start no process (CI runs this and test:e2e)
 bun run typecheck
 bun scripts/scenario-doc.ts --write                 # regenerate docs/step-loop-scenarios.md
-bun evals/run-agent.ts <task...> --model gpt-6-luna --effort low --out <dir outside the repo>
+bun --no-env-file evals/run-agent.ts <task...> --model gpt-6-luna --effort low --out <dir outside the repo>
 bun evals/gate.ts <dir> --hard-only
 bun scripts/export-trace.ts <session-id> -o <file>  # then: bunx prefixlens check <file> (pass or fail), or report <file> --all
 ```

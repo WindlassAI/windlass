@@ -38,7 +38,7 @@ export type Parsed =
   /** `--list-sessions` or `--models`: print a listing from the engine and exit. */
   | { readonly kind: "list"; readonly what: "sessions" | "models"; readonly options: Options }
   /** `acp`: serve the Agent Client Protocol on stdin and stdout. */
-  | { readonly kind: "acp"; readonly provider?: ProviderProfile }
+  | { readonly kind: "acp" }
   /** `login [start|finish|status|token|logout]`: the ChatGPT sign-in (`./login.ts` parses the rest). */
   | { readonly kind: "login"; readonly argv: readonly string[] }
   /** `tui [options]`: the full-screen terminal interface (packages/tui). */
@@ -61,14 +61,7 @@ const BOOLEAN_FLAGS = ["--help", "--version", "--continue", "--json", "--quiet",
 const SHORT: Record<string, string> = { "-h": "--help", "-v": "--version", "-c": "--continue", "-q": "--quiet", "-i": "--interactive", "-m": "--model" }
 
 export function parseArgs(argv: readonly string[]): Parsed {
-  if (argv[0] === "acp") {
-    if (argv.length === 1) return { kind: "acp" }
-    if ((argv[1] === "--provider" && argv.length === 3) || (argv[1]?.startsWith("--provider=") && argv.length === 2)) {
-      const rest = parseArgs(argv.slice(1))
-      return rest.kind === "run" ? { kind: "acp", provider: rest.options.provider } : rest
-    }
-    return error("acp takes only --provider; the client sends everything else")
-  }
+  if (argv[0] === "acp") return argv.length === 1 ? { kind: "acp" } : error("acp takes no arguments; the client sends the session options")
   if (argv[0] === "login") return { kind: "login", argv: argv.slice(1) }
   if (argv[0] === "fork" || argv[0] === "replay") {
     const sub = parseSubcommand(argv)

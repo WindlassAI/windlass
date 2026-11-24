@@ -89,7 +89,7 @@ windlass "the add test fails; find out why and fix it"
 
 It prints each tool call as it runs and ends with a line such as `✓ done · no checks configured · 6 steps · 16s`.
 
-**Choosing a model.** The ChatGPT default is `gpt-6.1-sol`. The OpenAI API-key default is `gpt-5.4`.
+**Choosing a model.** Both providers default to `gpt-6.1-sol`. If your API key does not offer it, choose a model from `--models`.
 Use `--model` at launch or `/model` during a session.
 
 ## Limits

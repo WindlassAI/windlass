@@ -149,7 +149,7 @@ export function createRealEngine(options: RealEngineOptions = {}): Engine {
       } catch (error) {
         if (error instanceof ModelListError)
           throw error.error.kind === "auth"
-            ? new EngineUnavailable(signInSentence(error.message, "the models cannot be listed (they come from your ChatGPT plan)"), "auth")
+            ? new EngineUnavailable(signInSentence(error.message, "the models cannot be listed (they come from your ChatGPT plan)", error.error.code), "auth")
             : new EngineUnavailable(`could not list the models: ${error.message}`)
         throw error
       }
@@ -164,12 +164,16 @@ async function sessionFor(harness: Harness, request: OpenRequest): Promise<Engin
   const target = request.session
   const id = target.kind === "resume" ? engine.resolveSession(target.id) : target.kind === "continue" ? engine.latestSession(request.cwd)?.session.id : undefined
   if (target.kind === "continue" && id === undefined) throw new EngineUnavailable(`there is no session to continue in ${request.cwd}`)
-  const profile = id === undefined ? harness.profile : harness.sessionProfile(engine.getSession(id)?.session.provider)
+  const profile = id === undefined ? harness.profile : engine.sessionProfile(id)
   const signIn = await harness.signIn(profile)
-  if (!signIn.signedIn) throw new EngineUnavailable(signInSentence(signIn.message), "auth")
-  if (request.model !== null || (request.effort !== null && id === undefined)) await engine.validateSettings(await harness.settingsFor(request.cwd, asked), profile)
+  if (!signIn.signedIn) throw new EngineUnavailable(signInSentence(signIn.message, null, signIn.code), "auth")
   const agent = request.agent ?? null
-  if (id === undefined) return engine.createSession({ cwd: request.cwd, settings: await harness.settingsFor(request.cwd, asked), ...(agent === null ? {} : { agent }) })
+  if (id === undefined) {
+    const settings = await harness.settingsFor(request.cwd, asked)
+    if (profile === "openai" || request.model !== null || request.effort !== null) await engine.validateSettings(settings, profile)
+    return engine.createSession({ cwd: request.cwd, settings, ...(agent === null ? {} : { agent }) })
+  }
+  if (request.model !== null) await engine.validateSettings(await harness.settingsFor(request.cwd, asked), profile)
   // A claim left by a process that died or shut down is repaired here. It is worked on again once the user says
   // something, so that what they say is in front of the model in the first step after the restart.
   const session = engine.openSession(id, { resume: "wait" })
