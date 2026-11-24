@@ -159,6 +159,8 @@ export interface SessionSummary {
 
 /** One row of `--models`. */
 export interface ModelInfo {
+  /** The provider that offers it: a session started with another needs `--provider`. */
+  readonly provider: string
   readonly id: string
   /** A short description for the listing, or `null`. */
   readonly description: string | null

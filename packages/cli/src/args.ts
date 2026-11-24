@@ -1,5 +1,5 @@
 /** Command-line arguments. Parsing is pure: it returns a value or a usage error, and never touches the process. */
-import { ACCESS_TOKEN_FILE_ENV, brand, isProviderProfile, providerDescriptor, PROVIDER_PROFILES, PROVIDER_ENV, type ProviderProfile } from "@windlass/core"
+import { ACCESS_TOKEN_FILE_ENV, brand, isProviderProfile, providerDescriptor, PROVIDER_CHOICES, PROVIDER_PROFILES, PROVIDER_ENV, type ProviderProfile } from "@windlass/core"
 import { ENGINE_KINDS, type EngineKind } from "./select-engine.ts"
 import { nearest } from "./text.ts"
 import { type ForkOptions, type ReplayOptions, parseSubcommand } from "./subcommands.ts"
@@ -134,7 +134,7 @@ export function parseArgs(argv: readonly string[]): Parsed {
     return error(`--${listing === "sessions" ? "list-sessions" : "models"} takes no prompt`)
 
   const provider = values["--provider"]
-  if (provider !== undefined && !isProviderProfile(provider)) return error(`--provider must be ${PROVIDER_PROFILES.join(" or ")}`)
+  if (provider !== undefined && !isProviderProfile(provider)) return error(`--provider must be ${PROVIDER_CHOICES}`)
   const options: Options = {
     ...(provider === undefined ? {} : { provider }),
     prompt: words.length === 0 ? null : words.join(" "),
@@ -201,9 +201,10 @@ ${usageRows(b)}
 Options:
   --session <id>         resume a session by ID, or by the start of one if it is unique
   -c, --continue         resume the most recent session in this directory
-  --provider <name>      ${PROVIDER_PROFILES.map(providerDescriptor).map(({ id, auth }) => auth.kind === "env-key" ? `${id} (reads ${auth.variable})` : id).join(" or ")}; overrides ${PROVIDER_ENV}
+  --provider <name>      the provider a new session uses; overrides ${PROVIDER_ENV}:
+${providerRows(b)}
   -m, --model <name>     model to use
-  --effort <level>       reasoning effort, e.g. low, medium or high
+  --effort <level>       reasoning effort, of those the model offers (--models lists them)
   --agent <name>         the agent the session runs as: its instructions, what it may do,
                          and its model where it names one (none: no agent). A resumed
                          session is switched to it. /agent lists the ones defined here
@@ -314,4 +315,12 @@ Exit codes:
   141  output closed (a pipe reader left)
   143  terminated (SIGTERM)
 `
+}
+
+/** One line per provider of the registry: its name and the credential it reads. */
+export function providerRows(binary = brand.binary): string {
+  const width = Math.max(...PROVIDER_PROFILES.map((id) => id.length))
+  return PROVIDER_PROFILES.map(providerDescriptor)
+    .map(({ id, auth }) => `                           ${id.padEnd(width)}  ${auth.kind === "env-key" ? `reads ${auth.variable}` : `the ChatGPT sign-in (${binary} login)`}`)
+    .join("\n")
 }

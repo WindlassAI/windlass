@@ -1037,9 +1037,17 @@ async function listing(io: Io, engine: Engine, what: "sessions" | "models", opti
     return 0
   }
   const widths = table[0]!.cells.map((_, column) => Math.max(...table.map((line) => displayWidth(line.cells[column]!))))
-  for (const { cells } of table)
+  // Models of more than one provider: under a heading each, the selected provider's first.
+  const providerOf = ({ row }: (typeof table)[number]) => ("provider" in row ? row.provider : null)
+  const grouped = new Set(table.map(providerOf)).size > 1
+  for (const [index, line] of table.entries()) {
+    const provider = providerOf(line)
+    if (grouped && (index === 0 || provider !== providerOf(table[index - 1]!))) io.stdout.write(`${index === 0 ? "" : "\n"}${provider}\n`)
+    const { cells } = line
     io.stdout.write(`${cells.map((cell, column) => (column === cells.length - 1 ? cell : cell + " ".repeat(widths[column]! - displayWidth(cell)))).join("  ").trimEnd()}\n`)
+  }
   if (what === "models" && table.some(({ row }) => "isDefault" in row && row.isDefault)) io.stdout.write("\n* the default when --model is not given\n")
+  if (grouped) io.stdout.write(`a model of another provider needs --provider <name> (a session stays with its provider)\n`)
   return 0
 }
 

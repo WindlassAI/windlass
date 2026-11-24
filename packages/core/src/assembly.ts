@@ -27,7 +27,7 @@ import { type ModelInfo, ModelListError } from "./provider/catalog.ts"
 import { chatgptAuth } from "./provider/providers/chatgpt.ts"
 import { wires } from "./provider/wire/index.ts"
 import type { Provider } from "./provider/provider.ts"
-import { DEFAULT_PROFILE, PROVIDER_ENV, PROVIDER_PROFILES, type ProviderKeys, type ProviderProfile, isProviderProfile, ledgerProvider, listModels, providerDescriptor, takeProviderKeys } from "./provider/registry.ts"
+import { DEFAULT_PROFILE, PROVIDER_CHOICES, PROVIDER_ENV, PROVIDER_PROFILES, type ProviderKeys, type ProviderProfile, isProviderProfile, ledgerProvider, listModels, providerDescriptor, takeProviderKeys } from "./provider/registry.ts"
 import { type CommandSandbox, createCommandSandbox } from "./sandbox/command.ts"
 import { type SessionDirectory, openSessionDirectory } from "./store/directory.ts"
 import type { AnyTool } from "./tool/tool.ts"
@@ -109,6 +109,8 @@ export interface Harness {
   readonly sessions: SessionDirectory
   /** Whether the selected profile has a usable credential. */
   readonly signIn: (profile?: ProviderProfile) => Promise<SignInState>
+  /** The profiles with a usable credential, the selected one first: those a model can be picked from. */
+  readonly availableProviders: () => Promise<readonly ProviderProfile[]>
   /** The account's models, in the provider's order. Rejects with `ModelListError` when they cannot be listed. Empty with a provider of the caller's. */
   readonly listModels: (signal?: AbortSignal, profile?: ProviderProfile) => Promise<readonly ModelEntry[]>
   /**
@@ -209,7 +211,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
   const explicit = options.provider === undefined ? options.profile ?? process.env[PROVIDER_ENV] : undefined
   const tokenFile = options.provider === undefined ? chatgptAuth.handedInTokenFile() : null
   const selected = explicit ?? (tokenFile === null && options.provider === undefined ? userProvider() : undefined) ?? DEFAULT_PROFILE
-  if (!isProviderProfile(selected)) throw new Error(`${PROVIDER_ENV} must be ${PROVIDER_PROFILES.join(" or ")}`)
+  if (!isProviderProfile(selected)) throw new Error(`${PROVIDER_ENV} must be ${PROVIDER_CHOICES}`)
   const descriptor = providerDescriptor(selected)
   if (tokenFile !== null && descriptor.auth.kind !== "chatgpt-oauth") throw new Error("a handed-in token requires the chatgpt profile")
   const checkProfile = (saved: ProviderProfile) => {
@@ -254,6 +256,20 @@ export function createHarness(options: HarnessOptions = {}): Harness {
         if (!key) throw new AuthError("missing_api_key", authMethod.description)
         return key
       },
+    }
+  }
+  const signIn = async (profile: ProviderProfile = selected): Promise<SignInState> => {
+    if (options.signIn !== undefined) return options.signIn()
+    if (options.provider !== undefined) return { signedIn: true }
+    try {
+      await connection(profile).accessToken()
+      return { signedIn: true }
+    } catch (error) {
+      // The sign-in service could not be reached for a refresh: the sign-in is saved, and nothing says it is gone.
+      // A model call then fails as the connection problem it is, and is tried again like one.
+      if (error instanceof AuthError && error.code === AUTH_UNREACHABLE) return { signedIn: true }
+      if (error instanceof AuthError) return { signedIn: false, message: error.message, code: error.code }
+      throw error
     }
   }
   const accountModels = async (signal?: AbortSignal, profile: ProviderProfile = selected): Promise<readonly ModelEntry[]> => {
@@ -365,19 +381,13 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     get closed() {
       return closing !== null
     },
-    signIn: async (profile = selected) => {
-      if (options.signIn !== undefined) return options.signIn()
-      if (options.provider !== undefined) return { signedIn: true }
-      try {
-        await connection(profile).accessToken()
-        return { signedIn: true }
-      } catch (error) {
-        // The sign-in service could not be reached for a refresh: the sign-in is saved, and nothing says it is gone.
-        // A model call then fails as the connection problem it is, and is tried again like one.
-        if (error instanceof AuthError && error.code === AUTH_UNREACHABLE) return { signedIn: true }
-        if (error instanceof AuthError) return { signedIn: false, message: error.message, code: error.code }
-        throw error
-      }
+    signIn,
+    availableProviders: async () => {
+      // A caller that supplies the provider or the sign-in has the selected profile only.
+      if (options.provider !== undefined || options.signIn !== undefined) return [selected]
+      const others = PROVIDER_PROFILES.filter((profile) => profile !== selected)
+      const usable = await Promise.all(others.map((profile) => signIn(profile).then((state) => state.signedIn, () => false)))
+      return [selected, ...others.filter((_, index) => usable[index])]
     },
     listModels: accountModels,
     settingsFor: async (cwd, asked = {}) => {

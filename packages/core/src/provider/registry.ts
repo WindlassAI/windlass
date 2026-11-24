@@ -12,6 +12,9 @@ export const DEFAULT_PROFILE = chatgpt.id
 export const PROVIDER_ENV = `${brand.envPrefix}PROVIDER`
 export const PROVIDER_PROFILES = providers.map(({ id }) => id)
 
+/** The profiles as a phrase for a sentence: `chatgpt, openai or anthropic`. */
+export const PROVIDER_CHOICES = PROVIDER_PROFILES.length < 2 ? PROVIDER_PROFILES.join("") : `${PROVIDER_PROFILES.slice(0, -1).join(", ")} or ${PROVIDER_PROFILES.at(-1)}`
+
 export function isProviderProfile(value: unknown): value is ProviderProfile {
   return PROVIDER_PROFILES.some((id) => id === value)
 }

@@ -22,7 +22,10 @@ export const EXT = {
   admit: `${prefix}/admit`,
   /** Request from the agent to the client, `HostCallParams` → `HostCallResult`: a call of a tool the client declared (`OpenMeta.hostTools`). */
   hostCall: `${prefix}/host_call`,
-  /** Request `{}` → `{ models: [...], defaultModel }`: the models and reasoning efforts the account offers. */
+  /**
+   * Request `{ sessionId?, providers? }` → `{ provider, defaultModel, models: [...], providers? }`: the models and reasoning
+   * efforts the session's provider offers; with `providers: true`, also those of every provider with a usable credential.
+   */
   models: `${prefix}/models`,
   /** Notification `{ sessionId, messageId, model, usage }` after every model call that reported usage. */
   usage: `${prefix}/usage`,
@@ -174,6 +177,8 @@ export interface OpenCheck {
 
 /** `_meta[<ns>]` on `session/new`, `session/load` and `session/resume`. */
 export interface OpenMeta {
+  /** `session/new`: the provider the session uses and stays with (an auth method's ID); absent, the server's selected one. */
+  readonly provider?: string | null
   /** The model to start with (new) or switch to (load, resume); checked against the account's models first. */
   readonly model?: string | null
   /** The reasoning effort; `null` keeps the default. */
@@ -1176,4 +1181,16 @@ export function titleFromEvents(events: readonly { readonly type: string; readon
     return deriveTitle((data.content ?? []).map((part) => (part.type === "text" ? (part.text ?? "") : "")).join(""))
   }
   return null
+}
+
+/** One provider's models: those `<prefix>/models` lists, and the one a new session of that provider starts with. */
+export interface ProviderModels {
+  readonly provider: string
+  readonly defaultModel: string
+  readonly models: readonly { readonly id: string; readonly name: string; readonly efforts: readonly string[]; readonly defaultEffort: string | null; readonly contextWindow: number | null }[]
+}
+
+/** The session's (or the selected) provider's models; `providers`, when asked for: every provider with a usable credential, that one first. */
+export interface ModelListing extends ProviderModels {
+  readonly providers?: readonly ProviderModels[]
 }

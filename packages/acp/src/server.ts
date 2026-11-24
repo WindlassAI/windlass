@@ -58,6 +58,9 @@ import {
   type EventData,
   type Harness,
   type ProviderProfile,
+  PROVIDER_CHOICES,
+  PROVIDER_PROFILES,
+  isProviderProfile,
   providerDescriptor,
   type HandEditPolicy,
   type MessageId,
@@ -136,6 +139,8 @@ import {
   handEditSentences,
   handEditTitle,
   sessionTitle,
+  type ModelListing,
+  type ProviderModels,
 } from "./extensions.ts"
 import { hookFailure, hooksState, lspState, mcpState, memoryChange, memoryKind, memoryState, skillsState, wakeCancel, wakeCreate, wakeCreateParams, wakeList, wakeSecret } from "./features.ts"
 import { type Logger, describeError } from "./log.ts"
@@ -199,7 +204,7 @@ export const EXTENSION_CAPABILITIES = {
   /** Keys of `clientCapabilities._meta[<ns>]` this server reads (`ClientMeta`). */
   clientMeta: ["events", "updates"],
   /** Keys of `_meta[<ns>]` on `session/new`, `session/load` and `session/resume` (`OpenMeta`). With `hostTools`, this server sends `_<ns>/host_call`. */
-  openMeta: ["model", "effort", "agent", "approval", "unattended", "sandboxHome", "withholdEnv", "passEnv", "requiredChecks", "hostTools", "attended", "children"],
+  openMeta: ["provider", "model", "effort", "agent", "approval", "unattended", "sandboxHome", "withholdEnv", "passEnv", "requiredChecks", "hostTools", "attended", "children"],
   /** The permission requests this server sends: the hand-edit question of an undo, and the approval of a tool call (the session's own, or a subagent's). */
   permissionRequests: ["revert", APPROVAL_META],
 } as const
@@ -226,7 +231,7 @@ function buildAgent(state: ConnectionState): AgentApp {
     .onRequest(EXT.steer, parseInputParams, ({ params }) => state.admit(params.sessionId, params.prompt, "steer", params.maxSteps, clientInput(params.meta?.[META.untrusted])))
     .onRequest(EXT.queue, parseInputParams, ({ params }) => state.admit(params.sessionId, params.prompt, "queue", params.maxSteps, clientInput(params.meta?.[META.untrusted])))
     .onRequest(EXT.admit, parseObject, ({ params }) => state.admitMessage(params))
-    .onRequest(EXT.models, (params) => parseObject(params ?? {}), ({ params }) => state.models(optionalString(params, "sessionId")))
+    .onRequest(EXT.models, (params) => parseObject(params ?? {}), ({ params }) => state.models(optionalString(params, "sessionId"), params.providers === true))
     .onRequest(EXT.revert, parseRevertParams, ({ params }) => state.revert(params, false))
     .onRequest(EXT.undoRevert, parseRevertParams, ({ params }) => state.revert(params, true))
     .onRequest(EXT.withdraw, parseObject, ({ params }) => state.withdraw(requireString(params, "sessionId"), requireString(params, "messageId")))
@@ -368,18 +373,17 @@ class ConnectionState {
       sessionCapabilities: { list: {}, resume: {}, close: {}, delete: {} },
       _meta: { [META.capabilities]: EXTENSION_CAPABILITIES },
     }
-    const { id, authMethod: { name, description } } = providerDescriptor(this.harness.profile)
     return {
       protocolVersion: PROTOCOL_VERSION,
       agentCapabilities,
       agentInfo: { name: brand.binary, title: brand.name, version: this.options.version ?? "0.0.0" },
-      authMethods: [{ id, name, description }],
+      authMethods: authMethods(this.harness.profile),
     }
   }
 
   async authenticate(methodId: string): Promise<Record<string, never>> {
-    if (methodId !== this.harness.profile) throw RequestError.invalidParams({ methodId }, `unknown auth method ${methodId}`)
-    await this.requireSignIn()
+    if (!isProviderProfile(methodId)) throw RequestError.invalidParams({ methodId }, `unknown auth method ${methodId}`)
+    await this.requireSignIn(methodId)
     return {}
   }
 
@@ -387,14 +391,17 @@ class ConnectionState {
 
   async newSession(cwd: string, mcpServers: number, meta: Opened | null) {
     requireDirectory(cwd)
-    await this.requireSignIn()
+    // The provider the client names, else the selected one: the session stays with it.
+    const profile = meta?.provider ?? this.harness.profile
+    await this.requireSignIn(profile)
     if (mcpServers > 0) this.log.warn(`ignoring ${mcpServers} MCP server(s): ${brand.name} does not connect to MCP servers yet`)
-    const asked = { model: meta?.model ?? null, effort: meta?.effort ?? null }
+    // The configuration's model is for the selected provider: another one starts with its own default.
+    const asked = { model: meta?.model ?? (profile === this.harness.profile ? null : providerDescriptor(profile).defaults.model), effort: meta?.effort ?? null }
     const settings = await this.harness.settingsFor(cwd, asked)
-    if (providerDescriptor(this.harness.profile).catalog.validateDefault || asked.model !== null || asked.effort !== null) await this.validate(settings)
+    if (providerDescriptor(profile).catalog.validateDefault || asked.model !== null || asked.effort !== null) await this.validate(settings, profile)
     // As the agent the client names; without one, as the default of the user's configuration, if any.
     const agent = meta?.agent ?? null
-    const session = this.engineErrors(() => this.harness.engine.createSession({ cwd, settings, ...(agent === null ? {} : { agent }), host: this.host(meta) }))
+    const session = this.engineErrors(() => this.harness.engine.createSession({ cwd, settings, ...(agent === null ? {} : { agent }), host: this.host(meta), ...(meta?.provider == null ? {} : { provider: meta.provider }) }))
     applyApproval(session, meta)
     const view = this.attach(session, cwd, session.projection().lastSeq, new Map())
     view.children = meta?.children !== false
@@ -759,16 +766,26 @@ class ConnectionState {
     return { messageId }
   }
 
-  async models(sessionId?: string) {
+  /** With `providers`, also every other provider with a usable credential; one that cannot be listed is left out. */
+  async models(sessionId?: string, providers = false): Promise<ModelListing> {
     const profile = sessionId === undefined ? this.harness.profile : this.requireView(sessionId).profile
     // Asked for afresh, so that a client that lists the models hears why they cannot be listed.
-    const models = await this.harness.listModels(undefined, profile).catch((error: unknown) => {
+    const own = await this.providerModels(profile).catch((error: unknown) => {
       if (!(error instanceof ModelListError)) throw error
       if (error.error.kind === "auth") throw authRequired(profile, error.message, error.error.code)
       throw new RequestError(-32603, `could not list the models: ${error.message}`, errorData({ reason: "model_list_failed", message: error.message, ...coded(error.error.code) }))
     })
+    if (!providers) return own
+    const others = (await this.harness.availableProviders()).filter((other) => other !== profile)
+    const listed = await Promise.all(others.map((other) => this.providerModels(other).catch(() => null)))
+    return { ...own, providers: [own, ...listed.filter((group) => group !== null)] }
+  }
+
+  private async providerModels(profile: ProviderProfile): Promise<ProviderModels> {
+    const models = await this.harness.listModels(undefined, profile)
     return {
-      defaultModel: this.harness.defaults.model,
+      provider: profile,
+      defaultModel: profile === this.harness.profile ? this.harness.defaults.model : providerDescriptor(profile).defaults.model,
       models: models.map(({ id, name, efforts, defaultEffort, contextWindow }) => ({ id, name, efforts: [...efforts], defaultEffort, contextWindow })),
     }
   }
@@ -1728,6 +1745,14 @@ class SessionView {
   }
 }
 
+/** One per provider of the registry, the selected one first: the ways a client can authenticate. */
+export function authMethods(selected: ProviderProfile): { id: string; name: string; description: string }[] {
+  return [selected, ...PROVIDER_PROFILES.filter((profile) => profile !== selected)].map((profile) => {
+    const { id, authMethod } = providerDescriptor(profile)
+    return { id, name: authMethod.name, description: authMethod.description }
+  })
+}
+
 function authRequired(profile: ProviderProfile, message: string, code: string | null | undefined): RequestError {
   return RequestError.authRequired({ methodId: profile, ...errorData({ reason: "auth_required", message, ...coded(code) }) }, providerDescriptor(profile).authMethod.requiredText(message))
 }
@@ -1764,7 +1789,7 @@ function namespaced(meta: unknown): Record<string, unknown> | null {
 }
 
 /** What a client said when it opened a session, checked: its required checks are the ones the engine runs, with the defaults. */
-type Opened = Omit<OpenMeta, "requiredChecks" | "hostTools"> & { readonly requiredChecks: readonly CheckConfig[] | null; readonly hostTools: readonly HostToolDeclaration[] | null }
+type Opened = Omit<OpenMeta, "requiredChecks" | "hostTools" | "provider"> & { readonly provider: ProviderProfile | null; readonly requiredChecks: readonly CheckConfig[] | null; readonly hostTools: readonly HostToolDeclaration[] | null }
 
 function openMeta(meta: unknown): Opened | null {
   const value = namespaced(meta)
@@ -1775,7 +1800,10 @@ function openMeta(meta: unknown): Opened | null {
     if (typeof field !== "string" || field === "") throw RequestError.invalidParams({ [key]: field }, `_meta.${META.capabilities}.${key} must be a non-empty string`)
     return field
   }
+  const provider = text("provider")
+  if (provider !== null && !isProviderProfile(provider)) throw RequestError.invalidParams({ provider }, `_meta.${META.capabilities}.provider must be ${PROVIDER_CHOICES}`)
   return {
+    provider,
     model: text("model"),
     effort: text("effort"),
     agent: text("agent"),

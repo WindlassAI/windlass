@@ -22,8 +22,10 @@ export function createRealEngine(): Engine {
       { id: "ses_1" as SessionId, title: null, cwd, updatedAt: new Date(2026, 10, 10, 17, 30).getTime(), model: "gpt-other" },
     ],
     listModels: async () => [
-      { id: "gpt-test", description: "the default model", efforts: ["low", "medium", "high"], isDefault: true },
-      { id: "gpt-other", description: null, efforts: [], isDefault: false },
+      { provider: "chatgpt", id: "gpt-test", description: "the default model", efforts: ["low", "medium", "high"], isDefault: true },
+      { provider: "chatgpt", id: "gpt-other", description: null, efforts: [], isDefault: false },
+      // A provider the registry may add: listed under its own heading.
+      { provider: "scripted", id: "scripted-model", description: null, efforts: ["low", "high"], isDefault: false },
     ],
   }
 }

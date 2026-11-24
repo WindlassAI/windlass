@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { type Options, helpText, parseArgs } from "../src/args.ts"
-import { brand } from "@windlass/core"
+import { PROVIDER_CHOICES, PROVIDER_PROFILES, brand, providerDescriptor } from "@windlass/core"
 
 const options = (argv: string[]): Options => {
   const parsed = parseArgs(argv)
@@ -79,6 +79,14 @@ describe("parseArgs", () => {
     expect(options(["--provider", "openai", "go"]).provider).toBe("openai")
     expect(parseArgs(["--models", "--json", "--provider=chatgpt"])).toMatchObject({ kind: "list", options: { provider: "chatgpt" } })
     expect(parseArgs(["--provider", "other"])).toMatchObject({ kind: "error" })
+  })
+
+  test("--provider is checked against, and helped from, the provider registry", () => {
+    expect(parseArgs(["--provider", "other", "go"])).toEqual({ kind: "error", message: `--provider must be ${PROVIDER_CHOICES}` })
+    for (const id of PROVIDER_PROFILES) expect(options(["--provider", id, "go"]).provider).toBe(id)
+    // One help line per provider, with what it reads.
+    for (const { id, auth } of PROVIDER_PROFILES.map(providerDescriptor))
+      expect(helpText()).toMatch(new RegExp(`^ {27}${id} +${auth.kind === "env-key" ? `reads ${auth.variable}` : `the ChatGPT sign-in \\(${brand.binary} login\\)`}$`, "m"))
   })
 
   test("--max-steps, --list-sessions and --models", () => {
