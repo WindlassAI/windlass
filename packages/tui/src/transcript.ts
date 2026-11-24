@@ -239,6 +239,8 @@ export interface SessionInfo {
   id: string | null
   cwd: string | null
   title: string | null
+  /** The provider the session stays with (`session.created`); `null` until it is known. */
+  provider?: string | null
   model: string | null
   effort: string | null
   /** The agent the session runs as (`agent.switched`); `null`: none. */
@@ -288,7 +290,7 @@ export class Transcript {
   readonly rows: Row[] = []
   readonly pending: PendingItem[] = []
   readonly calls: CallUsage[] = []
-  readonly session: SessionInfo = { id: null, cwd: null, title: null, model: null, effort: null, agent: null, taint: null, forkedFrom: null, inheritedCalls: 0 }
+  readonly session: SessionInfo = { id: null, cwd: null, title: null, provider: null, model: null, effort: null, agent: null, taint: null, forkedFrom: null, inheritedCalls: 0 }
   readonly activity: Activity = blankActivity()
   /** Bumped on every change. */
   version = 0
@@ -358,7 +360,7 @@ export class Transcript {
     this.rows.length = 0
     this.pending.length = 0
     this.calls.length = 0
-    Object.assign(this.session, { id: null, cwd: null, title: null, model: null, effort: null, agent: null, taint: null, forkedFrom: null, inheritedCalls: 0 })
+    Object.assign(this.session, { id: null, cwd: null, title: null, provider: null, model: null, effort: null, agent: null, taint: null, forkedFrom: null, inheritedCalls: 0 })
     Object.assign(this.activity, blankActivity())
     for (const map of [this.background, this.openText, this.openReasoning, this.tools, this.children, this.checks, this.compactions, this.inboxText, this.commandNotes, this.resumes, this.stepModels, this.callDiagnostics]) map.clear()
     this.diagnosticsForNext = []
@@ -561,6 +563,7 @@ export class Transcript {
         this.session.id = event.sessionId
         this.session.cwd = event.data.cwd
         this.session.title = event.data.title
+        this.session.provider = event.data.provider ?? null
         this.session.model = event.data.settings.model
         this.session.effort = event.data.settings.reasoningEffort
         // A fork's log starts with its parent's: the model calls before this point were the parent's.

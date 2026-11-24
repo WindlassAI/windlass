@@ -294,6 +294,8 @@ export interface DialogItem {
   /** A key that picks this item at once (`y`, `1`). */
   readonly key?: string
   readonly current?: boolean
+  /** The group the item is listed under (its provider), named in a column of its own on the group's first row. */
+  readonly group?: string
 }
 
 export interface DialogSpec {
@@ -454,18 +456,23 @@ export class Dialog extends Renderable {
     // stays put while a filter narrows them); a name that would take more than half the row keeps its own.
     // The column moves left when the longest detail would not fit after it; a name that then runs into the detail
     // is shortened at a word: the detail (an ID, a model, an age) is what is compared, and is never cut.
+    // Grouped items: the group's name in a column before the names, on its first row only.
+    const groupWidth = Math.max(0, ...spec.items.map((item) => (item.group === undefined ? 0 : textWidth(item.group) + 2)))
+    const names = inner - groupWidth
     const headOf = (item: DialogItem, label = item.label) => `${item.key === undefined ? "" : `[${item.key}] `}${label}${item.current === true ? " (current)" : ""}`
     const detailed = spec.items.filter((item) => item.detail !== undefined)
     const longestDetail = Math.max(0, ...detailed.map((item) => textWidth(item.detail!)))
-    const heads = Math.max(0, ...detailed.map((item) => textWidth(headOf(item))).filter((w) => w <= Math.floor(inner / 2)))
-    const column = inner - 4 - longestDetail >= 16 ? Math.min(heads, inner - 4 - longestDetail) : heads
+    const heads = Math.max(0, ...detailed.map((item) => textWidth(headOf(item))).filter((w) => w <= Math.floor(names / 2)))
+    const column = names - 4 - longestDetail >= 16 ? Math.min(heads, names - 4 - longestDetail) : heads
     for (let index = first; index < first + visible; index += 1) {
       const item = items[index]!
       const chosen = index === this.index
       const keyLabel = item.key === undefined ? "" : `[${item.key}] `
-      const room = item.detail === undefined ? Infinity : inner - 4 - textWidth(item.detail) - (textWidth(headOf(item)) - textWidth(item.label))
+      const room = item.detail === undefined ? Infinity : names - 4 - textWidth(item.detail) - (textWidth(headOf(item)) - textWidth(item.label))
       const label = textWidth(item.label) > room && room >= 12 ? shorten(item.label, room) : item.label
+      const firstOfGroup = index === first || items[index - 1]!.group !== item.group
       const line: Span[] = [
+        span(groupWidth === 0 ? "" : (firstOfGroup ? (item.group ?? "") : "").padEnd(groupWidth), "dim", { bold: firstOfGroup }),
         span(chosen ? "› " : "  ", "accent"),
         span(keyLabel, "dim"),
         span(label, chosen ? "selected" : undefined, { bold: chosen }),

@@ -28,6 +28,8 @@ export interface ForkInfo {
 export type OpenTarget = { readonly kind: "new" } | { readonly kind: "resume"; readonly id: string } | { readonly kind: "continue" }
 
 export interface OpenSettings {
+  /** A new session's provider (it stays with it); `null` or absent: the engine's selected one. */
+  readonly provider?: string | null
   readonly model: string | null
   readonly effort: string | null
   readonly maxSteps: number | null
@@ -42,6 +44,18 @@ export interface ModelChoice {
   readonly defaultEffort: string | null
   readonly contextWindow: number | null
   readonly isDefault: boolean
+}
+
+/** One provider's models, and the one a new session of it starts with. */
+export interface ProviderChoice {
+  readonly provider: string
+  readonly defaultModel: string
+  readonly models: readonly ModelChoice[]
+}
+
+/** The session's provider's models; `providers`: every provider with a usable credential, the session's first. */
+export interface ModelListing extends ProviderChoice {
+  readonly providers?: readonly ProviderChoice[]
 }
 
 export interface SessionChoice {
@@ -182,7 +196,7 @@ export interface Backend {
   readonly demo?: boolean
   open(target: OpenTarget, cwd: string, settings: OpenSettings): Promise<BackendSession>
   listSessions?(cwd: string): Promise<SessionChoice[]>
-  listModels?(sessionId?: string): Promise<{ readonly defaultModel: string; readonly models: readonly ModelChoice[] }>
+  listModels?(sessionId?: string): Promise<ModelListing>
   /** Who answers the agent's questions. Set by the app before the first open. */
   onQuestion: QuestionHandler
   /** Who answers tool calls' approval questions. Set by the app before the first open. */

@@ -82,6 +82,7 @@ export function panelLines(input: PanelInput, columns: number, rows: number): Sp
   const session = input.session
   field("id", session.id === null ? "—" : middle(session.id, inner - LABEL))
   field("dir", session.cwd === null ? "—" : middle(tilde(session.cwd, input.home), inner - LABEL))
+  if ((session.provider ?? null) !== null) field("provider", session.provider!)
   field("model", session.model ?? "—")
   field("effort", session.effort ?? "default")
   if ((session.agent ?? null) !== null) field("agent", session.agent!, "accent")

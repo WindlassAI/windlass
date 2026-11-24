@@ -18,7 +18,7 @@ exports[`the showcase turn 60x20 1`] = `
     edited 1 file: src/add.ts (from its tool calls) ·
       Ctrl-O for diffs
     tokens · 44,746 in · 78% cached · 396 out
-● ready
+● ready · gpt-test
 ›
 the demo is over · Ctrl-D quit"
 `;
@@ -51,7 +51,7 @@ exports[`the showcase turn 100x30 1`] = `
     edited 1 file: src/add.ts (from its tool calls) ·         │ demo: find-and-fix-a-failing-test
       Ctrl-O for diffs                                        │
     tokens · 44,746 in · 78% cached · 396 out                 │
-● ready
+● ready · gpt-test
 ›
 the demo has played all its messages · Ctrl-O expand · Ctrl-P panel · Ctrl-D quit"
 `;
@@ -104,7 +104,7 @@ exports[`the showcase turn 200x50 1`] = `
                                                                                                                                                       │
                                                                                                                                                       │
                                                                                                                                                       │
-● ready
+● ready · gpt-test
 ›
 the demo has played all its messages · Ctrl-O expand · Ctrl-P panel · Ctrl-D quit"
 `;

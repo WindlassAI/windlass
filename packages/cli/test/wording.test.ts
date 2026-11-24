@@ -5,7 +5,7 @@
  * to compact.
  */
 import { describe, expect, test } from "bun:test"
-import { ACCESS_TOKEN_FILE_ENV, FAILURE_TEXT, brand, event } from "@windlass/core"
+import { ACCESS_TOKEN_FILE_ENV, FAILURE_TEXT, PROVIDER_PROFILES, brand, event, providerDescriptor } from "@windlass/core"
 import { HAND_IN_ADVICE, handedInRejected } from "@windlass/core/auth/chatgpt"
 import { compactText, firstSentence } from "../src/agents.ts"
 import { helpText } from "../src/args.ts"
@@ -95,6 +95,14 @@ describe("a sign-in that cannot be used", () => {
     const message = "Check OPENAI_API_KEY and try again."
     expect(signInSentence(message, "openai")).toBe(message)
     expect(signInSentence(`no usable access token: ${message}`, "openai", true)).toBe(message)
+    // Every provider read from a key: its descriptor's advice, never the ChatGPT sign-in or plan.
+    for (const id of PROVIDER_PROFILES) {
+      const { auth, authMethod } = providerDescriptor(id)
+      if (auth.kind !== "env-key") continue
+      const sentence = signInSentence(`no usable access token: ${authMethod.description}`, id, true)
+      expect(sentence).toContain(auth.variable)
+      expect(sentence).not.toMatch(/ChatGPT|login/)
+    }
   })
 
   test("handed in from outside: the reason with the variable, then to hand in a new token, and never to sign in here", () => {

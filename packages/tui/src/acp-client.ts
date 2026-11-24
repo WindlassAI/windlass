@@ -35,7 +35,7 @@
  *   `approval.subagent`; its activity: `child.event` in the events
  */
 import { handEditChoices, signInReason } from "./cli.ts"
-import { type ClientSession, ClientError, HarnessClient, openWhenReleased } from "@windlass/acp/client"
+import { type ClientSession, ClientError, HarnessClient, type ProviderModels, openWhenReleased } from "@windlass/acp/client"
 import { type ClientCommand, type CommandsResult, EXT, type MemoryChangeParams, type MemoryChangeResult, type WakeCreateParams, type WakeCreateResult } from "@windlass/acp/extensions"
 import { handEditLines, handEditTitle } from "./features.ts"
 import { type ProviderKeys, type RevertResult, brand } from "@windlass/core"
@@ -59,9 +59,10 @@ import {
   type WakeListResult,
   type WakeSecretResult,
   type ForkInfo,
-  type ModelChoice,
+  type ModelListing,
   type OpenSettings,
   type OpenTarget,
+  type ProviderChoice,
   type QuestionHandler,
   type RevertOptions,
   type SessionChoice,
@@ -110,7 +111,7 @@ export class AcpBackend implements Backend {
 
   async open(target: OpenTarget, cwd: string, settings: OpenSettings): Promise<BackendSession> {
     const link = await this.connect()
-    const meta = { model: settings.model, effort: settings.effort, agent: settings.agent ?? null }
+    const meta = { model: settings.model, effort: settings.effort, agent: settings.agent ?? null, ...(target.kind === "new" && (settings.provider ?? null) !== null && { provider: settings.provider }) }
     try {
       if (target.kind === "new") return new AcpSession(this, await link.newSession(cwd, meta), settings.maxSteps)
       const named = target.kind === "resume" ? await link.resolveTyped(cwd, target.id) : await link.resolve(cwd)
@@ -138,11 +139,12 @@ export class AcpBackend implements Backend {
     }
   }
 
-  async listModels(sessionId?: string): Promise<{ defaultModel: string; models: ModelChoice[] }> {
+  async listModels(sessionId?: string): Promise<ModelListing> {
     const link = await this.connect()
     try {
-      const listed = await link.listModels(sessionId)
-      return { defaultModel: listed.defaultModel, models: listed.models.map((model) => ({ ...model, isDefault: model.id === listed.defaultModel })) }
+      const listed = await link.listModels(sessionId, { providers: true })
+      const choice = (group: ProviderModels): ProviderChoice => ({ provider: group.provider, defaultModel: group.defaultModel, models: group.models.map((model) => ({ ...model, isDefault: model.id === group.defaultModel })) })
+      return { ...choice(listed), ...(listed.providers === undefined ? {} : { providers: listed.providers.map(choice) }) }
     } catch (error) {
       throw failure(error)
     }

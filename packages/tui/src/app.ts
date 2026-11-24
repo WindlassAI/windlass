@@ -18,7 +18,8 @@
 import { aboutHandedIn, brand, providerDescriptor } from "@windlass/core"
 import { BoxRenderable, type CliRenderer, type KeyEvent, TextRenderable, TextareaRenderable } from "@opentui/core"
 import type { RevertPlan, RevertResult } from "@windlass/core"
-import { type ApprovalAnswer, type ApprovalAsk, type ApprovalInfo, type Backend, BackendError, type BackendSession, type Delivery, type DiffResult, type ModelChoice, type OpenSettings, type OpenTarget, type Question } from "./backend.ts"
+import { type ApprovalAnswer, type ApprovalAsk, type ApprovalInfo, type Backend, BackendError, type BackendSession, type Delivery, type DiffResult, type OpenSettings, type OpenTarget, type ProviderChoice, type Question } from "./backend.ts"
+import { chosenModel, effortItems, modelItems, providerGroups } from "./models.ts"
 import { DockState, QUIET_MS, commandOverflows, dockLines } from "./approval.ts"
 import { CLIENT_COMMANDS, COMMANDS, PALETTE_ROWS, type CommandSpec, complete, fileCommands, findFileCommand, paletteLines, parseCommand } from "./commands.ts"
 import { COMMAND_SCOPE, agentProblemLines, commandProblemLines, compactText, requestsText, signInSentence, unusableCommandLines } from "./cli.ts"
@@ -242,7 +243,8 @@ export class App {
 
   // ---------------------------------------------------------------- sessions
 
-  private async openSession(target: OpenTarget): Promise<boolean> {
+  /** `settings`: instead of the command line's, for a new session of another provider. */
+  private async openSession(target: OpenTarget, settings = this.options.settings): Promise<boolean> {
     this.connection = "starting"
     // What was asked about and told belongs to the session it was said in: another session asks again.
     this.asked.clear()
@@ -251,7 +253,7 @@ export class App {
     this.conversation.empty = target.kind === "new" ? "starting the engine…" : "opening the session…"
     this.redraw()
     try {
-      const session = await this.options.backend.open(target, this.options.cwd, this.options.settings)
+      const session = await this.options.backend.open(target, this.options.cwd, settings)
       this.session = session
       this.contextWindows.clear()
       this.modelsListed = false
@@ -366,7 +368,7 @@ export class App {
     this.redraw()
   }
 
-  private async switchTo(target: OpenTarget, banner?: () => void): Promise<void> {
+  private async switchTo(target: OpenTarget, banner?: () => void, settings?: OpenSettings): Promise<void> {
     if (this.transcript.activity.executing) return this.say("stop the agent first (Ctrl-C), then switch sessions", "warn")
     const old = this.session
     this.session = null
@@ -379,7 +381,7 @@ export class App {
     this.conversation.selected = null
     // Said before the session's history arrives, so it stands above it.
     banner?.()
-    await this.openSession(target)
+    await this.openSession(target, settings)
   }
 
   private async reconnect(): Promise<void> {
@@ -1070,46 +1072,50 @@ export class App {
     const backend = this.options.backend
     const session = this.session
     if (backend.listModels === undefined || session?.setConfig === undefined) return this.unavailable("/model")
-    let models: readonly ModelChoice[]
+    let groups: readonly ProviderChoice[]
     try {
-      models = (await backend.listModels(session.id)).models
+      groups = providerGroups(await backend.listModels(session.id))
       if (this.session !== session) return
     } catch (error) {
       return this.say(`could not list the models: ${error instanceof Error ? error.message : String(error)}`, "error")
     }
-    for (const model of models) this.contextWindows.set(model.id, model.contextWindow)
+    const own = groups[0]?.provider ?? null
+    for (const model of groups[0]?.models ?? []) this.contextWindows.set(model.id, model.contextWindow)
     this.modelsListed = true
     const currentModel = this.transcript.session.model
-    const chosen = await this.dialog.show({
+    const currentProvider = this.transcript.session.provider ?? own
+    const answer = await this.dialog.show({
       title: "Model",
-      detail: [[span("Applies from the next step, also in the middle of a turn.", "dim")]],
-      items: models.map((model) => ({
-        id: model.id,
-        label: model.id,
-        detail: [model.name === model.id ? null : model.name, model.contextWindow === null ? null : `${Math.round(model.contextWindow / 1000)}k context`, model.isDefault ? "default" : null].filter((part) => part !== null).join(" · "),
-        current: model.id === currentModel,
-      })),
+      detail: [
+        [span("Applies from the next step, also in the middle of a turn.", "dim")],
+        ...(groups.length > 1 ? [[span(`A session stays with its provider (${currentProvider}): a model of another provider starts a new session.`, "dim")]] : []),
+      ],
+      items: modelItems(groups, { provider: currentProvider, model: currentModel }),
       filterable: true,
       footer: "Enter choose · Esc cancel",
       cancel: null,
     })
+    const chosen = answer === null ? null : chosenModel(groups, answer)
     if (chosen === null) return
-    const model = models.find((candidate) => candidate.id === chosen)!
-    const currentEffort = this.transcript.session.effort
+    const { model } = chosen
+    const elsewhere = currentProvider !== null && chosen.provider !== currentProvider
+    const currentEffort = elsewhere ? null : this.transcript.session.effort
+    const efforts = effortItems(model, { effort: currentEffort, sameModel: model.id === currentModel })
     const effort =
-      model.efforts.length === 0
+      efforts === null
         ? "default"
         : await this.dialog.show({
             title: `Reasoning effort for ${model.id}`,
             detail: [],
-            items: [
-              { id: "default", label: "default", detail: model.defaultEffort === null ? "the model's own" : `the model's own (${model.defaultEffort})`, current: currentEffort === null },
-              ...model.efforts.map((value) => ({ id: value, label: value, current: currentEffort === value && model.id === currentModel })),
-            ],
+            items: efforts,
             filterable: false,
             footer: "Enter choose · Esc keeps the effort",
             cancel: null,
           })
+    if (elsewhere) {
+      const settings = { ...this.options.settings, provider: chosen.provider, model: model.id, effort: effort === null || effort === "default" ? null : effort }
+      return this.switchTo({ kind: "new" }, () => this.say(`a new session with ${chosen.provider} · ${model.id}: a session stays with the provider it started with`, "dim"), settings)
+    }
     try {
       if (model.id !== currentModel) await session.setConfig("model", model.id)
       if (effort !== null && effort !== (currentEffort ?? "default")) await session.setConfig("effort", effort)
@@ -1994,6 +2000,12 @@ export class App {
     return this.options.suggest === undefined ? "Type a message and press Enter. /help lists keys and commands." : "This is a demo: a recorded session, replayed without a model. Its prompt is in the input: press Enter to play it. /help lists keys."
   }
 
+  /** ` · provider · model` of the session, as far as it is known. */
+  private modelText(): string {
+    const { provider, model } = this.transcript.session
+    return [provider ?? null, model].filter((part) => part !== null).map((part) => ` · ${part}`).join("")
+  }
+
   private statusLine(columns: number): Span[] {
     const activity = this.transcript.activity
     const now = this.now()
@@ -2004,7 +2016,7 @@ export class App {
     else if (this.dock?.feature !== undefined && !this.dock.state.withdrawn)
       // A question about the project's configuration waits: the session is not ready for a message until it is answered.
       parts.push(span("? ", "warn", { bold: true }), span("waiting for your answer", "warn"), span(` · ${this.dock.feature.subject}${this.dock.state.focused ? "" : " · Tab to answer"}`, "dim"))
-    else parts.push(span("● ready", "dim"))
+    else parts.push(span("● ready", "dim"), span(this.modelText(), "dim"))
     // Work that goes on while the session's own turn waits or is over: a subagent in the background.
     const subagents = this.transcript.runningSubagents()
     if (this.connection === "connected" && subagents.length > 0 && (!activity.executing || subagents.some((view) => view.background)))

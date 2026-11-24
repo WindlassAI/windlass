@@ -5,7 +5,7 @@
  * model requests. It has no undo, no session list and no model list; the TUI
  * says so when they are asked for.
  */
-import type { ApprovalHandler, Backend, BackendSession, Delivery, ModelChoice, OpenSettings, OpenTarget, QuestionHandler, StreamItem } from "./backend.ts"
+import type { ApprovalHandler, Backend, BackendSession, Delivery, ModelListing, OpenSettings, OpenTarget, QuestionHandler, StreamItem } from "./backend.ts"
 import { FakeEngine, type FakeOptions, type FakeSession } from "./cli.ts"
 import type { Scenario } from "@windlass/core/testing/scenarios"
 
@@ -36,10 +36,10 @@ export class DemoBackend implements Backend {
   }
 
   /** The scenario's model, with the context window it is played with, so the panel can say how full the window is. */
-  async listModels(): Promise<{ defaultModel: string; models: ModelChoice[] }> {
+  async listModels(): Promise<ModelListing> {
     const created = this.scenario.phases.flatMap((phase) => phase.events).find((event) => event.type === "session.created")
     const model = created?.type === "session.created" ? created.data.settings.model : "demo"
-    return { defaultModel: model, models: [{ id: model, name: `${model} (demo)`, efforts: [], defaultEffort: null, contextWindow: this.scenario.contextWindow ?? DEMO_CONTEXT_WINDOW, isDefault: true }] }
+    return { provider: "demo", defaultModel: model, models: [{ id: model, name: `${model} (demo)`, efforts: [], defaultEffort: null, contextWindow: this.scenario.contextWindow ?? DEMO_CONTEXT_WINDOW, isDefault: true }] }
   }
 
   async stop(): Promise<void> {}
