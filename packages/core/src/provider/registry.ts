@@ -5,8 +5,9 @@ import { anthropic } from "./providers/anthropic.ts"
 import { chatgpt } from "./providers/chatgpt.ts"
 import { google } from "./providers/google.ts"
 import { openai } from "./providers/openai.ts"
+import { openrouter } from "./providers/openrouter.ts"
 
-const providers = [chatgpt, openai, anthropic, google] as const satisfies readonly ProviderDescriptor[]
+const providers = [chatgpt, openai, anthropic, google, openrouter] as const satisfies readonly ProviderDescriptor[]
 export type ProviderProfile = (typeof providers)[number]["id"]
 export const DEFAULT_PROFILE = chatgpt.id
 export const PROVIDER_ENV = `${brand.envPrefix}PROVIDER`

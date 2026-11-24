@@ -1,0 +1,12 @@
+data: {"id":"chatcmpl-0a6ca3ba-affa-47cd-bd3a-306fa12cc8bc","object":"chat.completion.chunk","created":1787756462,"model":"qwen/qwen3.6-27b","system_fingerprint":"fp_56957dc726","choices":[{"index":0,"delta":{"role":"assistant","content":null},"logprobs":null,"finish_reason":null}],"x_groq":{"id":"req_01m0z9dfhmep08n3ddk32a8ypy","seed":1790733674}}
+
+data: {"id":"chatcmpl-0a6ca3ba-affa-47cd-bd3a-306fa12cc8bc","object":"chat.completion.chunk","created":1787756462,"model":"qwen/qwen3.6-27b","system_fingerprint":"fp_56957dc726","choices":[{"index":0,"delta":{"tool_calls":[{"id":"ymftvsqar","type":"function","function":{"name":"lookup_weather","arguments":"{\"city\":\"Paris\"}"},"index":0}]},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-0a6ca3ba-affa-47cd-bd3a-306fa12cc8bc","object":"chat.completion.chunk","created":1787756462,"model":"qwen/qwen3.6-27b","system_fingerprint":"fp_56957dc726","choices":[{"index":0,"delta":{"tool_calls":[{"id":"968mxnfem","type":"function","function":{"name":"lookup_weather","arguments":"{\"city\":\"London\"}"},"index":1}]},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-0a6ca3ba-affa-47cd-bd3a-306fa12cc8bc","object":"chat.completion.chunk","created":1787756462,"model":"qwen/qwen3.6-27b","system_fingerprint":"fp_56957dc726","choices":[{"index":0,"delta":{},"logprobs":null,"finish_reason":"tool_calls"}],"x_groq":{"id":"req_01m0z9dfhmep08n3ddk32a8ypy","usage":{"queue_time":0.389970164,"prompt_tokens":326,"prompt_time":0.027692693,"completion_tokens":54,"completion_time":0.119909051,"total_tokens":380,"total_time":0.147601744}},"usage":{"queue_time":0.389970164,"prompt_tokens":326,"prompt_time":0.027692693,"completion_tokens":54,"completion_time":0.119909051,"total_tokens":380,"total_time":0.147601744}}
+
+data: {"id":"chatcmpl-0a6ca3ba-affa-47cd-bd3a-306fa12cc8bc","object":"chat.completion.chunk","created":1787756462,"model":"qwen/qwen3.6-27b","system_fingerprint":"fp_56957dc726","choices":[],"usage":{"queue_time":0.389970164,"prompt_tokens":326,"prompt_time":0.027692693,"completion_tokens":54,"completion_time":0.119909051,"total_tokens":380,"total_time":0.147601744},"service_tier":"on_demand"}
+
+data: [DONE]
+
