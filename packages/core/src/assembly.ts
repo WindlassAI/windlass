@@ -24,6 +24,7 @@ import { EngineError, type Engine, type EngineOptions, type ModelOffer, createEn
 import type { SessionSettings } from "./event/durable.ts"
 import type { ProviderError } from "./provider/error.ts"
 import { type ModelInfo, ModelListError } from "./provider/catalog.ts"
+import { launchModelRelayEnv, modelRelayUrl } from "./provider/relay.ts"
 import { chatgptAuth } from "./provider/providers/chatgpt.ts"
 import { wires } from "./provider/wire/index.ts"
 import type { Provider } from "./provider/provider.ts"
@@ -218,6 +219,8 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     if ((explicit !== undefined || tokenFile !== null) && selected !== saved)
       throw new EngineError("invalid_request", `This session uses ${saved}. Start a new session to use ${selected}.`)
   }
+  const relayEnv = launchModelRelayEnv()
+  const baseUrl = options.provider === undefined ? modelRelayUrl(relayEnv, descriptor.auth.kind, tokenFile) : undefined
   // Capture the credential before any tool, hook, MCP server or other subprocess can inherit it.
   Object.assign(launchKeys, takeProviderKeys(process.env))
   const keys = { ...launchKeys, ...options.apiKeys }
@@ -230,9 +233,8 @@ export function createHarness(options: HarnessOptions = {}): Harness {
   // A handed-in access token is a secret this process reads from a file, not from its environment, and the file is
   // replaced while it runs: every token read joins the values removed from tool output, a list the engine reads
   // each time it redacts, and the list itself looks at the file then (`secretsWithTokenFile`).
-  const endpoint = options.provider === undefined ? chatgptAuth.relayEndpoint() : {}
   const known = options.engine?.approval?.secrets ?? environmentSecrets(process.env)
-  const secrets = [...known, ...Object.values(keys).map((key) => key.trim()).filter(Boolean)]
+  const secrets = [...known, ...Object.values(relayEnv), ...(baseUrl ? [baseUrl] : []), ...Object.values(keys).map((key) => key.trim()).filter(Boolean)]
   const redactions = tokenFile === null ? secrets : secretsWithTokenFile(secrets, tokenFile)
   const accessToken =
     tokenFile === null
@@ -247,10 +249,11 @@ export function createHarness(options: HarnessOptions = {}): Harness {
 
   const connection = (profile: ProviderProfile) => {
     const { auth, authMethod } = providerDescriptor(profile)
-    if (auth.kind === "chatgpt-oauth") return { ...endpoint, profile, accessToken }
+    const endpoint = { profile, baseUrl: profile === selected ? baseUrl : undefined }
+    if (auth.kind === "chatgpt-oauth") return { ...endpoint, accessToken }
     if (tokenFile !== null) throw new EngineError("invalid_request", "a handed-in token requires the chatgpt profile")
     return {
-      profile,
+      ...endpoint,
       accessToken: async () => {
         const key = keys[auth.variable]?.trim()
         if (!key) throw new AuthError("missing_api_key", authMethod.description)

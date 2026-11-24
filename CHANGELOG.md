@@ -6,6 +6,10 @@ All notable changes to Windlass are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Hosts can set `WINDLASS_MODEL_BASE_URL` to relay OpenAI, Anthropic, Google or OpenRouter requests, including model lists and titles, using a placeholder in the selected provider’s API-key variable.
+
 ## [0.7.0] - 2026-11-24
 
 ### Added

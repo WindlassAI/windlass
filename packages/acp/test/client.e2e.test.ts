@@ -88,6 +88,18 @@ test("ACP exits with a clear error when its launcher never sends the API key", a
   }
 })
 
+test("the source CLI refuses a project dotenv relay before starting its ACP engine", async () => {
+  const { root, workspace } = place()
+  const variable = `${brand.envPrefix}MODEL_BASE_URL`
+  writeFileSync(join(workspace, ".env"), `${variable}=http://localhost:1/v1\n`)
+  const child = Bun.spawn([process.execPath, MAIN, "--provider", "openai", "--models"], {
+    cwd: workspace, env: { PATH: process.env.PATH, HOME: root, OPENAI_API_KEY: "synthetic-placeholder" },
+    stdin: "ignore", stdout: "ignore", stderr: "pipe",
+  })
+  expect(await child.exited).toBe(2)
+  expect(await new Response(child.stderr).text()).toContain(`Using ${variable} from source requires bun --no-env-file`)
+})
+
 test("an OpenAI key serves the catalog, a shell tool round trip and a resumed session over ACP", async () => {
   const { root, workspace, dataDir } = place()
   const key = "only-the-local-server-gets-this-key"
@@ -96,6 +108,8 @@ test("an OpenAI key serves the catalog, a shell tool round trip and a resumed se
   mkdirSync(configDir, { recursive: true })
   const config = join(configDir, "config.json")
   writeFileSync(config, JSON.stringify({ provider: "openai" }))
+  const relayBase = `${brand.envPrefix}MODEL_BASE_URL`
+  const allowedOrigin = `${brand.envPrefix}MODEL_ALLOWED_ORIGIN`
   const bodies: { input: { type: string; call_id?: string; output?: string }[] }[] = []
   const titles: string[] = []
   let catalog = [model]
@@ -114,32 +128,39 @@ test("an OpenAI key serves the catalog, a shell tool round trip and a resumed se
       if (title) titles.push(body.model)
       else bodies.push(body)
       const item = !title && bodies.length === 1
-        ? { type: "function_call", call_id: "call_env", id: "fc_env", name: "shell", arguments: JSON.stringify({ command: 'test -z "${OPENAI_API_KEY+x}" && printf "child-%s-clean" env' }) }
+        ? { type: "function_call", call_id: "call_env", id: "fc_env", name: "shell", arguments: JSON.stringify({ command: `test -z "\${OPENAI_API_KEY+x}\${${relayBase}+x}\${${allowedOrigin}+x}" && cat relay.txt && printf "child-%s-clean" env` }) }
         : { type: "message", id: `msg_${bodies.length}`, role: "assistant", content: [{ type: "output_text", text: "Done." }] }
       const response = { output: [item], usage: { input_tokens: 20, input_tokens_details: { cached_tokens: 8 }, output_tokens: 3, output_tokens_details: { reasoning_tokens: 1 } } }
       const frames = [{ type: "response.output_item.done", output_index: 0, item }, { type: "response.completed", response }]
       return new Response(frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join(""), { headers: { "content-type": "text/event-stream", "x-request-id": "req_local" } })
     },
   })
-  // Only the test process redirects the fixed public URLs. Fail before startup if the ACP child inherited the key.
+  const baseUrl = server.url.origin + "/v1"
+  writeFileSync(join(workspace, "relay.txt"), baseUrl + "\n")
+  // The first launch uses the host relay. Later launches exercise the default through the test transport.
   const preload = join(root, "local-provider.ts")
   writeFileSync(preload, `
     if (process.env.OPENAI_API_KEY !== undefined) throw new Error("key in ACP child environment")
+    const relayed = process.env[${JSON.stringify(relayBase)}] !== undefined
     const send = globalThis.fetch
     globalThis.fetch = (input, init) => {
       if (process.connected) throw new Error("API key IPC is still connected")
       const url = new URL(input)
+      if (relayed) {
+        if (url.origin !== ${JSON.stringify(server.url.origin)}) throw new Error("expected the relay")
+        return send(input, init)
+      }
       if (url.origin !== "https://api.openai.com") throw new Error("unexpected upstream")
       return send(new URL(url.pathname, ${JSON.stringify(server.url.href)}), init)
     }
   `)
   const logs: string[] = []
-  const start = async (profile?: string, apiKey = key) => {
+  const start = async (profile?: string, apiKey = key, relayed = false) => {
     const link = await HarnessConnection.start({
       transport: {
         kind: "child", command: [process.execPath, "--no-env-file", "--preload", preload, MAIN, "acp"], apiKeys: { OPENAI_API_KEY: apiKey },
         env: { PATH: process.env.PATH, HOME: root, XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: dataDir,
-          WINDLASS_WAKE: "off", WINDLASS_PROVIDER: profile },
+          WINDLASS_WAKE: "off", WINDLASS_PROVIDER: profile, ...(relayed && { [relayBase]: baseUrl, [allowedOrigin]: server.url.origin }) },
       },
       clientInfo: { name: "test", title: "provider test", version: "0" },
       log: (line) => void logs.push(line),
@@ -148,7 +169,7 @@ test("an OpenAI key serves the catalog, a shell tool round trip and a resumed se
     return link
   }
   try {
-    const first = await start()
+    const first = await start(undefined, key, true)
     expect((await first.listModels()).models.map(({ id }) => id)).toEqual([model])
     await expect(first.newSession(workspace)).rejects.toMatchObject({ reason: "unknown_model", message: expect.stringContaining(DEFAULT_MODEL) })
     catalog = ["gpt-image-1"]
@@ -161,7 +182,7 @@ test("an OpenAI key serves the catalog, a shell tool round trip and a resumed se
     expect(items.map(kind)).toContain("execution.succeeded")
     expect(bodies).toHaveLength(2)
     expect(bodies[1]?.input).toContainEqual(expect.objectContaining({ type: "function_call", call_id: "call_env" }))
-    expect(bodies[1]?.input).toContainEqual(expect.objectContaining({ type: "function_call_output", call_id: "call_env", output: expect.stringContaining("child-env-clean") }))
+    expect(bodies[1]?.input).toContainEqual(expect.objectContaining({ type: "function_call_output", call_id: "call_env", output: expect.stringContaining("[REDACTED:env]\nchild-env-clean") }))
     expect(bodies[0]).toMatchObject({ model, store: false, prompt_cache_key: session.id })
     expect(bodies[0]).not.toHaveProperty("reasoning")
     await first.stop()

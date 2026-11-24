@@ -60,6 +60,24 @@ For new sessions, `--provider` takes precedence over
 `WINDLASS_PROVIDER`, then `provider` in your user configuration, then the default `chatgpt`. A session
 keeps its provider when resumed. Start a new session to switch providers.
 
+To use a host relay, put the relay's placeholder in the selected provider's key variable and keep the
+upstream key at the relay. Set `WINDLASS_MODEL_BASE_URL` to the prefix for that provider's API.
+Windlass appends the paths below for model listing and generation, including automatic titles.
+
+| Provider | Example relay base | Catalog path | Generation path |
+| --- | --- | --- | --- |
+| OpenAI | `https://relay.example/v1` | `/models` | `/responses` |
+| Anthropic | `https://relay.example` | `/v1/models` | `/v1/messages` |
+| Google | `https://relay.example` | `/v1beta/models` | `/v1beta/models/<model>:streamGenerateContent?alt=sse` |
+| OpenRouter | `https://relay.example/api/v1` | `/models` | `/chat/completions` |
+
+For these examples, also set `WINDLASS_MODEL_ALLOWED_ORIGIN=https://relay.example`. Every non-loopback
+relay requires an exact origin match, including the scheme and port. API-key providers accept HTTP on
+loopback or at an explicitly allowed private IP address (RFC 1918 IPv4 or unique-local IPv6).
+The base may include a routing prefix. Credentials in the URL, query strings, fragments and redirects
+are refused. When running from source, start Bun with `--no-env-file`. Child tools do not inherit either
+relay variable, and their values are redacted from tool output.
+
 ### One sign-in for several machines
 
 A ChatGPT sign-in cannot be copied to a second machine: every refresh replaces the refresh token, so the first copy
@@ -112,7 +130,7 @@ refreshes or writes `auth.json`. The file holds what `login token --json` printe
 around either is ignored. With the JSON form `windlass` knows when the token expires: `login status` shows the time left, and an
 expired token is refused before anything is sent.
 
-A host can route model traffic through its relay. Start the executable with
+A host can route ChatGPT model traffic through its relay. Start the executable with
 `WINDLASS_MODEL_BASE_URL=http://127.0.0.1:8080/v1` and set `WINDLASS_ACCESS_TOKEN_FILE` to a file containing
 only a session placeholder. Keep the real ChatGPT token at the relay. Windlass sends the file's bearer on
 `GET /v1/models` and `POST /v1/responses`, including title requests. The relay authenticates the placeholder
@@ -666,7 +684,7 @@ work was not merged keeps its `windlass/subagent-<id>` branch.
 | `WINDLASS_ENGINE_START_TIMEOUT_MS` | how long the server child may take to start (default 20000) |
 | `WINDLASS_PROVIDER` | default provider for new sessions when `--provider` is omitted |
 | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY` | credentials for the API-key providers (see [API keys](#api-keys)) |
-| `WINDLASS_MODEL_BASE_URL` | host URL prefix for the ChatGPT provider and model catalog, requires `WINDLASS_ACCESS_TOKEN_FILE` |
+| `WINDLASS_MODEL_BASE_URL` | host relay prefix for the selected provider’s model requests and catalog (see [API keys](#api-keys)). ChatGPT requires `WINDLASS_ACCESS_TOKEN_FILE` |
 | `WINDLASS_MODEL_ALLOWED_ORIGIN` | exact origin the host allows for a relay outside loopback |
 | `WINDLASS_ACCESS_TOKEN_FILE` | a file with an access token handed in by the `windlass` that holds the ChatGPT sign-in (`windlass login token` there): this process runs on it and does not use a saved sign-in ("One sign-in for several machines" above) |
 | `WINDLASS_WAKE` | `off`: this process's server fires no wake-ups (an interactive `windlass`, `windlass tui` and `windlass acp` fire them; a one-prompt run never does) |
