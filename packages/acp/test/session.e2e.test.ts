@@ -1,7 +1,7 @@
 import { afterEach, expect, test, setDefaultTimeout } from "bun:test"
 import { join } from "node:path"
 import { methods } from "@agentclientprotocol/sdk"
-import { ACCESS_TOKEN_FILE_ENV, FAILURE_TEXT, brand } from "@windlass/core"
+import { ACCESS_TOKEN_FILE_ENV, FAILURE_TEXT, PROVIDER_CHOICES, PROVIDER_PROFILES, brand, providerDescriptor } from "@windlass/core"
 import { HANDED_IN_REJECTED, HAND_IN_ADVICE } from "@windlass/core/auth/chatgpt"
 import { E2E_TIMEOUT_MS, script } from "@windlass/core/testing"
 import { SIGN_IN_HINT } from "../../core/src/provider/providers/chatgpt.ts"
@@ -105,13 +105,35 @@ test("session/list, session/close and session/delete (a soft delete: the session
 test("signed out: session creation fails with auth-required and says how to sign in", async () => {
   const harness = await start({ signIn: async () => ({ signedIn: false, message: `Not signed in. To sign in, ${SIGN_IN_HINT}.` }) })
   const init = (harness.wire[0] as { result: { authMethods: { id: string }[] } }).result
-  expect(init.authMethods.map((method) => method.id)).toEqual(["chatgpt"])
+  expect(init.authMethods.map((method) => method.id)).toEqual([...PROVIDER_PROFILES])
   const attempt = harness.connection.agent.request(methods.agent.session.new, { cwd: harness.workspace, mcpServers: [] })
   await expect(attempt).rejects.toMatchObject({ code: -32000 })
   const error = (await attempt.catch((caught: unknown) => caught)) as { message: string }
   expect(error.message).toContain(`${brand.binary} login`)
   await expect(harness.connection.agent.request(methods.agent.authenticate, { methodId: "chatgpt" })).rejects.toMatchObject({ code: -32000 })
   await expect(harness.connection.agent.request(methods.agent.session.load, { sessionId: "ses_x", cwd: harness.workspace, mcpServers: [] })).rejects.toMatchObject({ code: -32000 })
+})
+
+test("one auth method per provider of the registry; a new session can name its provider; the models come per provider", async () => {
+  const asked: string[] = []
+  const harness = await start({ signIn: async () => (asked.push("sign-in"), { signedIn: true }) })
+  const init = (harness.wire[0] as { result: { authMethods: { id: string; name: string; description: string }[] } }).result
+  // The selected provider first, then the rest of the registry, each as its descriptor names it.
+  expect(init.authMethods).toEqual(PROVIDER_PROFILES.map((id) => ({ id, name: providerDescriptor(id).authMethod.name, description: providerDescriptor(id).authMethod.description })))
+  for (const methodId of PROVIDER_PROFILES) expect(await harness.connection.agent.request(methods.agent.authenticate, { methodId })).toEqual({})
+  expect(asked).toHaveLength(PROVIDER_PROFILES.length)
+  await expect(harness.connection.agent.request(methods.agent.authenticate, { methodId: "nope" })).rejects.toMatchObject({ code: -32602 })
+
+  const bad = harness.connection.agent.request(methods.agent.session.new, { cwd: harness.workspace, mcpServers: [], _meta: { [META.capabilities]: { provider: "nope" } } })
+  await expect(bad).rejects.toMatchObject({ code: -32602, message: expect.stringContaining(PROVIDER_CHOICES) })
+  const { sessionId } = await harness.connection.agent.request(methods.agent.session.new, { cwd: harness.workspace, mcpServers: [], _meta: { [META.capabilities]: { provider: "chatgpt" } } })
+  expect(harness.backend.engine.sessionProfile(sessionId as never)).toBe("chatgpt")
+
+  // A harness given its provider has that one only: the listing groups it under its ID.
+  const listed = await harness.connection.agent.request<{ provider: string; defaultModel: string; providers?: { provider: string; defaultModel: string; models: { id: string }[] }[] }>(EXT.models, { providers: true })
+  expect(listed.provider).toBe("chatgpt")
+  expect(listed.providers?.map(({ provider, defaultModel }) => ({ provider, defaultModel }))).toEqual([{ provider: "chatgpt", defaultModel: listed.defaultModel }])
+  expect((await harness.connection.agent.request<{ providers?: unknown }>(EXT.models, {})).providers).toBeUndefined()
 })
 
 test("a failed turn answers the prompt with an error that says why; signed out mid-session is auth-required", async () => {

@@ -48,12 +48,25 @@ describe("--list-sessions and --models", () => {
     expect(sessions.code).toBe(0)
     expect(sessions.out).toBe("ses_2  2026-11-11 09:05  gpt-test   Fix the add test\nses_1  2026-11-10 17:30  gpt-other  (untitled)\n")
     const models = await runCli(["--models"], { realEngineModule: STUB })
-    expect(models.out).toBe("* gpt-test   effort: low, medium, high  the default model\n  gpt-other\n\n* the default when --model is not given\n")
+    expect(models.out).toBe(
+      [
+        "chatgpt",
+        "* gpt-test        effort: low, medium, high  the default model",
+        "  gpt-other",
+        "",
+        "scripted",
+        "  scripted-model  effort: low, high",
+        "",
+        "* the default when --model is not given",
+        "a model of another provider needs --provider <name> (a session stays with its provider)",
+        "",
+      ].join("\n"),
+    )
   })
 
   test("with --json, one object per line", async () => {
     const result = await runCli(["--models", "--json"], { realEngineModule: STUB })
-    expect(result.out.trim().split("\n").map((line) => JSON.parse(line).id)).toEqual(["gpt-test", "gpt-other"])
+    expect(result.out.trim().split("\n").map((line) => JSON.parse(line)).map(({ provider, id }) => `${provider}/${id}`)).toEqual(["chatgpt/gpt-test", "chatgpt/gpt-other", "scripted/scripted-model"])
   })
 
   test("an engine without them says so", async () => {

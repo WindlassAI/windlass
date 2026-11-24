@@ -138,22 +138,24 @@ export function createRealEngine(options: RealEngineOptions = {}): Engine {
       }
     },
 
+    // Every provider with a usable credential, the selected one first. Only the selected one's failure is reported.
     listModels: async (): Promise<ModelInfo[]> => {
-      try {
-        const models = await harness.listModels()
-        return models.map((model) => ({
-          id: model.id,
-          description: model.name === model.id ? null : model.name,
-          efforts: model.efforts,
-          isDefault: model.id === harness.defaults.model,
-        }))
-      } catch (error) {
-        if (error instanceof ModelListError)
+      const rows: ModelInfo[] = []
+      for (const profile of await harness.availableProviders()) {
+        const selected = profile === harness.profile
+        try {
+          const models = await harness.listModels(undefined, profile)
+          for (const model of models)
+            rows.push({ provider: profile, id: model.id, description: model.name === model.id ? null : model.name, efforts: model.efforts, isDefault: selected && model.id === harness.defaults.model })
+        } catch (error) {
+          if (!(error instanceof ModelListError)) throw error
+          if (!selected) continue
           throw error.error.kind === "auth"
             ? new EngineUnavailable(signInSentence(error.message, harness.profile, true), "auth")
             : new EngineUnavailable(`could not list the models: ${error.message}`)
-        throw error
+        }
       }
+      return rows
     },
   }
 }

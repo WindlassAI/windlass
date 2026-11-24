@@ -149,11 +149,14 @@ export function createAcpEngine(options: AcpEngineOptions = {}): Engine {
       }),
     listModels: () =>
       listing(async (connected) => {
-        const listed = await connected.listModels().catch((error: unknown) => {
+        const listed = await connected.listModels(undefined, { providers: true }).catch((error: unknown) => {
           if (error instanceof ClientError && error.reason === "auth_required") throw new EngineUnavailable(signInSentence(error.message, error.profile, true), "auth")
           throw unavailable(error)
         })
-        return listed.models.map((model): ModelInfo => ({ id: model.id, description: model.name === model.id ? null : model.name, efforts: model.efforts, isDefault: model.id === listed.defaultModel }))
+        // Every provider with a usable credential, the selected one first; only its default is a new session's.
+        return (listed.providers ?? [listed]).flatMap((group) =>
+          group.models.map((model): ModelInfo => ({ provider: group.provider, id: model.id, description: model.name === model.id ? null : model.name, efforts: model.efforts, isDefault: group.provider === listed.provider && model.id === listed.defaultModel })),
+        )
       }),
     commands: (cwd, builtins) =>
       listing(async (connected) => {

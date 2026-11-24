@@ -1229,7 +1229,8 @@ export interface Engine {
    * used (a name of the engine's own tools, a name twice, a schema that is
    * not an object's).
    */
-  readonly createSession: (input: { readonly cwd: string; readonly settings: SessionSettings; readonly title?: string | null; readonly agent?: string | null; readonly host?: HostTools | null }) => EngineSession
+  /** `provider`: the profile the session is pinned to; absent, the engine's own. */
+  readonly createSession: (input: { readonly cwd: string; readonly settings: SessionSettings; readonly title?: string | null; readonly agent?: string | null; readonly host?: HostTools | null; readonly provider?: ProviderProfile }) => EngineSession
   /**
    * The agents a session in `cwd` could run as, as they are now: the
    * definitions, what could not be used (skipped, shadowed, warnings) and
@@ -1795,15 +1796,16 @@ export function createEngine(options: EngineOptions): Engine {
   return {
     createSession: (input) => {
       assertOpen()
+      const selected = input.provider === undefined ? core : coreFor(input.provider)
       // Decided before anything exists: an agent that cannot be used, or settings the provider does not offer, create nothing.
-      checkHost(core, input.host ?? null)
-      const start = startAs(core, input)
+      checkHost(selected, input.host ?? null)
+      const start = startAs(selected, input)
       const id = core.ids.session()
       const store = storeErrors(() => core.stores.create(id))
-      const session = new LiveSession(core, id, store, input.cwd)
+      const session = new LiveSession(selected, id, store, input.cwd)
       try {
         session.write([
-          event("session.created", { cwd: input.cwd, title: input.title ?? null, lineage: null, provider: core.profile, settings: start.settings }),
+          event("session.created", { cwd: input.cwd, title: input.title ?? null, lineage: null, provider: selected.profile, settings: start.settings }),
           // The session starts as the agent: recorded with it, before its first baseline, which will carry the instructions.
           ...(start.agent === null ? [] : [event("agent.switched", { messageId: null, from: null, to: start.agent })]),
         ])

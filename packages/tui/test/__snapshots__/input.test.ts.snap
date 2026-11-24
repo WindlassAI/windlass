@@ -1,0 +1,28 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`the model picker lists the models grouped by provider, the session's first, and says another provider starts a new session 1`] = `
+"╭─ Model ──────────────────────────────────────────────────────────────────╮
+│ Applies from the next step, also in the middle of a turn.                │
+│ A session stays with its provider (chatgpt): a model of another provider │
+│ starts a new session.                                                    │
+│                                                                          │
+│ filter: ▏                                                                │
+│ chatgpt   › gpt-6-luna (current)  200k context · default                 │
+│             gpt-6.1-sol           200k context                           │
+│ openai      gpt-6.1-sol           200k context · default                 │
+│ scripted    think-1               200k context · default                 │
+│             plain-1               200k context                           │
+│                                                                          │
+│                                                                          │
+╰─ Enter choose · Esc cancel ──────────────────────────────────────────────╯"
+`;
+
+exports[`the model picker the efforts are the chosen model's own, and a model of another provider opens a new session with it 1`] = `
+"╭─ Reasoning effort for think-1 ───────────────────────────────────────────╮
+│ › default (current)  the model's own (minimal)                           │
+│   minimal                                                                │
+│   max                                                                    │
+│                                                                          │
+│                                                                          │
+╰─ Enter choose · Esc keeps the effort ────────────────────────────────────╯"
+`;

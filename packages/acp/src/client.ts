@@ -74,6 +74,8 @@ import {
   type TaskItem,
   type TurnNotification,
   type UsageNotification,
+  type ModelListing,
+  type ProviderModels,
 } from "./extensions.ts"
 
 const NS = META.capabilities
@@ -215,10 +217,7 @@ export interface SessionListing {
   readonly forkedThroughSeq: number | null
 }
 
-export interface ModelListing {
-  readonly defaultModel: string
-  readonly models: readonly { readonly id: string; readonly name: string; readonly efforts: readonly string[]; readonly defaultEffort: string | null; readonly contextWindow: number | null }[]
-}
+export type { ModelListing, ProviderModels }
 
 /** Result of `<prefix>/session`. */
 export interface SessionStateResult {
@@ -426,9 +425,14 @@ export class HarnessConnection {
   }
 
   /** `<prefix>/models`, asked for afresh. Never stops the server. */
-  async listModels(sessionId?: string): Promise<ModelListing> {
-    const listed = await this.request<ModelListing>(EXT.models, { sessionId })
-    return { defaultModel: listed.defaultModel, models: listed.models.map((model) => ({ ...model, defaultEffort: model.defaultEffort ?? null, contextWindow: model.contextWindow ?? null })) }
+  async listModels(sessionId?: string, options: { readonly providers?: boolean } = {}): Promise<ModelListing> {
+    const listed = await this.request<ModelListing>(EXT.models, { sessionId, ...(options.providers === true && { providers: true }) })
+    const group = (models: ProviderModels): ProviderModels => ({
+      provider: models.provider,
+      defaultModel: models.defaultModel,
+      models: models.models.map((model) => ({ ...model, defaultEffort: model.defaultEffort ?? null, contextWindow: model.contextWindow ?? null })),
+    })
+    return { ...group(listed), ...(listed.providers === undefined ? {} : { providers: listed.providers.map(group) }) }
   }
 
   /** `<prefix>/agents` for a directory: the agents a session started there could run as, and the definitions that could not be used. */

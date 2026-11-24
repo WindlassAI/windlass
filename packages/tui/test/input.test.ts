@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { ACCESS_TOKEN_FILE_ENV, type NewEvent, brand, event } from "@windlass/core"
+import { ACCESS_TOKEN_FILE_ENV, type NewEvent, PROVIDER_PROFILES, brand, event, providerDescriptor } from "@windlass/core"
 import { executionSucceeded, m, opening, say, stepStarted } from "@windlass/core/testing/scenarios"
 import { BackendError } from "../src/backend.ts"
 import { type Mounted, ScriptBackend, mount, pressEscapeAlone } from "./helpers.ts"
@@ -334,6 +334,22 @@ describe("robustness", () => {
     expect(mounted.app.problem).toBeNull()
   })
 
+  test("a provider read from a key says to set that key, from its descriptor, and nothing of a sign-in or a ChatGPT plan", async () => {
+    for (const id of PROVIDER_PROFILES) {
+      const { auth, authMethod } = providerDescriptor(id)
+      if (auth.kind !== "env-key") continue
+      const backend = new ScriptBackend()
+      backend.failOpen = new BackendError(authMethod.description, "auth_required", "missing_api_key", id)
+      mounted = await mount({ width: 160, height: 20, backend })
+      const frame = await mounted.frame()
+      expect(frame).toContain(`Set ${auth.variable}`)
+      for (const other of ["ChatGPT", `${brand.binary} login`, "To sign in"]) expect(frame).not.toContain(other)
+      expect(mounted.app.problem).toBe(authMethod.description)
+      await mounted.dispose()
+      mounted = null
+    }
+  })
+
   test("starting with a handed-in access token that cannot be used says to hand in a new one, not to sign in here", async () => {
     const backend = new ScriptBackend()
     const reason = `the file ${ACCESS_TOKEN_FILE_ENV} names does not exist (/run/handed-in/token)`
@@ -400,6 +416,7 @@ describe("the model picker", () => {
     const backend = new ScriptBackend()
     Object.assign(backend, {
       listModels: async () => ({
+        provider: "chatgpt",
         defaultModel: "gpt-6-luna",
         models: [
           { id: "gpt-6-luna", name: "Luna", efforts: ["low", "medium", "high"], defaultEffort: "medium", contextWindow: 272_000, isDefault: true },
@@ -432,5 +449,87 @@ describe("the model picker", () => {
       ["model", "gpt-6.1-sol"],
       ["effort", "high"],
     ])
+  })
+
+  // Two providers of the registry and a scripted third, as an adapter of another provider would add one.
+  const choice = (id: string, efforts: string[], isDefault = false) => ({ id, name: id, efforts, defaultEffort: efforts[0] ?? null, contextWindow: 200_000, isDefault })
+  const groups = [
+    { provider: "chatgpt", defaultModel: "gpt-6-luna", models: [choice("gpt-6-luna", ["low", "medium", "high"], true), choice("gpt-6.1-sol", ["low", "high"])] },
+    { provider: "openai", defaultModel: "gpt-6.1-sol", models: [choice("gpt-6.1-sol", [], true)] },
+    { provider: "scripted", defaultModel: "think-1", models: [choice("think-1", ["minimal", "max"], true), choice("plain-1", [])] },
+  ]
+  async function picker(listed: typeof groups) {
+    const changes: [string, string][] = []
+    const opened: { target: string; provider: string | null; model: string | null; effort: string | null }[] = []
+    const backend = new ScriptBackend()
+    Object.assign(backend, { listModels: async () => ({ ...listed[0]!, providers: listed }) })
+    const open = backend.open.bind(backend)
+    backend.open = async (target, cwd, settings) => {
+      opened.push({ target: target.kind, provider: settings.provider ?? null, model: settings.model, effort: settings.effort })
+      return Object.assign(await open(target, cwd, settings), { setConfig: async (id: string, value: string) => void changes.push([id, value]) })
+    }
+    mounted = await mount({ width: 100, height: 30, backend })
+    backend.session!.emit(event("session.created", { cwd: "/work", title: null, lineage: null, provider: "chatgpt", settings: { model: "gpt-6-luna", reasoningEffort: "low" } } as never))
+    await mounted.settle()
+    await keys(mounted).typeText("/model")
+    keys(mounted).pressEnter()
+    await mounted.settle()
+    return { changes, opened, frame: await mounted.frame() }
+  }
+  // The dialog's box alone, cut out of the frame by its corners.
+  const dialog = (frame: string) => {
+    const lines = frame.split("\n")
+    const top = lines.findIndex((line) => line.includes("╭─"))
+    const bottom = lines.findIndex((line, index) => index > top && line.includes("╰─"))
+    const left = lines[top]!.indexOf("╭")
+    const right = lines[top]!.indexOf("╮") + 1
+    return lines.slice(top, bottom + 1).map((line) => line.slice(left, right)).join("\n")
+  }
+
+  test("lists the models grouped by provider, the session's first, and says another provider starts a new session", async () => {
+    const { frame } = await picker(groups)
+    expect(dialog(frame)).toMatchSnapshot()
+    expect(frame).toContain("● ready · chatgpt · gpt-6-luna")
+    expect(frame).toContain("provider chatgpt")
+    expect(dialog(frame).replace(/[│\s]+/g, " ")).toContain("A session stays with its provider (chatgpt): a model of another provider starts a new session.")
+    for (const provider of ["chatgpt", "openai", "scripted"]) expect(frame).toMatch(new RegExp(`│ +${provider} +(› )?\\S`))
+  })
+
+  test("only the providers listed are offered: one provider is not grouped, and says nothing of others", async () => {
+    const { frame } = await picker([groups[0]!])
+    expect(frame).not.toContain("openai")
+    expect(frame).not.toContain("another provider")
+    expect(frame).toMatch(/› gpt-6-luna \(current\)/)
+  })
+
+  test("the efforts are the chosen model's own, and a model of another provider opens a new session with it", async () => {
+    const { changes, opened } = await picker(groups)
+    await keys(mounted!).typeText("think")
+    keys(mounted!).pressEnter()
+    await mounted!.settle()
+    const frame = await mounted!.frame()
+    expect(frame).toContain("Reasoning effort for think-1")
+    expect(dialog(frame)).toMatchSnapshot()
+    for (const effort of ["minimal", "max"]) expect(frame).toContain(effort)
+    expect(frame).not.toContain("medium")
+    keys(mounted!).pressArrow("down")
+    keys(mounted!).pressArrow("down")
+    keys(mounted!).pressEnter()
+    await mounted!.settle()
+    expect(changes).toEqual([])
+    expect(opened).toEqual([
+      { target: "new", provider: null, model: null, effort: null },
+      { target: "new", provider: "scripted", model: "think-1", effort: "max" },
+    ])
+    expect(await mounted!.frame()).toContain("a new session with scripted · think-1")
+  })
+
+  test("a model without efforts asks for none", async () => {
+    const { opened } = await picker(groups)
+    await keys(mounted!).typeText("plain")
+    keys(mounted!).pressEnter()
+    await mounted!.settle()
+    expect(await mounted!.frame()).not.toContain("Reasoning effort")
+    expect(opened.at(-1)).toEqual({ target: "new", provider: "scripted", model: "plain-1", effort: null })
   })
 })
