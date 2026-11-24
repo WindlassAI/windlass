@@ -41,6 +41,7 @@
  *   call had one); `status` is not replayed (accepted live without it).
  */
 import type { BlobRef, Content } from "../content.ts"
+import type { ProviderProfile } from "./provider.ts"
 import type { Json } from "../json.ts"
 import { canonicalJson } from "../request/canonical.ts"
 import type { InputItem, ModelRequest } from "../request/request.ts"
@@ -55,14 +56,15 @@ export interface EncodedRequest {
   readonly headers: Readonly<Record<string, string>>
 }
 
-export function encodeRequest(request: ModelRequest, blobs: BlobBytes): EncodedRequest {
+export function encodeRequest(request: ModelRequest, blobs: BlobBytes, profile: ProviderProfile = "chatgpt"): EncodedRequest {
   const params = request.params
+  const reasoning = profile === "chatgpt" || params.reasoningEffort !== null
   const body: Record<string, Json | undefined> = {
     model: params.model,
     store: false,
     stream: true,
     stream_options: { include_obfuscation: false },
-    include: ["reasoning.encrypted_content"],
+    include: reasoning ? ["reasoning.encrypted_content"] : undefined,
     instructions: request.instructions.length > 0 ? request.instructions : undefined,
     tools: request.tools.map((tool) => ({
       type: "function",
@@ -73,7 +75,7 @@ export function encodeRequest(request: ModelRequest, blobs: BlobBytes): EncodedR
     })),
     tool_choice: request.toolChoice,
     parallel_tool_calls: params.parallelToolCalls,
-    reasoning: { effort: params.reasoningEffort ?? undefined, summary: "auto" } as Json,
+    reasoning: reasoning ? { effort: params.reasoningEffort ?? undefined, summary: "auto" } as Json : undefined,
     text: params.textVerbosity === null ? undefined : { verbosity: params.textVerbosity },
     prompt_cache_key: params.cacheKey ?? undefined,
     input: request.input.flatMap((item) => encodeItem(item, blobs)),
@@ -82,7 +84,7 @@ export function encodeRequest(request: ModelRequest, blobs: BlobBytes): EncodedR
     "content-type": "application/json",
     accept: "text/event-stream",
   }
-  if (params.cacheKey !== null) headers["session-id"] = params.cacheKey
+  if (profile === "chatgpt" && params.cacheKey !== null) headers["session-id"] = params.cacheKey
   return { body: canonicalJson(body), headers }
 }
 

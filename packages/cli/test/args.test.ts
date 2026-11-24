@@ -75,6 +75,12 @@ describe("parseArgs", () => {
     expect(errorOf(["--models", "hello"])).toBe("--models takes no prompt")
   })
 
+  test("selects a built-in provider for a turn or a catalog", () => {
+    expect(options(["--provider", "openai", "go"]).provider).toBe("openai")
+    expect(parseArgs(["--models", "--json", "--provider=chatgpt"])).toMatchObject({ kind: "list", options: { provider: "chatgpt" } })
+    expect(parseArgs(["--provider", "other"])).toMatchObject({ kind: "error" })
+  })
+
   test("--max-steps, --list-sessions and --models", () => {
     expect(options(["--max-steps", "12", "go"]).maxSteps).toBe(12)
     expect(options(["--max-steps=1", "go"]).maxSteps).toBe(1)

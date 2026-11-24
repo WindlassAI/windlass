@@ -57,6 +57,7 @@ import {
   type EngineSession,
   type EventData,
   type Harness,
+  type ProviderProfile,
   type HandEditPolicy,
   type MessageId,
   type ModelEntry,
@@ -237,7 +238,7 @@ function buildAgent(state: ConnectionState): AgentApp {
     .onRequest(EXT.steer, parseInputParams, ({ params }) => state.admit(params.sessionId, params.prompt, "steer", params.maxSteps, clientInput(params.meta?.[META.untrusted])))
     .onRequest(EXT.queue, parseInputParams, ({ params }) => state.admit(params.sessionId, params.prompt, "queue", params.maxSteps, clientInput(params.meta?.[META.untrusted])))
     .onRequest(EXT.admit, parseObject, ({ params }) => state.admitMessage(params))
-    .onRequest(EXT.models, (params) => params, () => state.models())
+    .onRequest(EXT.models, (params) => parseObject(params ?? {}), ({ params }) => state.models(optionalString(params, "sessionId")))
     .onRequest(EXT.revert, parseRevertParams, ({ params }) => state.revert(params, false))
     .onRequest(EXT.undoRevert, parseRevertParams, ({ params }) => state.revert(params, true))
     .onRequest(EXT.withdraw, parseObject, ({ params }) => state.withdraw(requireString(params, "sessionId"), requireString(params, "messageId")))
@@ -347,13 +348,14 @@ class ConnectionState {
   private readonly views = new Map<string, SessionView>()
   private closing: Promise<void> | null = null
   private readonly snapshotStores = new Map<string, Promise<Snapshots | { readonly message: string }>>()
-  readonly catalog: ModelCatalog
 
   constructor(
     readonly harness: Harness,
     readonly options: ServeOptions,
-  ) {
-    this.catalog = catalogOf(harness, options.log)
+  ) {}
+
+  catalog(profile: ProviderProfile) {
+    return catalogOf(this.harness, this.log, profile)
   }
 
   get log(): Logger {
@@ -383,7 +385,7 @@ class ConnectionState {
       agentCapabilities,
       agentInfo: { name: brand.binary, title: brand.name, version: this.options.version ?? "0.0.0" },
       authMethods: [
-        {
+        this.harness.profile === "openai" ? { id: "openai", name: "OpenAI API key", description: "Set OPENAI_API_KEY to use the openai provider." } : {
           id: AUTH_METHOD_ID,
           name: "Sign in with ChatGPT",
           description:
@@ -396,7 +398,7 @@ class ConnectionState {
   }
 
   async authenticate(methodId: string): Promise<Record<string, never>> {
-    if (methodId !== AUTH_METHOD_ID) throw RequestError.invalidParams({ methodId }, `unknown auth method ${methodId}`)
+    if (methodId !== this.harness.profile) throw RequestError.invalidParams({ methodId }, `unknown auth method ${methodId}`)
     await this.requireSignIn()
     return {}
   }
@@ -408,9 +410,8 @@ class ConnectionState {
     await this.requireSignIn()
     if (mcpServers > 0) this.log.warn(`ignoring ${mcpServers} MCP server(s): ${brand.name} does not connect to MCP servers yet`)
     const asked = { model: meta?.model ?? null, effort: meta?.effort ?? null }
-    // A model or an effort the client names is checked before a session is created with it, as the command line does.
-    if (asked.model !== null || asked.effort !== null) await this.validate(cwd, asked)
     const settings = await this.harness.settingsFor(cwd, asked)
+    if (this.harness.profile === "openai" || asked.model !== null || asked.effort !== null) await this.validate(settings)
     // As the agent the client names; without one, as the default of the user's configuration, if any.
     const agent = meta?.agent ?? null
     const session = this.engineErrors(() => this.harness.engine.createSession({ cwd, settings, ...(agent === null ? {} : { agent }), host: this.host(meta) }))
@@ -425,19 +426,20 @@ class ConnectionState {
       view.advertiseCommands()
       view.lookAtFeatures()
     }, 0)
-    return { sessionId: session.id, configOptions: await this.configOptions(view.settings, view.session) }
+    return { sessionId: session.id, configOptions: await view.configOptions() }
   }
 
   async loadSession(sessionId: string, cwd: string, replay: boolean, meta: Opened | null) {
     if (!isAbsolute(cwd)) throw RequestError.invalidParams({ cwd }, `cwd must be an absolute path: ${cwd}`)
-    await this.requireSignIn()
-    const asked = { model: meta?.model ?? null, effort: meta?.effort ?? null }
-    if (asked.model !== null) await this.validate(cwd, asked)
     // Archived sessions are not offered: `session/delete` archives.
     const summary = this.engineErrors(() => this.harness.engine.getSession(sessionId as SessionId), sessionId)
+    const profile = summary === null ? this.harness.profile : this.engineErrors(() => this.harness.engine.sessionProfile(sessionId as SessionId), sessionId)
+    await this.requireSignIn(profile)
     if (summary === null || (summary.session.archived && meta?.archived !== true)) throw RequestError.sessionNotFound(sessionId)
+    const asked = { model: meta?.model ?? null, effort: meta?.effort ?? null }
+    if (asked.model !== null) await this.validate(await this.harness.settingsFor(cwd, asked), profile)
     // Known before the state is reported, for the context window in `usage_update`.
-    const models = this.catalog.list()
+    const models = this.catalog(profile).list()
     if (summary.session.cwd !== cwd)
       throw RequestError.invalidParams({ cwd, sessionCwd: summary.session.cwd }, `session ${sessionId} works in ${summary.session.cwd}, not ${cwd}`)
     this.views.get(sessionId)?.detach()
@@ -492,7 +494,7 @@ class ConnectionState {
     await view.flushed()
     // After the answer, as for a new session: what the configuration names is told once the session is open.
     setTimeout(() => view.lookAtFeatures(), 0)
-    return { configOptions: await this.configOptions(view.settings, view.session) }
+    return { configOptions: await view.configOptions() }
   }
 
   async listSessions(cwd: string | null, cursor: string | null, archived = false): Promise<ListSessionsResponse> {
@@ -552,15 +554,15 @@ class ConnectionState {
     if (configId === CONFIG.approval) {
       // The user's own choice for this session; the project's file can still only tighten it.
       view.session.setApproval({ mode: oneOfOrNull(value, approvalModes, "value") ?? "auto" })
-      return { configOptions: await this.configOptions(current, view.session) }
+      return { configOptions: await view.configOptions(current) }
     }
     if (configId === CONFIG.agent) {
       // The switch: made now while the session is idle, at the next step boundary while a turn runs. Its record
       // (`agent.switched`) is what a client shows, and `config_option_update` follows it.
       this.engineErrors(() => view.session.setAgent(value))
-      return { configOptions: await this.configOptions(view.settings, view.session) }
+      return { configOptions: await view.configOptions() }
     }
-    const models = await this.catalog.list()
+    const models = await view.catalog.list()
     let next: SessionSettings
     if (configId === CONFIG.model) {
       const entry = models.find((model) => model.id === value)
@@ -579,7 +581,7 @@ class ConnectionState {
     } else throw RequestError.invalidParams({ configId }, `unknown config option ${configId}`)
     this.engineErrors(() => view.session.setSettings(next))
     view.requested = next
-    return { configOptions: await this.configOptions(next, view.session) }
+    return { configOptions: await view.configOptions(next) }
   }
 
   // ---- the prompt turn ----
@@ -777,12 +779,13 @@ class ConnectionState {
     return { messageId }
   }
 
-  async models() {
+  async models(sessionId?: string) {
+    const profile = sessionId === undefined ? this.harness.profile : this.requireView(sessionId).profile
     // Asked for afresh, so that a client that lists the models hears why they cannot be listed.
-    const models = await this.harness.listModels().catch((error: unknown) => {
+    const models = await this.harness.listModels(undefined, profile).catch((error: unknown) => {
       if (!(error instanceof ModelListError)) throw error
-      const auth = error.error.kind === "auth"
-      throw new RequestError(auth ? -32000 : -32603, `could not list the models: ${error.message}`, errorData({ reason: auth ? "auth_required" : "model_list_failed", message: error.message, ...coded(error.error.code) }))
+      if (error.error.kind === "auth") throw authRequired(profile, error.message, error.error.code)
+      throw new RequestError(-32603, `could not list the models: ${error.message}`, errorData({ reason: "model_list_failed", message: error.message, ...coded(error.error.code) }))
     })
     return {
       defaultModel: this.harness.defaults.model,
@@ -944,8 +947,11 @@ class ConnectionState {
     if (params.model !== undefined || params.effort !== undefined) {
       const current = summary.session.settings
       const asked = { model: params.model ?? current.model, effort: params.effort === undefined ? current.reasoningEffort : params.effort }
-      if (params.model !== undefined) await this.validate(summary.session.cwd, asked)
       settings = { model: asked.model, reasoningEffort: asked.effort }
+      if (params.model !== undefined) {
+        const profile = this.engineErrors(() => engine.sessionProfile(params.sessionId as SessionId), params.sessionId)
+        await this.validate(settings, profile)
+      }
     }
     const forked = await this.engineErrors(
       () =>
@@ -986,11 +992,12 @@ class ConnectionState {
    * then let go of.
    */
   async replay(params: ReplayParams, signal: AbortSignal): Promise<ReplayResult> {
-    await this.requireSignIn()
     const engine = this.harness.engine
     const summary = this.engineErrors(() => engine.getSession(params.sessionId as SessionId), params.sessionId)
     if (summary === null) throw RequestError.sessionNotFound(params.sessionId)
-    if (params.model !== undefined) await this.validate(summary.session.cwd, { model: params.model, effort: params.effort ?? null })
+    const profile = this.engineErrors(() => engine.sessionProfile(params.sessionId as SessionId), params.sessionId)
+    await this.requireSignIn(profile)
+    if (params.model !== undefined) await this.validate(await this.harness.settingsFor(summary.session.cwd, { model: params.model, effort: params.effort ?? null }), profile)
     const request: ReplayRequest = {
       ...(params.policy === undefined ? {} : { policy: params.policy }),
       ...(params.systemPrompt === undefined ? {} : { systemPrompt: params.systemPrompt }),
@@ -1225,24 +1232,11 @@ class ConnectionState {
     return { sessionId: id, cwd: summary.session.cwd }
   }
 
-  private async validate(cwd: string, asked: { readonly model: string | null; readonly effort: string | null }): Promise<void> {
-    const settings = await this.harness.settingsFor(cwd, asked)
-    const refused = await this.harness.engine.validateSettings(settings).then(
-      () => null,
-      (error: unknown) => error,
-    )
-    if (refused !== null)
-      this.engineErrors(() => {
-        throw refused
-      })
+  private validate(settings: SessionSettings, profile = this.harness.profile): Promise<void> {
+    return this.engineErrors(() => this.harness.engine.validateSettings(settings, profile))
   }
 
   // ---- shared ----
-
-  async configOptions(settings: SessionSettings, session?: EngineSession): Promise<SessionConfigOption[]> {
-    const agents = session === undefined ? null : agentChoices(session)
-    return configOptionsFor(settings, await this.catalog.list(), session?.approval()?.policy.mode ?? null, agents)
-  }
 
   sendUpdate(sessionId: string, update: SessionUpdate): Promise<void> {
     const client = this.client
@@ -1327,10 +1321,9 @@ class ConnectionState {
     return view
   }
 
-  private async requireSignIn(): Promise<void> {
-    const state = await this.harness.signIn()
-    if (!state.signedIn)
-      throw RequestError.authRequired({ methodId: AUTH_METHOD_ID, ...errorData({ reason: "auth_required", message: state.message, ...coded(state.code) }) }, withSignInHint(state.message))
+  private async requireSignIn(profile = this.harness.profile): Promise<void> {
+    const state = await this.harness.signIn(profile)
+    if (!state.signedIn) throw authRequired(profile, state.message, state.code)
   }
 
   /**
@@ -1387,6 +1380,8 @@ class SessionView {
   private readonly spawnCalls = new Map<string, string>()
   private readonly pending: Pending[] = []
   private outbox: Promise<void> = Promise.resolve()
+  readonly profile: ProviderProfile
+  readonly catalog: ModelCatalog
   private unlisten: (() => void) | null = null
   private detached = false
   /**
@@ -1406,7 +1401,8 @@ class SessionView {
     private fromSeq: number,
     changes: ReadonlyMap<number, readonly string[]>,
   ) {
-    const catalog = connection.catalog
+    this.profile = session.projection().session.provider
+    this.catalog = connection.catalog(this.profile)
     const capabilities = connection.clientCapabilities
     this.translator = new Translator({
       sessionId: session.id,
@@ -1414,7 +1410,7 @@ class SessionView {
       log: connection.log,
       notices: capabilities.session?.notices != null,
       compaction: capabilities.session?.compaction != null,
-      contextWindow: (model) => catalog.cached().find((entry) => entry.id === model)?.contextWindow ?? null,
+      contextWindow: (model) => this.catalog.cached().find((entry) => entry.id === model)?.contextWindow ?? null,
       echo: (messageId) => this.echo.has(messageId),
       replayedChanges: (endSeq) => changes.get(endSeq) ?? null,
     })
@@ -1423,6 +1419,10 @@ class SessionView {
 
   /** Whether the client has a title for the session; the first message gives one to a session without. */
   private titled: boolean
+
+  async configOptions(settings = this.settings): Promise<SessionConfigOption[]> {
+    return configOptionsFor(settings, await this.catalog.list(), this.session.approval()?.policy.mode ?? null, agentChoices(this.session))
+  }
 
   get settings(): SessionSettings {
     return this.requested ?? this.session.projection().session.settings
@@ -1631,7 +1631,7 @@ class SessionView {
       }),
     )
     const last = lastUsage(history)
-    const size = last === null ? null : (this.connection.catalog.cached().find((model) => model.id === last.model)?.contextWindow ?? null)
+    const size = last === null ? null : (this.catalog.cached().find((model) => model.id === last.model)?.contextWindow ?? null)
     if (last !== null && size !== null)
       this.enqueue(() => this.connection.sendUpdate(this.session.id, { sessionUpdate: "usage_update", used: last.used, size }))
     const state: SessionState = this.session.working ? "running" : session.execution?.status === "suspended" ? "suspended" : "idle"
@@ -1662,7 +1662,7 @@ class SessionView {
     for (const output of this.translator.translate(item)) this.handleOutput(output, false, seq)
     // The switch is durable: the `agent` option now names what the session runs as.
     if (item.type === "agent.switched")
-      this.enqueue(async () => this.connection.sendUpdate(this.session.id, { sessionUpdate: "config_option_update", configOptions: await this.connection.configOptions(this.settings, this.session) }))
+      this.enqueue(async () => this.connection.sendUpdate(this.session.id, { sessionUpdate: "config_option_update", configOptions: await this.configOptions() }))
     // The question goes out after the events and updates that lead up to it, so the client can show the call it is about.
     if (item.type === "approval.requested") {
       const data = item.data
@@ -1702,7 +1702,7 @@ class SessionView {
       case "settings": {
         const settings = output.settings
         this.enqueue(async () =>
-          this.connection.sendUpdate(this.session.id, { sessionUpdate: "config_option_update", configOptions: await this.connection.configOptions(settings, this.session) }),
+          this.connection.sendUpdate(this.session.id, { sessionUpdate: "config_option_update", configOptions: await this.configOptions(settings) }),
         )
         return
       }
@@ -1736,7 +1736,7 @@ class SessionView {
       const meta = end.turn === undefined ? {} : { _meta: { [META.capabilities]: turnMeta(end.turn) } }
       for (const pending of chosen) {
         if (end.kind === "stop") pending.resolve({ stopReason: end.stopReason, ...meta })
-        else pending.reject(failure(end))
+        else pending.reject(failure(end, this.profile))
       }
     })
   }
@@ -1748,10 +1748,14 @@ class SessionView {
   }
 }
 
+function authRequired(profile: ProviderProfile, message: string, code: string | null | undefined): RequestError {
+  return RequestError.authRequired({ methodId: profile, ...errorData({ reason: "auth_required", message, ...coded(code) }) }, profile === "openai" ? message : withSignInHint(message))
+}
+
 /** A failed turn, as the error `session/prompt` answers with. Signed out is the protocol's auth-required error. */
-function failure(end: Extract<TurnEnd, { kind: "failed" }>): RequestError {
+function failure(end: Extract<TurnEnd, { kind: "failed" }>, profile: ProviderProfile): RequestError {
   if (end.providerError?.kind === "auth")
-    return RequestError.authRequired({ methodId: AUTH_METHOD_ID, ...errorData({ reason: "auth_required", message: end.message, ...coded(end.providerError.code) }) }, withSignInHint(end.message))
+    return authRequired(profile, end.message, end.providerError.code)
   if (end.approvalRequired === true) return new RequestError(-32603, end.message, errorData({ reason: "approval_required", message: end.message }))
   const data: Record<string, unknown> = { [META.capabilities]: { reason: "execution_failed" } }
   if (end.providerError !== null) data[META.capabilities] = { reason: "execution_failed", providerError: end.providerError.kind, ...coded(end.providerError.code) }

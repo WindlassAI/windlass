@@ -121,7 +121,7 @@ import { selectModelHistory } from "../message/history.ts"
 import { type AssistantMessage, type InboxItem, type Projection, type ToolCallPart, hasSideEffect, watchInForce } from "../message/message.ts"
 import { reduce } from "../message/reducer.ts"
 import { type ProviderError, makeProviderError } from "../provider/error.ts"
-import { SIGNED_IN_PROVIDER, type FinishReason, type Provider, type ResponseFacts, type StreamEvent } from "../provider/provider.ts"
+import { SIGNED_IN_PROVIDER, type ProviderProfile, type FinishReason, type Provider, type ResponseFacts, type StreamEvent } from "../provider/provider.ts"
 import { type Usage, sumUsage } from "../provider/usage.ts"
 import type { CommandSandbox } from "../sandbox/command.ts"
 import { type CommandEnv, type SandboxHomeChoice, resolveCommandEnv, resolveSandboxHome } from "../sandbox/config.ts"
@@ -385,7 +385,13 @@ export interface ModelOffer {
   readonly efforts?: readonly string[]
 }
 
+type ModelBackend = Pick<EngineOptions, "provider" | "contextWindow" | "listModels" | "refreshAuth">
+
 export interface EngineOptions {
+  readonly profile?: ProviderProfile
+  /** Bind recovered sessions to their saved profile, including when a wake-up opens them. */
+  readonly backendFor?: (profile: ProviderProfile) => ModelBackend
+  readonly checkProfile?: (saved: ProviderProfile) => void
   /**
    * Where sessions are stored. `SessionStores` gives every session a store of
    * its own, held while the session is open here (the session directory:
@@ -1282,6 +1288,8 @@ export interface Engine {
   readonly listSessionsPage: (query?: SessionQuery & { readonly cursor?: string | null }) => SessionPage
   /** One session's summary, or `null`. Works for a session another process holds. */
   readonly getSession: (id: SessionId) => SessionSummary | null
+  /** The stored provider, checked against any explicit selection for this process. */
+  readonly sessionProfile: (id: SessionId) => ProviderProfile
   /** The session an ID or a unique prefix of one names. Throws `session_not_found` or `ambiguous_session`. */
   readonly resolveSession: (idOrPrefix: string) => SessionId
   /**
@@ -1325,7 +1333,7 @@ export interface Engine {
    * then the first model call says what is wrong. The listing is kept, and
    * `createSession` and `setSettings` refuse the same things from it.
    */
-  readonly validateSettings: (settings: SessionSettings) => Promise<void>
+  readonly validateSettings: (settings: SessionSettings, profile?: ProviderProfile) => Promise<void>
   /**
    * The wake-ups of this data directory, for a client that lists, creates
    * and cancels them and shows a webhook's secret (never to the model).
@@ -1355,6 +1363,7 @@ export interface Engine {
 // ---------------------------------------------------------------- engine
 
 interface Core {
+  readonly profile?: ProviderProfile
   readonly stores: SessionStores
   readonly provider: Provider
   readonly runtime: ToolRuntime
@@ -1438,6 +1447,33 @@ interface Core {
   /** A settings check retains the latest nonempty listing, reusing a concurrent read when available. */
   readonly listOffered: ((pending?: Promise<readonly ModelOffer[] | null> | null) => Promise<readonly ModelOffer[] | null>) | null
   readonly debug: (line: string) => void
+}
+
+function modelServices(options: ModelBackend, profile?: ProviderProfile) {
+  // The provider's models, as last listed: what settings are checked against without another request.
+  let offered: readonly ModelOffer[] | null = null
+  const readOffers = async (signal?: AbortSignal): Promise<readonly ModelOffer[] | null> => {
+    try {
+      const listed = await options.listModels!(signal)
+      return listed.map((entry) => typeof entry === "string" ? { id: entry } : entry)
+    } catch {
+      return null
+    }
+  }
+  const listOffered = async (pending?: Promise<readonly ModelOffer[] | null> | null) => {
+    const models = await (pending ?? readOffers())
+    if (models !== null && (models.length > 0 || profile === "openai")) offered = models
+    return offered
+  }
+  return {
+    provider: options.provider,
+    windows: new Map<string, number | null>(),
+    contextWindow: options.contextWindow,
+    refreshAuth: options.refreshAuth,
+    offered: () => offered,
+    readOffers: options.listModels === undefined ? null : readOffers,
+    listOffered: options.listModels === undefined ? null : listOffered,
+  }
 }
 
 export function createEngine(options: EngineOptions): Engine {
@@ -1560,21 +1596,6 @@ export function createEngine(options: EngineOptions): Engine {
           temp: (context) => core.sessions.get(context.sessionId)?.programTemp() ?? null,
         })
   const features = mine([skill, bridge.search as unknown as AnyTool, bridge.call as unknown as AnyTool, ...wakeToolset, ...memoryToolset, ...(coder === null ? [] : [coder])])
-  // The provider's models, as last listed: what settings are checked against without another request.
-  let offered: readonly ModelOffer[] | null = null
-  const readOffers = async (signal?: AbortSignal): Promise<readonly ModelOffer[] | null> => {
-    try {
-      const listed = await options.listModels!(signal)
-      return listed.map((entry) => typeof entry === "string" ? { id: entry } : entry)
-    } catch {
-      return null
-    }
-  }
-  const listOffered = async (pending?: Promise<readonly ModelOffer[] | null> | null) => {
-    const models = await (pending ?? readOffers())
-    if (models?.length) offered = models
-    return offered
-  }
   const runnable = [...options.tools.filter((tool) => tool !== acknowledge), ...history, ...own, ...features, acknowledge]
   // What runs a hook's command: the caller's, or the module's runner with the engine's sandbox and redaction, made when
   // the first hook runs (the sandbox probes the machine once, on first use).
@@ -1588,15 +1609,14 @@ export function createEngine(options: EngineOptions): Engine {
     }))(request)
   const core: Core = {
     stores,
-    provider: options.provider,
+    profile: options.profile,
+    ...modelServices(options, options.profile),
     runtime: createToolRuntime({ tools: runnable, spillDir, putBlob: stores.putBlob }),
     effects: new Map(runnable.map((tool) => [tool.name, tool.effect])),
     touches: new Map(runnable.flatMap((tool) => (tool.touches === undefined ? [] : [[tool.name, tool.touches as (input: unknown) => readonly string[]] as const]))),
     tools: options.tools.filter((tool) => tool !== acknowledge),
     acknowledge,
     history,
-    windows: new Map(),
-    contextWindow: options.contextWindow,
     compaction: { ...DEFAULT_COMPACTION_CONFIG, ...options.compaction },
     spillDir,
     openSnapshots: options.snapshots === undefined ? (cwd) => openSnapshots(cwd, { dataDir: join(options.dataDir, "snapshots") }) : options.snapshots,
@@ -1618,7 +1638,6 @@ export function createEngine(options: EngineOptions): Engine {
       options.discover ??
       ((input) => discoverSources({ ...input, configDir: configDirectory(), platform: process.platform, now: () => new Date(clock.now()) })),
     call: options.call ?? {},
-    refreshAuth: options.refreshAuth,
     probe: options.hooks?.probe,
     strict: options.strict ?? false,
     report: (diagnostic) => {
@@ -1662,11 +1681,25 @@ export function createEngine(options: EngineOptions): Engine {
     commands: options.commands == null ? null : { configDir: options.commands.configDir ?? (options.discover === undefined ? configDirectory() : join(options.dataDir, "no-user-config")), home: options.commands.home },
     origins: new Map(runnable.flatMap((tool) => (tool.origin === undefined ? [] : [[tool.name, tool.origin] as const]))),
     loadConfigSync: options.loadConfigSync !== undefined ? options.loadConfigSync : options.loadConfig === undefined ? (cwd) => loadConfigSync({ cwd }) : null,
-    offered: () => offered,
     debug: options.debug ?? debuglog(brand.binary),
-    readOffers: options.listModels === undefined ? null : readOffers,
-    listOffered: options.listModels === undefined ? null : listOffered,
   }
+  const profiles = new Map<ProviderProfile, Core>()
+  function coreFor(profile: ProviderProfile): Core {
+    if (options.backendFor === undefined || profile === core.profile) return core
+    let selected = profiles.get(profile)
+    if (selected === undefined) {
+      selected = { ...core, profile, ...modelServices(options.backendFor(profile), profile) }
+      profiles.set(profile, selected)
+    }
+    return selected
+  }
+  function sessionProfile(id: SessionId): ProviderProfile {
+    const summary = stores.get(id)
+    if (summary === null) throw new EngineError("session_not_found", `session ${id} does not exist`)
+    options.checkProfile?.(summary.session.provider)
+    return summary.session.provider
+  }
+  const storedCore = (id: SessionId) => coreFor(sessionProfile(id))
   let closing: Promise<void> | null = null
   const assertOpen = () => {
     if (closing !== null) throw new EngineError("closed", "the engine is closed")
@@ -1689,10 +1722,10 @@ export function createEngine(options: EngineOptions): Engine {
   }
 
   /** Opens a session that is not open here, repairing what a dead process left (see `recover`). */
-  const open = (id: SessionId, resume: ResumeMode, host: HostTools | null = null): LiveSession => {
+  const open = (id: SessionId, resume: ResumeMode, selected: Core, host: HostTools | null = null): LiveSession => {
     const store = storeErrors(() => core.stores.open(id))
     try {
-      const session = new LiveSession(core, id, store)
+      const session = new LiveSession(selected, id, store)
       // Before recovery, which may take the interrupted turn up at once: its calls of the client's tools reach the client.
       session.useHost(host)
       core.sessions.set(id, session)
@@ -1723,10 +1756,10 @@ export function createEngine(options: EngineOptions): Engine {
       if (summary.session.archived) return { kind: "rejected", reason: "its session is archived" }
       try {
         // Nothing of the session's own is started by opening it: only the firing starts work, if it is to.
-        session = open(id, "wait")
+        session = open(id, "wait", storedCore(id))
       } catch (error) {
         if (error instanceof EngineError && error.code === "session_in_use") return { kind: "retry", reason: error.message }
-        if (error instanceof EngineError && error.code === "session_not_found") return { kind: "rejected", reason: "its session no longer exists" }
+        if (error instanceof EngineError) return { kind: "rejected", reason: error.message }
         throw error
       }
     }
@@ -1759,7 +1792,7 @@ export function createEngine(options: EngineOptions): Engine {
       const session = new LiveSession(core, id, store, input.cwd)
       try {
         session.write([
-          event("session.created", { cwd: input.cwd, title: input.title ?? null, lineage: null, settings: start.settings }),
+          event("session.created", { cwd: input.cwd, title: input.title ?? null, lineage: null, provider: core.profile, settings: start.settings }),
           // The session starts as the agent: recorded with it, before its first baseline, which will carry the instructions.
           ...(start.agent === null ? [] : [event("agent.switched", { messageId: null, from: null, to: start.agent })]),
         ])
@@ -1785,21 +1818,22 @@ export function createEngine(options: EngineOptions): Engine {
     openSession: (id, options$ = {}) => {
       assertOpen()
       checkHost(core, options$.host ?? null)
+      const selected = storedCore(id)
       const live = core.sessions.get(id)
       // A session the scheduler opened to deliver a firing is the caller's from here on, with the caller's tools.
       if (live !== undefined) {
         live.useHost(options$.host ?? null)
         return live.keep()
       }
-      return open(id, options$.resume ?? "start", options$.host ?? null)
+      return open(id, options$.resume ?? "start", selected, options$.host ?? null)
     },
     forkSession: async (id, fork = {}) => {
       assertOpen()
-      return forkSession(core, id, fork)
+      return forkSession(storedCore(id), id, fork)
     },
     replaySession: async (id, request = {}) => {
       assertOpen()
-      return replaySession(core, id, request)
+      return replaySession(storedCore(id), id, request)
     },
     latestSession: (cwd) => listed(core, { cwd, limit: 1 })[0] ?? null,
     listSessions: (query) => listed(core, query),
@@ -1815,6 +1849,7 @@ export function createEngine(options: EngineOptions): Engine {
       return { sessions, nextCursor: last === undefined || sessions.length === remaining.length ? null : `${last.updatedAt}:${last.session.id}` }
     },
     getSession: (id) => core.stores.get(id),
+    sessionProfile,
     resolveSession: (idOrPrefix) => storeErrors(() => core.stores.resolve(idOrPrefix)),
     readEvents: (id, range) => storeErrors(() => core.stores.read(id, (store) => store.readEvents(id, range))),
     turnChanges: async (id, range = {}) => {
@@ -1837,9 +1872,12 @@ export function createEngine(options: EngineOptions): Engine {
     },
     archiveSession: (id) => setArchived(id, true),
     unarchiveSession: (id) => setArchived(id, false),
-    validateSettings: async (settings) => {
-      if (options.listModels === undefined) return
-      const models = await listOffered()
+    validateSettings: async (settings, profile) => {
+      const selected = profile === undefined ? core : coreFor(profile)
+      if (selected.listOffered === null) return
+      const models = await selected.listOffered()
+      if (selected.profile === "openai" && models?.length === 0)
+        throw new EngineError("unknown_model", `model ${settings.model} is not available; the API key offers no text models`)
       const problem = models === null ? null : settingsProblem(settings, models)
       if (problem !== null) throw problem
     },
@@ -3603,7 +3641,7 @@ class LiveSession implements EngineSession {
           ? FAILURE_TEXT.budget(attempt, error)
           : error.kind === "context_overflow"
             ? FAILURE_TEXT.overflow
-            : failureText(error)
+            : failureText(error, this.core.profile)
         this.write([...closing, failed, giveUp(reason)])
         return "done"
       }
@@ -4659,6 +4697,7 @@ class LiveSession implements EngineSession {
         child.write([
           event("session.created", {
             cwd, title, lineage: { kind: "spawn", parentSessionId: this.id, spawnId, depth: depth + 1, worktree }, settings: childSettings,
+            provider: this.core.profile,
             ...(inherited.length === 0 ? {} : { inherited: { taint: inherited } }),
           }),
           // What it runs as is recorded with it, before its first baseline, which carries the instructions.
@@ -5672,7 +5711,7 @@ class LiveSession implements EngineSession {
             this.finishInterrupt(run)
             return "done"
           }
-        } else return failed(error, error.retryable ? FAILURE_TEXT.budget(tries, error) : failureText(error))
+        } else return failed(error, error.retryable ? FAILURE_TEXT.budget(tries, error) : failureText(error, this.core.profile))
       }
 
       const resolved = resolveSummary(answer.text, config.summaryMaxTokens, { complete: answer.complete })
@@ -7676,6 +7715,7 @@ async function forkSession(core: Core, askedId: SessionId, options: ForkOptions)
         cwd,
         title: options.title === undefined ? point.session.title : options.title,
         lineage: { kind: "fork", parentSessionId: sourceId, throughSeq: point.lastSeq, ...(copied === undefined ? {} : { copied }) },
+        provider: core.profile,
         settings: options.settings ?? point.session.settings,
         // Copied, like the messages: the fork decides its calls without its parent's file.
         ...(carried.length === 0 ? {} : { inherited: { taint: carried } }),
@@ -7717,6 +7757,7 @@ async function replaySession(core: Core, sourceId: SessionId, request: ReplayReq
         cwd: copy ?? prepared.tape.cwd,
         title: `Replay of ${sourceId}`,
         lineage: { kind: "replay", sourceSessionId: sourceId, throughSeq: last.seq, policy, strict: request.strict === true, changed: prepared.changed },
+        provider: core.profile,
         settings: prepared.settings,
       }),
     ])

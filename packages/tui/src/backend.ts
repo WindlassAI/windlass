@@ -182,7 +182,7 @@ export interface Backend {
   readonly demo?: boolean
   open(target: OpenTarget, cwd: string, settings: OpenSettings): Promise<BackendSession>
   listSessions?(cwd: string): Promise<SessionChoice[]>
-  listModels?(): Promise<{ readonly defaultModel: string; readonly models: readonly ModelChoice[] }>
+  listModels?(sessionId?: string): Promise<{ readonly defaultModel: string; readonly models: readonly ModelChoice[] }>
   /** Who answers the agent's questions. Set by the app before the first open. */
   onQuestion: QuestionHandler
   /** Who answers tool calls' approval questions. Set by the app before the first open. */
@@ -201,6 +201,7 @@ export class BackendError extends Error {
   constructor(
     message: string,
     readonly reason: string | null = null,
+    readonly code: string | null = null,
   ) {
     super(message)
     this.name = "BackendError"

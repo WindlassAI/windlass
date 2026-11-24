@@ -98,6 +98,15 @@ describe("encodeRequest", () => {
     expect(encoded.headers).toEqual({ "content-type": "application/json", accept: "text/event-stream", "session-id": "cache-key-TEST" })
   })
 
+  test("API-key reasoning fields follow the requested effort for any model", () => {
+    const body = (model: string, reasoningEffort: string | null) =>
+      JSON.parse(encodeRequest({ ...stepTwo(), params: { ...params, model, reasoningEffort } }, new Map(), "openai").body)
+    const byDefault = body("gpt-6.1-sol", null)
+    expect(byDefault).not.toHaveProperty("reasoning")
+    expect(byDefault).not.toHaveProperty("include")
+    expect(body("gpt-future", "high")).toMatchObject({ reasoning: { effort: "high", summary: "auto" }, include: ["reasoning.encrypted_content"] })
+  })
+
   test("never sends a field the flow rejects, and never a system role", () => {
     const body = encodeRequest(stepTwo(), new Map()).body
     const keys = Object.keys(JSON.parse(body) as object)

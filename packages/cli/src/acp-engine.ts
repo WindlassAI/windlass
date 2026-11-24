@@ -84,6 +84,7 @@ export interface AcpEngineOptions {
   /** `child`: the command that serves ACP on stdio. Defaults to this Bun running this CLI's `acp` subcommand. */
   readonly command?: readonly string[]
   /** `child`: its environment. Defaults to this process's. */
+  readonly apiKey?: string
   readonly env?: Record<string, string | undefined>
   /** `memory`: the harness the in-process server runs on. */
   readonly harness?: HarnessOptions
@@ -105,7 +106,7 @@ export function createAcpEngine(options: AcpEngineOptions = {}): Engine {
   const stderr = options.stderr ?? ((text: string) => void process.stderr.write(text))
   const link = () =>
     (started ??= HarnessConnection.start({
-      transport: options.transport === "memory" ? { kind: "memory", ...(options.harness === undefined ? {} : { harness: options.harness }) } : { kind: "child", command: options.command ?? selfCommand(["acp"]), env: options.env ?? process.env },
+      transport: options.transport === "memory" ? { kind: "memory", ...(options.harness === undefined ? {} : { harness: options.harness }) } : { kind: "child", command: options.command ?? selfCommand(["acp"]), env: options.env ?? process.env, apiKey: options.apiKey },
       clientInfo: { name: brand.binary, title: brand.name, version: options.version ?? "0.0.0" },
       // Only what the user should see: the server's warnings and errors, as the CLI's own lines.
       log: (line, level) => {
@@ -149,7 +150,7 @@ export function createAcpEngine(options: AcpEngineOptions = {}): Engine {
     listModels: () =>
       listing(async (connected) => {
         const listed = await connected.listModels().catch((error: unknown) => {
-          if (error instanceof ClientError && error.reason === "auth_required") throw new EngineUnavailable(signInSentence(error.message, "the models cannot be listed (they come from your ChatGPT plan)"), "auth")
+          if (error instanceof ClientError && error.reason === "auth_required") throw new EngineUnavailable(signInSentence(error.message, "the models cannot be listed (they come from your ChatGPT plan)", error.code), "auth")
           throw unavailable(error)
         })
         return listed.models.map((model): ModelInfo => ({ id: model.id, description: model.name === model.id ? null : model.name, efforts: model.efforts, isDefault: model.id === listed.defaultModel }))
@@ -503,7 +504,7 @@ const USAGE_REASONS = new Set(["unknown_model", "unknown_effort", "ambiguous_ses
  */
 function unavailable(error: unknown, named = false): EngineUnavailable {
   if (error instanceof EngineUnavailable) return error
-  if (error instanceof ClientError && error.reason === "auth_required") return new EngineUnavailable(signInSentence(error.message), "auth")
+  if (error instanceof ClientError && error.reason === "auth_required") return new EngineUnavailable(signInSentence(error.message, null, error.code), "auth")
   if (error instanceof ClientError && error.reason !== null && (USAGE_REASONS.has(error.reason) || (named && error.reason === "session_not_found"))) return new EngineUnavailable(error.message, "usage")
   return new EngineUnavailable(error instanceof Error ? error.message : String(error))
 }

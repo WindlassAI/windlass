@@ -10,6 +10,7 @@
  * wake module's manual clock, and checks are scripted.
  */
 import { afterAll, describe, expect, test } from "bun:test"
+import { createHarness } from "../../src/assembly.ts"
 import type { ApprovalSetup } from "../../src/engine/approval.ts"
 import type { WakeSetup } from "../../src/engine/wake.ts"
 import { HARNESS_ORIGIN, type StoredEvent } from "../../src/event/durable.ts"
@@ -23,9 +24,11 @@ import { openWakeStore, wakeDirectory } from "../../src/wake/store.ts"
 import { signWebhook } from "../../src/wake/webhook.ts"
 import { measured } from "../scenarios/script.ts"
 import { MINUTE, SECOND, exited, manualClock, scriptedRunner, until } from "../wake/helpers.ts"
+import { place, removePlaces } from "./assembly-helpers.ts"
 import { Harness, type HarnessOptions, removeHarnessDirectories } from "./harness.ts"
 
 afterAll(removeHarnessDirectories)
+afterAll(removePlaces)
 
 const U = script.usage(measured(1000))
 const call = (name: string, input: Json, callId = "call_1") => script.toolCall(callId, name, input)
@@ -275,6 +278,28 @@ describe("a firing", () => {
       h.verify()
     } finally {
       await h.dispose()
+    }
+  })
+
+  test("an explicit ChatGPT provider rejects a wake for a closed API-key session", async () => {
+    const dir = place()
+    const clock = manualClock()
+    const options = { dataDir: dir.data, engine: { wake: { clock, listener: false } } }
+    const writer = createHarness({ ...options, profile: "openai" })
+    const reader = createHarness({ ...options, profile: "chatgpt", engine: { wake: { clock, listener: false, run: true } } })
+    try {
+      const session = writer.engine.createSession({ cwd: dir.workspace("work"), settings: { model: "gpt-test", reasoningEffort: null } })
+      const wake = writer.engine.wake()!.store.create({ sessionId: session.id, message: "Check again.", trigger: { kind: "after", delayMs: MINUTE }, author: "user" })
+      if (!wake.ok) throw new Error(wake.error)
+      await writer.close()
+      clock.advance(MINUTE)
+      const store = reader.engine.wake()!.store
+      await until(() => store.get(wake.wake.id)?.state.kind === "failed", 5000, "the profile refusal")
+      expect(store.get(wake.wake.id)?.state.reason).toContain("This session uses openai")
+      expect(reader.engine.readEvents(session.id).map((item) => item.type)).toEqual(["session.created"])
+    } finally {
+      await reader.close()
+      await writer.close()
     }
   })
 

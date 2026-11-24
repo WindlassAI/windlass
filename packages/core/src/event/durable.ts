@@ -28,6 +28,7 @@
  * evidence of a run of checks may gain keys that an earlier build keeps
  * without knowing them (`verify/evidence.ts`).
  */
+import { PROVIDER_PROFILES } from "../provider/provider.ts"
 import { agentRefusal } from "../agents/restrictions.ts"
 import { agentRecord } from "../agents/use.ts"
 import { grant } from "../approval/grants.ts"
@@ -545,6 +546,7 @@ export const durableEvents = {
       title: nullable(string),
       lineage: nullable(lineage),
       settings: sessionSettings,
+      provider: optional(oneOf(PROVIDER_PROFILES)),
       /**
        * For a subagent, the parent's taint at creation. For a fork: what it needs at run time of the events it inherited,
        * copied here so that nothing but reading those events themselves

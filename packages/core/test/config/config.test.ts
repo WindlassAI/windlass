@@ -128,6 +128,16 @@ describe("merge", () => {
     })
   })
 
+  test("only the user file selects a provider", async () => {
+    const { home, repo, userFile } = layout()
+    write(projectFile(repo), { provider: "openai" })
+    expect((await loadConfig({ cwd: repo, home, env: {} })).config.provider).toBeUndefined()
+    write(userFile, { provider: "chatgpt" })
+    expect(loadConfigSync({ cwd: repo, home, env: {} }).config.provider).toBe("chatgpt")
+    write(userFile, { provider: "unknown" })
+    expect(() => loadConfigSync({ cwd: repo, home, env: {} })).toThrow("provider")
+  })
+
   test("an empty project list removes the user's checks", () => {
     const user = parseConfigFile(JSON.stringify({ checks: [{ name: "lint", command: "eslint ." }] }), "user")
     const project = parseConfigFile(JSON.stringify({ checks: [] }), "project")
@@ -142,8 +152,8 @@ describe("validation errors name the file and the path", () => {
     ["not an object", "[]", "f.json: expected object, got array"],
     ["model type", `{"model": 3}`, "f.json: model: expected non-empty string, got 3"],
     ["empty effort", `{"effort": ""}`, `f.json: effort: expected non-empty string, got ""`],
-    ["unknown top-level key, close", `{"modle": "x"}`, `f.json: modle: unknown key "modle" (did you mean "model"?); known keys: $schema, model, effort, titles, titleModel, checks, requiredChecks, verify`],
-    ["unknown key, nothing close", `{"permissions": {}}`, `f.json: permissions: unknown key "permissions"; known keys: $schema, model, effort, titles, titleModel, checks, requiredChecks, verify`],
+    ["unknown top-level key, close", `{"modle": "x"}`, `f.json: modle: unknown key "modle" (did you mean "model"?); known keys: $schema, provider, model, effort, titles, titleModel, checks, requiredChecks, verify`],
+    ["unknown key, nothing close", `{"permissions": {}}`, `f.json: permissions: unknown key "permissions"; known keys: $schema, provider, model, effort, titles, titleModel, checks, requiredChecks, verify`],
     ["unknown verify key", `{"verify": {"maxRound": 2}}`, `f.json: verify.maxRound: unknown key "maxRound" (did you mean "maxRounds"?); known keys: mode, maxRounds`],
     ["bad mode", `{"verify": {"mode": "gated"}}`, `f.json: verify.mode: expected "off" | "report" | "gate", got "gated"`],
     ["maxRounds zero", `{"verify": {"maxRounds": 0}}`, "f.json: verify.maxRounds: expected integer >= 1, got 0"],

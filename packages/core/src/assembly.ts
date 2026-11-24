@@ -1,14 +1,12 @@
 /**
  * The one place the real harness is put together: the data directory, a
- * store per session in it (`store/directory.ts`), the ChatGPT-plan Responses
- * provider with the saved sign-in (or the access token another process hands
- * in, `auth/handed-in.ts`), the standard tools, the configuration
+ * store per session in it (`store/directory.ts`), the selected Responses
+ * profile and its credential, the standard tools, the configuration
  * files and the defaults (the default model). The command-line interface and
  * the ACP server both call `createHarness()` and add only what is theirs:
  * arguments and a terminal, or a protocol.
  *
- * Nothing is opened until the engine is first used, so a process that only
- * prints help never touches the disk. Several harness processes share one
+ * Session storage is opened when the engine is first used. Several harness processes share one
  * data directory: sessions are held one at a time, per session, and
  * everything else in the directory (blobs, spill files, snapshots, the
  * session index) is written so that several processes can do it at once.
@@ -19,14 +17,14 @@ import { mkdirSync } from "node:fs"
 import { join } from "node:path"
 import { AUTH_UNREACHABLE, AuthError, HANDED_IN_REJECTED, aboutHandedIn, accessToken as signInToken, dataDir as defaultDataDir, handedInRejected, handedInTokenFile, handedInTokenNow, readHandedIn } from "./auth/chatgpt.ts"
 import { brand } from "./brand.ts"
-import { loadConfig } from "./config/load.ts"
+import { loadConfig, userProvider } from "./config/load.ts"
 import { environmentSecrets } from "./engine/approval.ts"
-import { type Engine, type EngineOptions, type ModelOffer, createEngine } from "./engine/engine.ts"
+import { EngineError, type Engine, type EngineOptions, type ModelOffer, createEngine } from "./engine/engine.ts"
 import type { SessionSettings } from "./event/durable.ts"
 import type { ProviderError } from "./provider/error.ts"
-import { ModelListError, OpenAIResponsesProvider, listModels } from "./provider/openai-responses.ts"
+import { ModelListError, OpenAIResponsesProvider, apiContextWindow, listModels } from "./provider/openai-responses.ts"
 import { modelEndpoint } from "./provider/relay.ts"
-import { type Provider, SIGNED_IN_PROVIDER } from "./provider/provider.ts"
+import { type Provider, type ProviderProfile, PROVIDER_ENV, SIGNED_IN_PROVIDER } from "./provider/provider.ts"
 import { type CommandSandbox, createCommandSandbox } from "./sandbox/command.ts"
 import { type SessionDirectory, openSessionDirectory } from "./store/directory.ts"
 import type { AnyTool } from "./tool/tool.ts"
@@ -74,6 +72,9 @@ export interface ModelEntry extends ModelOffer {
 export type SignInState = { readonly signedIn: true } | { readonly signedIn: false; readonly message: string; readonly code?: string }
 
 export interface HarnessOptions {
+  readonly profile?: string
+  /** A key handed to this harness by its launcher. */
+  readonly apiKey?: string
   /** Defaults to `<data home>/<brand.directory>`, where the sign-in is kept too. */
   readonly dataDir?: string
   /** Instead of the ChatGPT-plan provider (tests, a scripted model). With one, the sign-in is not checked and no model is listed. */
@@ -93,6 +94,7 @@ export interface HarnessOptions {
 }
 
 export interface Harness {
+  readonly profile: ProviderProfile
   readonly dataDir: string
   readonly defaults: { readonly model: string; readonly effort: string | null }
   /**
@@ -102,10 +104,10 @@ export interface Harness {
   readonly engine: Engine
   /** The session directory under the engine: for a tool that reads sessions (an exporter), never for writing around the engine. */
   readonly sessions: SessionDirectory
-  /** Whether a model call can be made: the saved ChatGPT sign-in, or the file one is handed in through, yields a token. Always signed in with a provider of the caller's. */
-  readonly signIn: () => Promise<SignInState>
+  /** Whether the selected profile has a usable credential. */
+  readonly signIn: (profile?: ProviderProfile) => Promise<SignInState>
   /** The account's models, in the provider's order. Rejects with `ModelListError` when they cannot be listed. Empty with a provider of the caller's. */
-  readonly listModels: (signal?: AbortSignal) => Promise<readonly ModelEntry[]>
+  readonly listModels: (signal?: AbortSignal, profile?: ProviderProfile) => Promise<readonly ModelEntry[]>
   /**
    * The settings a new session in `cwd` starts with: what the caller asks
    * for, else what the configuration files that apply there name, else the
@@ -195,9 +197,31 @@ function lazySandbox(): CommandSandbox {
   }
 }
 
+// More than one harness can share the launching process. Keep its key private once captured.
+let launchKey: string | undefined
+
 export function createHarness(options: HarnessOptions = {}): Harness {
   const dataDir = options.dataDir ?? defaultDataDir()
   const log = options.log ?? ((line: string) => void process.stderr.write(`${brand.binary}: ${line}\n`))
+  const explicit = options.provider === undefined ? options.profile ?? process.env[PROVIDER_ENV] : undefined
+  const tokenFile = options.provider === undefined ? handedInTokenFile() : null
+  const selected = explicit ?? (tokenFile === null && options.provider === undefined ? userProvider() : undefined) ?? "chatgpt"
+  if (selected !== "chatgpt" && selected !== "openai") throw new Error(`${PROVIDER_ENV} must be chatgpt or openai`)
+  if (tokenFile !== null && selected !== "chatgpt") throw new Error("a handed-in token requires the chatgpt profile")
+  const checkProfile = (saved: ProviderProfile) => {
+    if ((explicit !== undefined || tokenFile !== null) && selected !== saved)
+      throw new EngineError("invalid_request", `This session uses ${saved}. Start a new session to use ${selected}.`)
+  }
+  // Capture the credential before any tool, hook, MCP server or other subprocess can inherit it.
+  if (process.env.OPENAI_API_KEY !== undefined) {
+    launchKey = process.env.OPENAI_API_KEY
+    delete process.env.OPENAI_API_KEY
+  }
+  const apiKey = (options.apiKey ?? launchKey)?.trim()
+  const readKey = async () => {
+    if (!apiKey) throw new AuthError("missing_api_key", "Set OPENAI_API_KEY to use the openai provider.")
+    return apiKey
+  }
   const defaults = {
     model: options.defaultModel ?? DEFAULT_MODEL,
     effort: options.defaultEffort === undefined ? DEFAULT_EFFORT : options.defaultEffort,
@@ -208,25 +232,32 @@ export function createHarness(options: HarnessOptions = {}): Harness {
   // replaced while it runs: every token read joins the values removed from tool output, a list the engine reads
   // each time it redacts, and the list itself looks at the file then (`secretsWithTokenFile`).
   const endpoint = options.provider === undefined ? modelEndpoint() : {}
-  const tokenFile = options.provider === undefined ? handedInTokenFile() : null
-  const secrets = tokenFile === null ? null : secretsWithTokenFile(options.engine?.approval?.secrets ?? environmentSecrets(process.env), tokenFile)
+  const known = options.engine?.approval?.secrets ?? environmentSecrets(process.env)
+  const secrets = [...known]
+  if (apiKey) secrets.push(apiKey)
+  const redactions = tokenFile === null ? secrets : secretsWithTokenFile(secrets, tokenFile)
   const accessToken =
-    tokenFile === null || secrets === null
+    tokenFile === null
       ? signInToken
       : async () => {
           const handed = await readHandedIn(tokenFile)
           if (!handed.usable) throw new AuthError(handed.code, handed.message)
           const token = handed.accessToken
-          if (!secrets.includes(token)) secrets.push(token)
+          if (!redactions.includes(token)) redactions.push(token)
           return token
         }
 
-  const accountModels = async (signal?: AbortSignal): Promise<readonly ModelEntry[]> => {
+  const connection = (profile: ProviderProfile) => {
+    if (profile === "chatgpt") return { ...endpoint, profile, accessToken }
+    if (tokenFile !== null) throw new EngineError("invalid_request", "a handed-in token requires the chatgpt profile")
+    return { profile, accessToken: readKey }
+  }
+  const accountModels = async (signal?: AbortSignal, profile: ProviderProfile = selected): Promise<readonly ModelEntry[]> => {
     if (options.models !== undefined) return options.models(signal)
     if (options.provider !== undefined) return []
-    const models = await listModels({ ...endpoint, accessToken, ...(signal === undefined ? {} : { signal }) }).catch((error: unknown) => {
+    const models = await listModels({ ...connection(profile), ...(signal === undefined ? {} : { signal }) }).catch((error: unknown) => {
       // A handed-in token the provider rejected: the listing says so, and not to sign in here.
-      if (secrets === null || !(error instanceof ModelListError)) throw error
+      if (tokenFile === null || !(error instanceof ModelListError)) throw error
       throw new ModelListError(rejectedHandedIn(error.error))
     })
     return models.map((model) => ({
@@ -251,43 +282,39 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     // The context window the compaction policy measures against: the provider's, per model, asked for once.
     let catalogue: Promise<readonly { readonly slug: string; readonly contextWindow: number | null }[]> | null = null
     const providerWindow = async (model: string) => {
-      catalogue ??= listModels({ ...endpoint, accessToken, listedOnly: false }).catch(() => [])
+      catalogue ??= listModels({ ...connection("chatgpt"), listedOnly: false }).catch(() => [])
       return (await catalogue).find((entry) => entry.slug === model)?.contextWindow ?? null
     }
     const lowered = testContextWindow()
     if (lowered !== null) log(`${TEST_CONTEXT_WINDOW_ENV} is set: the context window is taken to be at most ${lowered} tokens (a test setting)`)
-    const contextWindow = async (model: string) => {
-      const real = options.provider === undefined ? await providerWindow(model) : ((await options.engine?.contextWindow?.(model)) ?? null)
-      return lowered === null ? real : real === null ? lowered : Math.min(real, lowered)
-    }
-    const signedIn = () =>
-      new OpenAIResponsesProvider({
-        ...endpoint,
-        accessToken,
+    const backendFor = (profile: ProviderProfile) => {
+      const credentials = connection(profile)
+      const contextWindow = async (model: string) => {
+        const real = profile === "openai" ? apiContextWindow(model) : await providerWindow(model)
+        return lowered === null ? real : real === null ? lowered : Math.min(real, lowered)
+      }
+      const responses = new OpenAIResponsesProvider({
+        ...credentials,
         readBlob: (ref) => {
           const blob = sessions.getBlob(ref.hash)
           if (blob === null) throw new Error(`blob ${ref.hash} is not in the blob store`)
           return blob.bytes
         },
       })
-    const provider = options.provider ?? (secrets === null ? signedIn() : onHandedInToken(signedIn()))
+      return {
+        provider: tokenFile === null ? responses : onHandedInToken(responses),
+        listModels: (signal?: AbortSignal) => accountModels(signal, profile),
+        contextWindow,
+        ...(profile === "chatgpt" && { refreshAuth: () => accessToken().then(() => true, () => false) }),
+      }
+    }
     const engine = createEngine({
       ...(options.provider === undefined
-        ? {
-            // On a rejected sign-in the token is looked up once more (it is refreshed when it is due; a handed-in one is
-            // read from its file again) before the step fails.
-            refreshAuth: () =>
-              accessToken().then(
-                () => true,
-                () => false,
-              ),
-          }
-        : {}),
-      ...(provider.id === SIGNED_IN_PROVIDER ? { listModels: accountModels } : {}),
+        ? { ...backendFor(selected), profile: selected, backendFor, checkProfile }
+        : { provider: options.provider, ...(options.provider.id === SIGNED_IN_PROVIDER && { listModels: accountModels }) }),
       log,
       ...options.engine,
-      // With a provider of the caller's the window is the caller's to give; the test setting lowers either.
-      ...(options.provider === undefined || options.engine?.contextWindow !== undefined || lowered !== null ? { contextWindow } : {}),
+      ...(options.provider !== undefined && lowered !== null && { contextWindow: async (model: string) => Math.min(lowered, (await options.engine?.contextWindow?.(model)) ?? lowered) }),
       // Subagents and background work are part of the real harness; a caller that passes `spawn: null` builds one without them.
       ...(options.engine?.spawn === undefined ? { spawn: {} } : {}),
       // So are skills and MCP servers: their tools are in every session's list from its first baseline, whatever
@@ -313,12 +340,11 @@ export function createHarness(options: HarnessOptions = {}): Harness {
       ...(options.engine?.commandHooks === undefined ? { commandHooks: {} } : {}),
       ...(options.engine?.lsp === undefined ? { lsp: {} } : {}),
       store: sessions,
-      provider,
       tools: options.tools ?? createStandardTools({ spillDir, shell: { sandbox } }),
       dataDir,
       spillDir,
       // Safe by default: mode `auto` in the sandbox, nobody present until a client says so. `null` (tests) switches it off.
-      ...(options.engine?.approval === null ? { approval: null } : { approval: { ...options.engine?.approval, sandbox, ...(secrets === null ? {} : { secrets }) } }),
+      ...(options.engine?.approval === null ? { approval: null } : { approval: { ...options.engine?.approval, sandbox, secrets: redactions } }),
     })
     running = { sessions, engine }
     return running
@@ -327,6 +353,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
   return {
     dataDir,
     defaults,
+    profile: selected,
     get engine() {
       return start().engine
     },
@@ -336,11 +363,11 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     get closed() {
       return closing !== null
     },
-    signIn: async () => {
+    signIn: async (profile = selected) => {
       if (options.signIn !== undefined) return options.signIn()
       if (options.provider !== undefined) return { signedIn: true }
       try {
-        await accessToken()
+        await connection(profile).accessToken()
         return { signedIn: true }
       } catch (error) {
         // The sign-in service could not be reached for a refresh: the sign-in is saved, and nothing says it is gone.

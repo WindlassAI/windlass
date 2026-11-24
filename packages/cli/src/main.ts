@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun --no-env-file
 /**
  * The command-line entry point: parse arguments, open a session through the
  * engine interface, send prompts, render events, and map the result to an
@@ -15,7 +15,7 @@
 import { appendFileSync, statSync } from "node:fs"
 import { resolve } from "node:path"
 import type { CommandsResult } from "@windlass/acp/extensions"
-import { type CallId, type MessageId, brand, versionLine, versionString } from "@windlass/core"
+import { type CallId, type MessageId, PROVIDER_ENV, brand, versionLine, versionString } from "@windlass/core"
 import { agentLines, compactText, taskLines, tasksProgress } from "./agents.ts"
 import { helpText, type Options, parseArgs } from "./args.ts"
 import { revertable } from "./commands.ts"
@@ -46,6 +46,7 @@ import { BUILTIN_COMMANDS, clientCommands, commandProblemLines, helpLines, looku
 import { colorEnabled, displayWidth, flatten, formatDuration, truncate } from "./text.ts"
 
 export interface Io {
+  readonly apiKey?: string
   readonly argv: readonly string[]
   readonly env: Record<string, string | undefined>
   readonly cwd: string
@@ -138,7 +139,7 @@ export async function run(io: Io): Promise<number> {
     case "acp": {
       // Loaded only here, so a normal run does not pay for the protocol SDK. The server builds the same harness the CLI does.
       const { serveStdio } = await import("@windlass/acp")
-      return serveStdio({ env: io.env, version: await version() })
+      return serveStdio({ env: io.env, apiKey: io.apiKey, version: await version() })
     }
     case "list":
     case "run":
@@ -363,8 +364,9 @@ async function tui(io: Io, options: Options, demo: DemoScenario | null, cwd: str
     cwd,
     target: options.session !== null ? { kind: "resume", id: options.session } : options.continue ? { kind: "continue" } : { kind: "new" },
     settings: { model: options.model, effort: options.effort, maxSteps: options.maxSteps, agent: options.agent },
-    env: io.env,
+    env: options.provider ? { ...io.env, [PROVIDER_ENV]: options.provider } : io.env,
     version: await version(),
+    apiKey: io.apiKey,
     serverCommand: selfCommand(["acp"]),
     demo: demo === null ? null : { scenario: demo.scenario, name: demo.name, speed: options.demoSpeed, graceMs: options.demoGraceMs },
   })
@@ -395,7 +397,7 @@ async function engineFor(io: Io, options: Options, demo: DemoScenario | null, wa
         },
     io.realEngineModule,
     options.engine,
-    { env, stderr: (text) => io.stderr.write(text), version: await version() },
+    { apiKey: io.apiKey, env: options.provider ? { ...env, [PROVIDER_ENV]: options.provider } : env, stderr: (text) => io.stderr.write(text), version: await version() },
   )
   if (selected.kind === "engine") return selected.engine
   const why = selected.reason === null ? "" : ` (${selected.reason})`
@@ -1121,9 +1123,12 @@ export async function main(): Promise<number> {
     for (const handler of closedHandlers) handler()
   })
   process.stderr.on("error", () => {})
+  const { OPENAI_API_KEY: apiKey, ...env } = process.env
+  delete process.env.OPENAI_API_KEY
   return run({
     argv: process.argv.slice(2),
-    env: process.env,
+    apiKey,
+    env,
     cwd: process.cwd(),
     stdout: {
       write: (text) => {

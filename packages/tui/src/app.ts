@@ -253,6 +253,9 @@ export class App {
     try {
       const session = await this.options.backend.open(target, this.options.cwd, this.options.settings)
       this.session = session
+      this.contextWindows.clear()
+      this.modelsListed = false
+      this.modelsAskedAt = Number.NEGATIVE_INFINITY
       this.connection = "connected"
       this.problem = null
       this.target = { kind: "resume", id: session.id }
@@ -281,7 +284,11 @@ export class App {
       const reason = error instanceof BackendError ? error.reason : null
       this.connection = reason === "auth_required" ? "not signed in" : "failed"
       this.conversation.empty = ""
-      if (reason === "auth_required") {
+      if (error instanceof BackendError && (error.code === "missing_api_key" || error.code === "invalid_api_key")) {
+        this.connection = "failed"
+        this.problem = message
+        this.transcript.note([span(message, "error")], "error", "✗")
+      } else if (reason === "auth_required") {
         // The way forward, step by step: the sign-in is made outside, and the engine reads it again on /reconnect.
         // A handed-in access token is held elsewhere: signing in here would change nothing.
         this.handedIn = aboutHandedIn(message)
@@ -392,10 +399,12 @@ export class App {
   /** The models' context windows, for the panel: asked for when a session opens, and again after a listing that failed. */
   private async loadModels(): Promise<void> {
     const backend = this.options.backend
-    if (backend.listModels === undefined || this.modelsListed || this.now() - this.modelsAskedAt < MODELS_RETRY_MS) return
+    const session = this.session
+    if (session === null || backend.listModels === undefined || this.modelsListed || this.now() - this.modelsAskedAt < MODELS_RETRY_MS) return
     this.modelsAskedAt = this.now()
     try {
-      const listed = await backend.listModels()
+      const listed = await backend.listModels(session.id)
+      if (this.session !== session) return
       for (const model of listed.models) this.contextWindows.set(model.id, model.contextWindow)
       this.modelsListed = true
       this.renderer.requestRender()
@@ -1063,7 +1072,8 @@ export class App {
     if (backend.listModels === undefined || session?.setConfig === undefined) return this.unavailable("/model")
     let models: readonly ModelChoice[]
     try {
-      models = (await backend.listModels()).models
+      models = (await backend.listModels(session.id)).models
+      if (this.session !== session) return
     } catch (error) {
       return this.say(`could not list the models: ${error instanceof Error ? error.message : String(error)}`, "error")
     }

@@ -226,6 +226,24 @@ describe("OpenAIResponsesProvider over HTTP", () => {
     }
   })
 
+  test("direct API requests refuse redirects and redact the key in errors", async () => {
+    const redirects: RequestInit["redirect"][] = []
+    const fetch = async (_url: string, init: RequestInit) => {
+      redirects.push(init.redirect)
+      return Response.json({ error: { code: "insufficient_quota", message: `quota exhausted for ${TOKEN}` } }, {
+        status: 429, headers: { "x-request-id": "req_public" },
+      })
+    }
+    const options = { profile: "openai" as const, accessToken: async () => TOKEN, fetch }
+    const provider = new OpenAIResponsesProvider({ ...options, readBlob: () => new Uint8Array() })
+    const apiRequest = { ...request, params: { ...request.params, model: "gpt-6.1-sol" } }
+    const events = await collect(provider.stream(apiRequest, new AbortController().signal))
+    const error = { kind: "usage_limit", retryable: false, requestId: "req_public", message: "HTTP 429: quota exhausted for [REDACTED]" }
+    expect(events).toMatchObject([{ type: "error", error }])
+    await expect(listModels(options)).rejects.toMatchObject({ error })
+    expect(redirects).toEqual(["error", "error"])
+  })
+
   test("pre-stream HTTP errors in each observed body shape", async () => {
     expect(await errorOf("detail-400")).toEqual({
       kind: "invalid_request",
@@ -472,6 +490,16 @@ function modelsRoute(incoming: Request, scenario: string) {
 }
 
 describe("listModels", () => {
+  test("the public catalog offers text models with usable context windows", async () => {
+    const ids = ["gpt-6.1-sol", "text-embedding-3-small", "gpt-6-luna", "gpt-audio", "gpt-realtime", "gpt-4o-mini-transcribe",
+      "gpt-4o-mini-tts", "gpt-image-1", "omni-moderation-latest", "o3", "gpt-future", "whisper-1", "dall-e-3"]
+    const models = await listModels({ profile: "openai", accessToken: async () => TOKEN,
+      fetch: async () => Response.json({ data: ids.map((id) => ({ id })) }) })
+    expect(models.map(({ slug, contextWindow }) => [slug, contextWindow])).toEqual([
+      ["gpt-6.1-sol", 500_000], ["gpt-6-luna", 272_000], ["o3", 32_768], ["gpt-future", 32_768],
+    ])
+  })
+
   test("returns listed models in server order", async () => {
     const models = await listModels({ accessToken: async () => TOKEN, baseUrl: `${base}/models-ok` })
     expect(models.map((model) => model.slug)).toEqual(["gpt-6-luna", "gpt-6-sol"])

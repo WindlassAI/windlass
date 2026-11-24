@@ -19,6 +19,7 @@
  * when it opens a session). It is read from the user's file only and never
  * merged: `verify/required.ts` is handed both files as written.
  */
+import { PROVIDER_PROFILES, type ProviderProfile } from "../provider/provider.ts"
 import { type AgentsConfigSection, parseAgentsSection } from "../agents/config.ts"
 import { approvalSection } from "../approval/policy.ts"
 import { type CommandsConfigSection, parseCommandsSection } from "../commands/config.ts"
@@ -156,6 +157,7 @@ const passed: Validator<unknown> = (input) => input
 const baseFile = section({
   /** Lets editors find a JSON schema. Ignored. */
   $schema: string,
+  provider: oneOf(PROVIDER_PROFILES),
   model: nonEmptyString,
   effort: nonEmptyString,
   titles: oneOf(["generate", "off"]),
@@ -227,9 +229,10 @@ export type ConfigFile = Omit<Infer<typeof baseFile>, keyof typeof FEATURE_SECTI
  * `origin` says whose file it is, for the one section that is validated differently for a project's (`hooks`).
  */
 export function configFile(input: unknown, path: string, file = "configuration", origin: HookOrigin = "user"): ConfigFile {
-  const { mcp, skills, wake, memory, agents, hooks, lsp, commands, telemetry, sandbox, ...rest } = baseFile(input, path)
+  const { provider, mcp, skills, wake, memory, agents, hooks, lsp, commands, telemetry, sandbox, ...rest } = baseFile(input, path)
   return {
     ...rest,
+    ...(origin === "user" && provider !== undefined && { provider }),
     ...(mcp === undefined ? {} : { mcp: FEATURE_SECTIONS.mcp(mcp, file) }),
     ...(skills === undefined ? {} : { skills: FEATURE_SECTIONS.skills(skills, file) }),
     ...(wake === undefined ? {} : { wake: FEATURE_SECTIONS.wake(wake, file) }),
@@ -255,6 +258,7 @@ export interface CheckConfig {
 
 /** The effective configuration: both files merged, defaults applied. */
 export interface Config {
+  readonly provider?: ProviderProfile
   /** Optional for callers supplying a configuration directly. The file resolver applies the defaults. */
   readonly titles?: "generate" | "off"
   readonly titleModel?: string | null
@@ -295,6 +299,7 @@ export function resolveChecks(list: ConfigFile["checks"]): CheckConfig[] {
 /** Applies the defaults to a merged file. */
 export function resolveConfig(file: ConfigFile): Config {
   return {
+    ...(file.provider !== undefined && { provider: file.provider }),
     titles: file.titles ?? "generate",
     titleModel: file.titleModel ?? null,
     model: file.model ?? null,

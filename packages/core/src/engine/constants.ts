@@ -8,6 +8,7 @@
  * byte for byte from then on, so changing one here never changes a stored
  * session.
  */
+import type { ProviderProfile } from "../provider/provider.ts"
 import { ACCESS_TOKEN_FILE_ENV, handedInTokenFile } from "../auth/handed-in.ts"
 import { type SummaryProblem, describeProblem, summaryPrompt } from "../context/summary.ts"
 import type { ProviderError } from "../provider/error.ts"
@@ -237,7 +238,8 @@ function listProblems(problems: readonly SummaryProblem[]): string {
 }
 
 /** The message for a model call that failed with an error that is never retried. */
-export function failureText(error: ProviderError): string {
+export function failureText(error: ProviderError, profile?: ProviderProfile): string {
+  if (error.kind === "auth" && profile === "openai") return error.message
   if (error.kind === "auth") return handedInTokenFile() === null ? FAILURE_TEXT.signedOut : FAILURE_TEXT.handedInRejected
   if (error.kind === "usage_limit" && error.retryAfterMs !== null) return `${error.message} It resets in ${duration(error.retryAfterMs)}.`
   return error.message

@@ -137,6 +137,7 @@ function create(state: Projection | null, event: StoredEvent<"session.created">)
     archived: false,
     createdAt: event.time,
     settings: event.data.settings,
+    provider: event.data.provider ?? "chatgpt",
     execution: null,
     open: null,
     compaction: null,

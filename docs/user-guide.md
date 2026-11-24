@@ -15,7 +15,7 @@ Each [release](https://github.com/WindlassAI/windlass/releases) also has an exec
 arm64, with `install.sh` and `SHA256SUMS`; the README's Install section has the commands to download, check and
 install one. To build instead you need [Bun](https://bun.sh) 1.4 and this repository with its dependencies installed
 (`bun install`).
-To run you need Linux or macOS, a ChatGPT plan, and these programs on `PATH`:
+To run you need Linux or macOS, a ChatGPT plan or an OpenAI API key, and these programs on `PATH`:
 
 - `bwrap` (bubblewrap) on Linux, for the sandbox. Without it no command runs sandboxed, and every command asks first.
 - GNU `env` 8.31 or newer (coreutils), so that a stopped command gets time to finish.
@@ -36,7 +36,7 @@ the requirements, and tells you if that directory is not on your `PATH` (it asks
 `scripts/build.ts` for what each includes. `sh scripts/install.sh --uninstall` removes the program and keeps your
 sessions.
 
-You can also run it from source without building: `bun packages/cli/src/main.ts` instead of `windlass`.
+You can also run it from source without building: `bun --no-env-file packages/cli/src/main.ts` instead of `windlass`.
 
 ## Signing in
 
@@ -50,14 +50,20 @@ anywhere, approve, and the browser ends on a page at `127.0.0.1` that fails to l
 paste it at the prompt (it is not shown, and it never goes on the command line). `windlass login status` says who is
 signed in; it never prints a token.
 
+### OpenAI API keys
+
+Set `OPENAI_API_KEY` in your environment and run `windlass --provider openai --models --json` to see the
+account's model IDs. Use `--model` to select one. For new sessions, `--provider` takes precedence over
+`WINDLASS_PROVIDER`, then `provider` in your user configuration, then the default `chatgpt`. A session
+keeps its provider when resumed. Start a new session to switch providers.
+
 ### One sign-in for several machines
 
 A ChatGPT sign-in cannot be copied to a second machine: every refresh replaces the refresh token, so the first copy
 of `auth.json` to refresh signs the other copies out. Processes that share a data directory share the sign-in
 safely already. Where they cannot share one (each `windlass` in a sandbox or a container of its own, on other
 machines), one `windlass` keeps the sign-in and does all the refreshing, and hands the others its access token,
-which is good for about an hour. There is still one way to reach a model: the token is the access token of your
-ChatGPT-plan sign-in, held by another `windlass`. It is not an API key, and no API key is accepted anywhere.
+which is good for about an hour.
 
 Where the sign-in is saved:
 
@@ -297,6 +303,7 @@ Every key:
 | Key | Value |
 |---|---|
 | `$schema` | ignored; lets an editor find a schema |
+| `provider` | `chatgpt` (default) or `openai` for new sessions. Read from the user file only. |
 | `model` | the model for new sessions |
 | `effort` | the reasoning effort for new sessions |
 | `titles` | `generate` (default) asks for a short session title in the background. `off` keeps the first-prompt title. |

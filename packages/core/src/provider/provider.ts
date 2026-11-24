@@ -3,6 +3,7 @@
  * A provider does not retry, does not persist and does not know about
  * sessions. The step loop owns the single attempt budget (retry rule 1).
  */
+import { brand } from "../brand.ts"
 import type { Json } from "../json.ts"
 import type { ModelRequest } from "../request/request.ts"
 import type { ProviderError } from "./error.ts"
@@ -72,13 +73,12 @@ export type StreamEvent =
 
 export type StreamEventType = StreamEvent["type"]
 
-/**
- * The name of the one real provider: OpenAI's Responses API through the
- * ChatGPT-plan sign-in. A ledger row with this name was answered by a
- * model on the user's plan; any other name is a scripted provider's (a
- * test, a demo, an evaluation).
- */
+/** Ledger IDs distinguish ChatGPT plan usage from metered API requests. */
 export const SIGNED_IN_PROVIDER = "openai-responses"
+export const OPENAI_KEY_PROVIDER = "openai-api-key"
+export const PROVIDER_ENV = `${brand.envPrefix}PROVIDER`
+export const PROVIDER_PROFILES = ["chatgpt", "openai"] as const
+export type ProviderProfile = (typeof PROVIDER_PROFILES)[number]
 
 export interface Provider {
   /** Stable name of the provider. Recorded in the request ledger with every call it serves. */
