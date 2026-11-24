@@ -27,7 +27,7 @@ Its notes are the version's section of `CHANGELOG.md`.
 
 ## What the workflows do
 
-`.github/workflows/ci.yml` runs on every push to `main` and every pull request:
+`.github/workflows/ci.yml` runs on pushes to `main` and `windlass/**` branches and on every pull request:
 
 - **hygiene**: fails on tracked files that `.gitignore` excludes, on file names that look like sign-in data, session
   databases, traces or keys, and on content that looks like a credential or a real home directory. Deliberately fake

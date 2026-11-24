@@ -6,10 +6,35 @@ All notable changes to Windlass are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-24
+
+### Added
+
+- The provider registry supports ChatGPT sign-in and API keys for OpenAI Responses, Anthropic Messages, Google Gemini and OpenRouter Chat Completions. OpenRouter lists models that support tool calls.
+- Choose a provider with `--provider` and a model with `--model`. The CLI model list and the TUI picker group models by provider.
+- Choose a model’s supported reasoning level with `--effort` or the TUI picker. Windlass applies the provider’s effort level or thinking budget.
+- In the TUI, picking a model from another provider starts a new session. Resumes, forks and subagents keep the original provider.
+- ACP advertises an auth method per provider. Clients can choose a provider at session creation and request model lists across providers with `_windlass/models`.
+- Automatic titles use the session provider’s model catalog. Trace exports use its request format.
+- Windlass keeps provider keys out of child process environments and redacts them from tool output.
+
 ### Changed
 
-- Import ChatGPT auth from `@windlass/core/auth/chatgpt` and the Responses adapter from `@windlass/core/provider/openai-responses`.
-  `HarnessOptions.apiKey` is now `apiKeys`, keyed by environment variable. ACP no longer exports `AUTH_METHOD_ID` or `SIGN_IN_HINT`.
+- **Breaking.** Pass `HarnessOptions.apiKeys` in place of `apiKey`, keyed by environment variable name.
+- **Breaking.** Import ChatGPT sign-in helpers from `@windlass/core/auth/chatgpt` and the Responses adapter from `@windlass/core/provider/openai-responses`. Import `AuthError`, `AUTH_UNREACHABLE` and `listModels` from `@windlass/core`.
+- **Breaking.** New sessions record their provider and require 0.7.0 or later to reopen. Sessions from 0.6.0 open as ChatGPT sessions.
+- CI now also runs on pushes to `windlass/**` branches.
+
+### Removed
+
+- **Breaking.** ACP removed the `AUTH_METHOD_ID` and `SIGN_IN_HINT` exports. Read the methods and descriptions from `initialize.authMethods`.
+- **Breaking.** Core removed the `SIGNED_IN_PROVIDER` export. Use `providerDescriptor("chatgpt").ledgerId` for the ChatGPT request ledger ID.
+
+### Fixed
+
+- The OpenAI API model list uses a per-model table for context limits and reasoning efforts, shows newer generations first and hides redundant dated snapshots.
+- Generated titles strip Markdown and leading labels such as “Title:”.
+- The TUI model picker gives provider names their own column and keeps long model IDs visible ahead of secondary details.
 
 ## [0.6.0] - 2026-11-22
 
@@ -267,7 +292,8 @@ The first release: a coding agent for the terminal that signs in with a ChatGPT 
 - **Executables** for Linux and macOS, x64 and arm64, with SHA-256 checksums and an install script, and on npm:
   `npm install -g windlass-agent` installs the one for your machine.
 
-[Unreleased]: https://github.com/WindlassAI/windlass/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/WindlassAI/windlass/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/WindlassAI/windlass/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/WindlassAI/windlass/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/WindlassAI/windlass/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/WindlassAI/windlass/compare/v0.3.0...v0.4.0

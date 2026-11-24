@@ -15,7 +15,7 @@ Each [release](https://github.com/WindlassAI/windlass/releases) also has an exec
 arm64, with `install.sh` and `SHA256SUMS`; the README's Install section has the commands to download, check and
 install one. To build instead you need [Bun](https://bun.sh) 1.4 and this repository with its dependencies installed
 (`bun install`).
-To run you need Linux or macOS, a ChatGPT plan or an OpenAI API key, and these programs on `PATH`:
+To run you need Linux or macOS, a ChatGPT plan or a supported provider’s API key, and these programs on `PATH`:
 
 - `bwrap` (bubblewrap) on Linux, for the sandbox. Without it no command runs sandboxed, and every command asks first.
 - GNU `env` 8.31 or newer (coreutils), so that a stopped command gets time to finish.
@@ -50,10 +50,13 @@ anywhere, approve, and the browser ends on a page at `127.0.0.1` that fails to l
 paste it at the prompt (it is not shown, and it never goes on the command line). `windlass login status` says who is
 signed in; it never prints a token.
 
-### OpenAI API keys
+### API keys
 
-Set `OPENAI_API_KEY` in your environment and run `windlass --provider openai --models --json` to see the
-account's model IDs. Use `--model` to select one. For new sessions, `--provider` takes precedence over
+Set the variable for your provider in the environment where you start Windlass. Use `OPENAI_API_KEY` for
+`--provider openai`, `ANTHROPIC_API_KEY` for `--provider anthropic`, `GEMINI_API_KEY` for `--provider google`
+(Google Gemini), or `OPENROUTER_API_KEY` for `--provider openrouter`.
+For example, `windlass --provider google --models --json` lists model IDs and efforts with Google first.
+For new sessions, `--provider` takes precedence over
 `WINDLASS_PROVIDER`, then `provider` in your user configuration, then the default `chatgpt`. A session
 keeps its provider when resumed. Start a new session to switch providers.
 
@@ -192,7 +195,7 @@ windlass --models
 windlass -m gpt-6-luna --effort low "rename the helper to parseLine"
 ```
 
-`windlass --models` lists the models your plan offers and the efforts each accepts; the one marked `*` is the default.
+`windlass --models` groups available models by provider and lists the efforts each accepts. A `*` marks the selected provider’s default model.
 `-m` (`--model`) and `--effort` choose for a new session. A session keeps the model it was started with when you
 resume it, unless you name another. An effort the model does not take is refused in one sentence that names the
 ones it accepts (`model gpt-6-luna does not offer the reasoning effort "extreme"; it accepts: low, medium, high,
@@ -303,11 +306,11 @@ Every key:
 | Key | Value |
 |---|---|
 | `$schema` | ignored; lets an editor find a schema |
-| `provider` | `chatgpt` (default) or `openai` for new sessions. Read from the user file only. |
+| `provider` | `chatgpt` (default), `openai`, `anthropic`, `google` or `openrouter` for new sessions. Read from the user file only. |
 | `model` | the model for new sessions |
 | `effort` | the reasoning effort for new sessions |
 | `titles` | `generate` (default) asks for a short session title in the background. `off` keeps the first-prompt title. |
-| `titleModel` | Optional model ID from the session provider’s `--models` catalog. By default, titles use `gpt-6-luna` at low effort when offered. Next come models described as fast, affordable or suited to simple tasks, then models named nano, then mini or small. Ties and unmarked models follow catalog order. Other models use their default effort. |
+| `titleModel` | Optional model ID from the session provider’s `--models` catalog. By default, titles use the provider’s preferred title model when offered. Next come models described as fast, affordable or suited to simple tasks, then models named nano, then mini or small. Ties and unmarked models follow catalog order. Other models use their default effort. |
 | `checks` | the project's checks, a list (below) |
 | `requiredChecks` | checks that a project's file cannot replace or switch off, a list like `checks` ("Required checks" below). Only your own file: a project's is not followed |
 | `verify` | what is done with the checks (below) |
@@ -661,7 +664,9 @@ work was not merged keeps its `windlass/subagent-<id>` branch.
 | `WINDLASS_TUI_DEBUG` | `1`: the full-screen interface shows events it does not know, dimmed |
 | `WINDLASS_ACP_LOG` | the server's log level on standard error: `debug`, `info` (default), `warn`, `error` |
 | `WINDLASS_ENGINE_START_TIMEOUT_MS` | how long the server child may take to start (default 20000) |
-| `WINDLASS_MODEL_BASE_URL` | host URL prefix for the Responses provider and model catalog, requires `WINDLASS_ACCESS_TOKEN_FILE` |
+| `WINDLASS_PROVIDER` | default provider for new sessions when `--provider` is omitted |
+| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY` | credentials for the API-key providers (see [API keys](#api-keys)) |
+| `WINDLASS_MODEL_BASE_URL` | host URL prefix for the ChatGPT provider and model catalog, requires `WINDLASS_ACCESS_TOKEN_FILE` |
 | `WINDLASS_MODEL_ALLOWED_ORIGIN` | exact origin the host allows for a relay outside loopback |
 | `WINDLASS_ACCESS_TOKEN_FILE` | a file with an access token handed in by the `windlass` that holds the ChatGPT sign-in (`windlass login token` there): this process runs on it and does not use a saved sign-in ("One sign-in for several machines" above) |
 | `WINDLASS_WAKE` | `off`: this process's server fires no wake-ups (an interactive `windlass`, `windlass tui` and `windlass acp` fire them; a one-prompt run never does) |

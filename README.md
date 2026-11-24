@@ -43,17 +43,15 @@ Every way installs `windlass` with `wl` as a short alias; the last two put it in
 script says what is missing and what you lose without it (`--check` only checks). The
 [user guide](docs/user-guide.md#installing) has the details, uninstalling, and running from source.
 
-For the default ChatGPT provider, sign in with your plan.
+For ChatGPT (the default), run `windlass login`. It opens a browser or prints a sign-in address on a remote machine.
+See the [sign-in guide](docs/user-guide.md#signing-in). For an API key, set the matching variable and run the command below.
 
-```sh
-windlass login
-```
-
-It opens a browser, or on a remote machine prints an address to open anywhere
-([how](docs/user-guide.md#signing-in)).
-
-To use an OpenAI API account, set `OPENAI_API_KEY` in your environment. Run
-`windlass --provider openai --models --json` to list its models.
+| Provider | Environment variable | Command |
+| --- | --- | --- |
+| OpenAI | `OPENAI_API_KEY` | `windlass --provider openai` |
+| Anthropic | `ANTHROPIC_API_KEY` | `windlass --provider anthropic` |
+| Google Gemini | `GEMINI_API_KEY` | `windlass --provider google` |
+| OpenRouter | `OPENROUTER_API_KEY` | `windlass --provider openrouter` |
 
 ## Quickstart
 
@@ -89,8 +87,8 @@ windlass "the add test fails; find out why and fix it"
 
 It prints each tool call as it runs and ends with a line such as `✓ done · no checks configured · 6 steps · 16s`.
 
-**Choosing a model.** Both providers default to `gpt-6.1-sol`. If your API key does not offer it, choose a model from `--models`.
-Use `--model` at launch or `/model` during a session.
+**Choosing a model.** Add `--models` to list available models and reasoning efforts. Use `--model` and
+`--effort` at launch, or `/model` in the full-screen interface. Picking another provider there starts a new session.
 
 ## Limits
 

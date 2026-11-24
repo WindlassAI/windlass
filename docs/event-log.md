@@ -168,6 +168,7 @@ A session exists. Always the first event of a session's own log. For a fork, `li
 | `title` | string, or `null` | yes |
 | `lineage` | [lineage](#lineage), or `null` | yes |
 | `settings` | [sessionSettings](#sessionsettings) | yes |
+| `provider` | one of `"chatgpt"`, `"openai"`, `"anthropic"`, `"google"`, `"openrouter"` | may be absent |
 | `inherited` | object | may be absent |
 | `inherited.taint` | list of [storedHistoryEntry](#storedhistoryentry) | yes |
 

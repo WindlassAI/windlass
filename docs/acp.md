@@ -17,15 +17,15 @@ From a checkout, without installing the binary, point the client at Bun and the 
 ```json
 {
   "command": "bun",
-  "args": ["/path/to/light-harness/packages/cli/src/main.ts", "acp"]
+  "args": ["--no-env-file", "/path/to/windlass/packages/cli/src/main.ts", "acp"]
 }
 ```
 
 For Zed, for example, that object goes under `agent_servers."windlass"` in `settings.json`.
 
-Before the first session, sign in with your ChatGPT plan on the same machine (`bun scripts/login.ts start` in the
-checkout, then finish the sign-in it prints). When you are not signed in, creating or loading a session fails with
-ACP's auth-required error (`-32000`) and a message that says this; the client's "authenticate" button only re-checks.
+For ChatGPT, run `windlass login` on the server machine. For an API-key provider, set its key in the server’s
+environment as described in the [user guide](user-guide.md#api-keys). If the session’s credential is missing,
+creating or loading the session returns ACP’s auth-required error (`-32000`) with the provider’s method ID.
 Listing sessions, reading a session's log, resolving a session ID and forking need no sign-in.
 
 A server that cannot share the data directory the sign-in is saved in (one server per agent session, each in a
@@ -61,9 +61,9 @@ every command the agent started is stopped, and the session resumes later where 
 
 | ACP | How Windlass does it |
 | --- | --- |
-| `initialize` | Protocol version 1. Capabilities: `loadSession`, embedded text context in prompts, `sessionCapabilities` `list`, `resume`, `close`, `delete`. One auth method, "Sign in with ChatGPT". |
-| `authenticate` | Checks the saved sign-in, or the access token handed in through `WINDLASS_ACCESS_TOKEN_FILE`; succeeds if it is usable, otherwise answers auth-required with how to sign in, or that a new token must be handed in. There is no in-client browser flow. |
-| `session/new` | A session in the client's `cwd` (an absolute directory). The response carries the config options below. `_meta["windlass"] = { model, effort }` starts it with those settings, checked against the account's models first (an unknown model is refused with `-32602` and the list of valid ones, an effort the model does not take with the ones it accepts). `agent` in the same object is the agent it starts as, by name (`"none"`: no agent; absent: the default of the user's configuration); a name that is no agent is refused with `-32602` and a sentence that suggests the near ones, and no session is created. `approval` (`ask`, `auto`, `full`), `unattended` (`deny`, `stop`), `attended` (default `true`) and `children` (default: as `attended`) in the same object say how tool calls are approved (see "Approval" below), `sandboxHome` (`user`, `session`) what sandboxed commands find at the home directory's path (see "The session's home" below), `withholdEnv` and `passEnv` (lists of environment variable names) what of the server's environment the session's commands get (see "A command's environment" below), `requiredChecks` (a list of checks) which checks run and gate the session's turns whatever the project's file says (see "Required checks" below), and `hostTools` (a list of tools) the tools the client runs itself (see "Tools the client runs" under Extensions); they are read on `session/load` and `session/resume` too. |
+| `initialize` | Protocol version 1. Capabilities: `loadSession`, embedded text context in prompts, `sessionCapabilities` `list`, `resume`, `close`, `delete`. One auth method per provider, with the selected provider first. |
+| `authenticate` | Checks the credential for the requested method ID. For ChatGPT it reads the saved sign-in or handed-in token. For an API-key provider it checks that the key is set. |
+| `session/new` | A session in the client's `cwd` (an absolute directory). The response carries the config options below. `_meta["windlass"] = { provider, model, effort }` selects the provider and starts it with those settings, checked against the account's models first (an unknown model is refused with `-32602` and the list of valid ones, an effort the model does not take with the ones it accepts). `agent` in the same object is the agent it starts as, by name (`"none"`: no agent; absent: the default of the user's configuration); a name that is no agent is refused with `-32602` and a sentence that suggests the near ones, and no session is created. `approval` (`ask`, `auto`, `full`), `unattended` (`deny`, `stop`), `attended` (default `true`) and `children` (default: as `attended`) in the same object say how tool calls are approved (see "Approval" below), `sandboxHome` (`user`, `session`) what sandboxed commands find at the home directory's path (see "The session's home" below), `withholdEnv` and `passEnv` (lists of environment variable names) what of the server's environment the session's commands get (see "A command's environment" below), `requiredChecks` (a list of checks) which checks run and gate the session's turns whatever the project's file says (see "Required checks" below), and `hostTools` (a list of tools) the tools the client runs itself (see "Tools the client runs" under Extensions); they are read on `session/load` and `session/resume` too. |
 | `session/load` | Replays the whole stored conversation as `session/update`s (user messages, reasoning, text, tool calls with their final status), then reports the title (`session_info_update`), the context use (`usage_update`), and the session's state (the `_windlass/state` notification below), then answers. The `cwd` must be the session's own. |
 | `session/resume` | The same without the replay. On load and resume, `_meta["windlass"] = { model, effort }` switches the session to them (checked first, recorded as `settings.changed`), `agent` switches it to that agent (recorded as `agent.switched`; a refusal leaves the session closed), and `archived: true` opens an archived session too. |
 | `session/list` | Sessions (not deleted), newest first, filtered by `cwd`, 100 per page. Each has `_meta["windlass"] = { model, effort, archived?, forkedFrom?, forkedThroughSeq? }` (a fork names the session it was forked from and the last event it inherited). With `_meta["windlass"] = { archived: true }` archived sessions are listed too. The `title` is the session's own, or else derived from its first prompt (below). Each page is read from the engine: `nextCursor` is a place in the order (when a session was last updated, then its ID), so the server keeps nothing between two pages, a session that arrives meanwhile is in no later page, and none is listed twice; a new listing has it at the front. A cursor the server did not give is refused with `-32602`. |
@@ -1001,13 +1001,15 @@ a deploy, a way to ask a person) declares them when it opens a session, in `_met
   `client` kind of `untrusted`, the new taint source kinds): that version refuses to open it with
   `unreadable_session` rather than open it without its taint.
 
-**`_windlass/models`** (request): the models and efforts the account offers, asked for afresh; when they cannot
-be listed, an error with the reason (`auth_required` or `model_list_failed`).
+**`_windlass/models`** lists models and efforts for an open session’s provider, or the server’s selected
+provider if `sessionId` is omitted. Pass `providers: true` to include other providers whose models can be listed.
+A failure to list the selected provider returns `auth_required` or `model_list_failed`.
 
 ```ts
-// params: {}
-// result
-{
+// params: { sessionId?: string, providers?: boolean }
+// result: ProviderModels & { providers?: ProviderModels[] }
+type ProviderModels = {
+  provider: string,
   defaultModel: string,
   models: { id: string, name: string, efforts: string[], defaultEffort: string | null, contextWindow: number | null }[]
 }

@@ -38,9 +38,7 @@ describe("the version", () => {
 
   test("from source the program starts its server child as Bun running main.ts", () => {
     const command = selfCommand(["acp"])
-    expect(command[0]).toBe(process.execPath)
-    expect(command[1]).toEndWith("packages/cli/src/main.ts")
-    expect(command.slice(2)).toEqual(["acp"])
+    expect(command).toEqual([process.execPath, "--no-env-file", join(ROOT, "packages/cli/src/main.ts"), "acp"])
   })
 })
 

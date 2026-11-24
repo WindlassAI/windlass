@@ -1714,9 +1714,12 @@ holds for a moment, and treats another process's `git gc` as the collection it w
 that finds `sessions.db` in the data directory moves it, with its lock and log files, into
 `backup-single-database-<time>/` once and says so on standard error; its sessions are no longer listed.
 
-## The only provider
+## Model providers
 
-The model layer talks to OpenAI's Responses API through "Sign in with ChatGPT". That flow keeps no conversation state
+The provider registry selects the credentials, model catalog and request format for each provider.
+ChatGPT and OpenAI use Responses, Anthropic uses Messages, Google uses Gemini, and OpenRouter uses Chat Completions.
+
+The default ChatGPT sign-in flow keeps no conversation state
 on the server, so the full history is sent on every call and an unchanged prefix is what makes the call cheap.
 
 Two things about its prompt cache shape what the harness does, both measured (`docs/reference/responses-api.md`,
