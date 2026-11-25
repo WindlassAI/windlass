@@ -6,6 +6,8 @@ All notable changes to Windlass are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-11-25
+
 ### Added
 
 - Hosts can set `WINDLASS_MODEL_BASE_URL` to relay OpenAI, Anthropic, Google or OpenRouter requests, including model lists and titles, using a placeholder in the selected provider’s API-key variable.
@@ -296,7 +298,8 @@ The first release: a coding agent for the terminal that signs in with a ChatGPT 
 - **Executables** for Linux and macOS, x64 and arm64, with SHA-256 checksums and an install script, and on npm:
   `npm install -g windlass-agent` installs the one for your machine.
 
-[Unreleased]: https://github.com/WindlassAI/windlass/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/WindlassAI/windlass/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/WindlassAI/windlass/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/WindlassAI/windlass/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/WindlassAI/windlass/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/WindlassAI/windlass/compare/v0.4.0...v0.5.0
